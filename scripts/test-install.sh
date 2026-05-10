@@ -17,6 +17,8 @@ assert_contains() {
 
 tmpdir=$(mktemp -d)
 cleanup() {
+  [ -d "$tmpdir" ] || return 0
+  chmod -R u+w "$tmpdir"
   rm -rf "$tmpdir"
 }
 trap cleanup EXIT INT TERM
