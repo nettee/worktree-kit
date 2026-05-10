@@ -1,7 +1,7 @@
 ---
 id: 20260510-one-click-install-script
 name: One Click Install Script
-status: designed
+status: implemented
 created: '2026-05-10'
 ---
 
@@ -175,18 +175,18 @@ curl -fsSL https://raw.githubusercontent.com/nettee/worktree-kit/main/scripts/in
 
 ## Plan
 
-- [ ] Step 1: Installer foundation
-  - [ ] Substep 1.1 Implement: add `scripts/install.sh` with fail-fast helpers, environment parsing, dependency checks, Go version validation, and install-dir resolution.
-  - [ ] Substep 1.2 Implement: run `GOBIN=$install_dir go install github.com/nettee/worktree-kit/cmd/wtk@latest` and verify the resulting `wtk` binary.
-  - [ ] Substep 1.3 Verify: run `sh -n scripts/install.sh` and a local temporary install smoke test.
-- [ ] Step 2: PATH and user guidance
-  - [ ] Substep 2.1 Implement: add PATH detection, profile guessing, interactive PATH append, and manual export output.
-  - [ ] Substep 2.2 Implement: print post-install completion examples and next-step usage.
-  - [ ] Substep 2.3 Verify: test PATH-present, PATH-missing interactive-skip, and non-interactive guidance paths.
-- [ ] Step 3: Docs and CI coverage
-  - [ ] Substep 3.1 Implement: update README install section with the one-click curl command.
-  - [ ] Substep 3.2 Implement: add installer test script or CI step for shell syntax and hermetic smoke install.
-  - [ ] Substep 3.3 Verify: run `go test ./...`, installer checks, and a manual install command with temporary `WTK_INSTALL_DIR`.
+- [x] Step 1: Installer foundation
+  - [x] Substep 1.1 Implement: add `scripts/install.sh` with fail-fast helpers, environment parsing, dependency checks, Go version validation, and install-dir resolution.
+  - [x] Substep 1.2 Implement: run `GOBIN=$install_dir go install github.com/nettee/worktree-kit/cmd/wtk@latest` and verify the resulting `wtk` binary.
+  - [x] Substep 1.3 Verify: run `sh -n scripts/install.sh` and a local temporary install smoke test.
+- [x] Step 2: PATH and user guidance
+  - [x] Substep 2.1 Implement: add PATH detection, profile guessing, interactive PATH append, and manual export output.
+  - [x] Substep 2.2 Implement: print post-install completion examples and next-step usage.
+  - [x] Substep 2.3 Verify: test PATH-present, PATH-missing interactive-skip, and non-interactive guidance paths.
+- [x] Step 3: Docs and CI coverage
+  - [x] Substep 3.1 Implement: update README install section with the one-click curl command.
+  - [x] Substep 3.2 Implement: add installer test script or CI step for shell syntax and hermetic smoke install.
+  - [x] Substep 3.3 Verify: run `go test ./...`, installer checks, and a manual install command with temporary `WTK_INSTALL_DIR`.
 
 ## Notes
 
@@ -194,8 +194,14 @@ curl -fsSL https://raw.githubusercontent.com/nettee/worktree-kit/main/scripts/in
 
 ### Implementation
 
-<!-- Files created/modified, decisions made during coding, deviations from design -->
+- `scripts/install.sh` - added a fail-fast one-click installer that validates commands and Go version, installs `wtk` with `GOBIN`, verifies `wtk --help`, handles PATH guidance, optionally updates an interactive shell profile, and prints completion examples.
+- `scripts/test-install.sh` - added shell installer coverage for syntax, temporary local install, PATH-present output, PATH-missing guidance, completion output, and missing-Go failure.
+- `.github/workflows/ci.yml` - added the installer test script to CI before `go test ./...`.
+- `README.md` - documented the curl-based one-click installer, requirements, install directory, and retained `go install` as a supported path.
+- Implementation seam: `WTK_VERSION=""` lets installer tests use a local `WTK_MODULE=./cmd/wtk`; default user installs still use `@latest`.
 
 ### Verification
 
-<!-- How the feature was verified: tests written, manual testing steps, results -->
+- `sh -n scripts/install.sh` - passed.
+- `sh scripts/test-install.sh` - passed; includes a temporary install smoke test with `WTK_INSTALL_DIR` and local module override.
+- `go test ./...` - passed.

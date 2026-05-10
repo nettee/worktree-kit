@@ -11,6 +11,16 @@ Default linked worktree paths are sibling directories named `<repo>-wt-<branch-s
 
 ## Install
 
+One-click install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nettee/worktree-kit/main/scripts/install.sh | sh
+```
+
+The installer requires Go 1.25 or newer and installs `wtk` into `${WTK_INSTALL_DIR:-$HOME/.local/bin}`. It prints PATH and completion setup guidance after verifying the installed binary.
+
+Go install is also supported:
+
 ```bash
 go install github.com/nettee/worktree-kit/cmd/wtk@latest
 ```
