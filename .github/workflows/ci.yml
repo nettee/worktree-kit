@@ -12,4 +12,5 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25.x'
+      - run: sh scripts/test-install.sh
       - run: go test ./...
