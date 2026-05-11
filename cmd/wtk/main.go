@@ -10,7 +10,9 @@ import (
 
 func main() {
 	if err := cli.Execute(context.Background(), os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		if !cli.IsUsageError(err) {
+			fmt.Fprintln(os.Stderr, err)
+		}
 		os.Exit(1)
 	}
 }

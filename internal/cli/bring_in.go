@@ -10,7 +10,7 @@ func newBringInCmd(svc worktree.Service) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "bring-in <linked-worktree-path>",
 		Short: "Move a linked worktree branch back into the main worktree",
-		Args:  cobra.ExactArgs(1),
+		Args:  requiredArg("linked-worktree-path"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.Path = args[0]
 			return applyClipboard(svc, opts.NoClipboard).BringIn(cmd.Context(), opts)

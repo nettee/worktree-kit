@@ -10,7 +10,7 @@ func newRemoveCmd(svc worktree.Service) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "remove [path]",
 		Short: "Remove a linked worktree",
-		Args:  cobra.MaximumNArgs(1),
+		Args:  maximumOneArg("path"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 0 {
 				opts.Path = args[0]

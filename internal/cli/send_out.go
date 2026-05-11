@@ -10,7 +10,7 @@ func newSendOutCmd(svc worktree.Service) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "send-out",
 		Short: "Move the current main-worktree branch to a linked worktree",
-		Args:  cobra.NoArgs,
+		Args:  noArgs(),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return applyClipboard(svc, opts.NoClipboard).SendOut(cmd.Context(), opts)
 		},
