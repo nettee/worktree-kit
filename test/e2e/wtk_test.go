@@ -13,9 +13,9 @@ func TestCreateRemoveSendOutBringInAndCompletion(t *testing.T) {
 	bin := buildWTK(t)
 	repo := initRepo(t, "main")
 	runGit(t, repo, "branch", "feature/existing")
-	out := runWTK(t, bin, repo, "create", "feature/existing", "--no-clipboard")
+	out := runWTK(t, bin, repo, "checkout", "feature/existing", "--no-clipboard")
 	if !strings.Contains(out, "git -C") || !strings.Contains(out, "created worktree") {
-		t.Fatalf("unexpected create output:\n%s", out)
+		t.Fatalf("unexpected checkout output:\n%s", out)
 	}
 	linked := filepath.Join(filepath.Dir(repo), filepath.Base(repo)+"-wt-feature-existing")
 	if _, err := os.Stat(linked); err != nil {
@@ -55,7 +55,7 @@ func TestCreateRemoveSendOutBringInAndCompletion(t *testing.T) {
 func TestCreateNewWithTrunkAndDirtyFailures(t *testing.T) {
 	bin := buildWTK(t)
 	repo := initRepo(t, "trunk")
-	runWTK(t, bin, repo, "create", "feature/new", "--new", "--base", "trunk", "--no-clipboard")
+	runWTK(t, bin, repo, "create", "feature/new", "--base", "trunk", "--no-clipboard")
 	linked := filepath.Join(filepath.Dir(repo), filepath.Base(repo)+"-wt-feature-new")
 	if _, err := os.Stat(linked); err != nil {
 		t.Fatal(err)
@@ -76,7 +76,7 @@ func TestDirtyLinkedFailures(t *testing.T) {
 	bin := buildWTK(t)
 	repo := initRepo(t, "main")
 	runGit(t, repo, "branch", "feature/dirty-linked")
-	runWTK(t, bin, repo, "create", "feature/dirty-linked", "--no-clipboard")
+	runWTK(t, bin, repo, "checkout", "feature/dirty-linked", "--no-clipboard")
 	linked := filepath.Join(filepath.Dir(repo), filepath.Base(repo)+"-wt-feature-dirty-linked")
 	if err := os.WriteFile(filepath.Join(linked, "dirty.txt"), []byte("dirty"), 0o644); err != nil {
 		t.Fatal(err)
@@ -118,7 +118,7 @@ func TestCreateNewDefaultFetchFastForwardsLocalMain(t *testing.T) {
 	runGit(t, seed, "add", ".")
 	runGit(t, seed, "commit", "-m", "two")
 	runGit(t, seed, "push")
-	runWTK(t, bin, repo, "create", "feature/from-updated-main", "--new", "--no-clipboard")
+	runWTK(t, bin, repo, "create", "feature/from-updated-main", "--no-clipboard")
 	linked := filepath.Join(filepath.Dir(repo), filepath.Base(repo)+"-wt-feature-from-updated-main")
 	if _, err := os.Stat(filepath.Join(linked, "remote.txt")); err != nil {
 		t.Fatalf("feature branch missing fetched file: %v", err)
@@ -159,7 +159,7 @@ func TestCreateNewDefaultRefusesNonFastForwardBase(t *testing.T) {
 	runGit(t, seed, "add", ".")
 	runGit(t, seed, "commit", "-m", "remote")
 	runGit(t, seed, "push")
-	out, err := runWTKErr(bin, repo, "create", "feature/refuse", "--new", "--no-clipboard")
+	out, err := runWTKErr(bin, repo, "create", "feature/refuse", "--no-clipboard")
 	if err == nil || !strings.Contains(out, "refusing to move it without a fast-forward") {
 		t.Fatalf("expected non-ff failure, out=%s err=%v", out, err)
 	}
@@ -188,11 +188,14 @@ func TestArgumentAndFlagUsageErrors(t *testing.T) {
 	}{
 		{name: "create missing branch", args: []string{"create"}, reason: "missing required argument: branch", usage: "wtk create <branch> [flags]"},
 		{name: "create too many args", args: []string{"create", "feature/a", "feature/b"}, reason: "too many arguments: expected 1 branch", usage: "wtk create <branch> [flags]"},
+		{name: "checkout missing branch", args: []string{"checkout"}, reason: "missing required argument: branch", usage: "wtk checkout <branch> [flags]"},
+		{name: "checkout too many args", args: []string{"checkout", "feature/a", "feature/b"}, reason: "too many arguments: expected 1 branch", usage: "wtk checkout <branch> [flags]"},
 		{name: "remove too many args", args: []string{"remove", "one", "two"}, reason: "too many arguments: expected at most 1 path", usage: "wtk remove [path] [flags]"},
 		{name: "send-out unexpected arg", args: []string{"send-out", "extra"}, reason: "unexpected argument: extra", usage: "wtk send-out [flags]"},
 		{name: "bring-in missing path", args: []string{"bring-in"}, reason: "missing required argument: linked-worktree-path", usage: "wtk bring-in <linked-worktree-path> [flags]"},
 		{name: "completion unsupported shell", args: []string{"completion", "tcsh"}, reason: "unsupported shell: tcsh", usage: "wtk completion <bash|zsh|fish|powershell> [flags]"},
-		{name: "unknown flag", args: []string{"create", "--wat"}, reason: "unknown flag: --wat", usage: "wtk create <branch> [flags]"},
+		{name: "create unknown flag", args: []string{"create", "--wat"}, reason: "unknown flag: --wat", usage: "wtk create <branch> [flags]"},
+		{name: "checkout unknown flag", args: []string{"checkout", "--wat"}, reason: "unknown flag: --wat", usage: "wtk checkout <branch> [flags]"},
 	}
 
 	for _, tt := range tests {

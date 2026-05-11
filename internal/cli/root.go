@@ -57,7 +57,7 @@ func newRoot(ctx context.Context, out, errOut io.Writer) *cobra.Command {
 	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
 		return newUsageError(cmd, err)
 	})
-	root.AddCommand(newCreateCmd(svc), newRemoveCmd(svc), newSendOutCmd(svc), newBringInCmd(svc), newCompletionCmd(root))
+	root.AddCommand(newCreateCmd(svc), newCheckoutCmd(svc), newRemoveCmd(svc), newSendOutCmd(svc), newBringInCmd(svc), newCompletionCmd(root))
 	_ = ctx
 	return root
 }
