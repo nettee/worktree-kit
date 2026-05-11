@@ -45,7 +45,7 @@ wtk create feature/foo
 wtk checkout feature/existing
 wtk remove ../repo-wt-feature-foo
 wtk send-out
-wtk bring-in ../repo-wt-feature-foo
+wtk bring-in feature/foo
 ```
 
 Every command prints the underlying `git` commands it runs. Successful commands copy the useful path or branch payload to the clipboard. Use `--no-clipboard` in CI or headless environments.

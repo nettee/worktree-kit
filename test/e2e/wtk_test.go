@@ -39,7 +39,7 @@ func TestCreateRemoveSendOutBringInAndCompletion(t *testing.T) {
 	if branch := strings.TrimSpace(runGit(t, repo, "branch", "--show-current")); branch != "main" {
 		t.Fatalf("main worktree branch = %q", branch)
 	}
-	runWTK(t, bin, repo, "bring-in", linked, "--no-clipboard")
+	runWTK(t, bin, repo, "bring-in", "feature/send", "--no-clipboard")
 	if branch := strings.TrimSpace(runGit(t, repo, "branch", "--show-current")); branch != "feature/send" {
 		t.Fatalf("branch = %q", branch)
 	}
@@ -85,7 +85,7 @@ func TestDirtyLinkedFailures(t *testing.T) {
 	if err == nil || !strings.Contains(out, "worktree is dirty") {
 		t.Fatalf("expected dirty remove failure, out=%s err=%v", out, err)
 	}
-	out, err = runWTKErr(bin, repo, "bring-in", linked, "--no-clipboard")
+	out, err = runWTKErr(bin, repo, "bring-in", "feature/dirty-linked", "--no-clipboard")
 	if err == nil || !strings.Contains(out, "worktree is dirty") {
 		t.Fatalf("expected dirty bring-in failure, out=%s err=%v", out, err)
 	}
@@ -192,7 +192,7 @@ func TestArgumentAndFlagUsageErrors(t *testing.T) {
 		{name: "checkout too many args", args: []string{"checkout", "feature/a", "feature/b"}, reason: "too many arguments: expected 1 branch", usage: "wtk checkout <branch> [flags]"},
 		{name: "remove too many args", args: []string{"remove", "one", "two"}, reason: "too many arguments: expected at most 1 path", usage: "wtk remove [path] [flags]"},
 		{name: "send-out unexpected arg", args: []string{"send-out", "extra"}, reason: "unexpected argument: extra", usage: "wtk send-out [flags]"},
-		{name: "bring-in missing path", args: []string{"bring-in"}, reason: "missing required argument: linked-worktree-path", usage: "wtk bring-in <linked-worktree-path> [flags]"},
+		{name: "bring-in missing branch", args: []string{"bring-in"}, reason: "missing required argument: branch", usage: "wtk bring-in <branch> [flags]"},
 		{name: "completion unsupported shell", args: []string{"completion", "tcsh"}, reason: "unsupported shell: tcsh", usage: "wtk completion <bash|zsh|fish|powershell> [flags]"},
 		{name: "create unknown flag", args: []string{"create", "--wat"}, reason: "unknown flag: --wat", usage: "wtk create <branch> [flags]"},
 		{name: "checkout unknown flag", args: []string{"checkout", "--wat"}, reason: "unknown flag: --wat", usage: "wtk checkout <branch> [flags]"},
