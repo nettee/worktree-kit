@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -175,6 +176,32 @@ func TestAmbiguousMainBranchFails(t *testing.T) {
 	}
 }
 
+func TestArgumentAndFlagUsageErrors(t *testing.T) {
+	bin := buildWTK(t)
+	repo := initRepo(t, "main")
+
+	tests := []struct {
+		name   string
+		args   []string
+		reason string
+		usage  string
+	}{
+		{name: "create missing branch", args: []string{"create"}, reason: "missing required argument: branch", usage: "wtk create <branch> [flags]"},
+		{name: "create too many args", args: []string{"create", "feature/a", "feature/b"}, reason: "too many arguments: expected 1 branch", usage: "wtk create <branch> [flags]"},
+		{name: "remove too many args", args: []string{"remove", "one", "two"}, reason: "too many arguments: expected at most 1 path", usage: "wtk remove [path] [flags]"},
+		{name: "send-out unexpected arg", args: []string{"send-out", "extra"}, reason: "unexpected argument: extra", usage: "wtk send-out [flags]"},
+		{name: "bring-in missing path", args: []string{"bring-in"}, reason: "missing required argument: linked-worktree-path", usage: "wtk bring-in <linked-worktree-path> [flags]"},
+		{name: "completion unsupported shell", args: []string{"completion", "tcsh"}, reason: "unsupported shell: tcsh", usage: "wtk completion <bash|zsh|fish|powershell> [flags]"},
+		{name: "unknown flag", args: []string{"create", "--wat"}, reason: "unknown flag: --wat", usage: "wtk create <branch> [flags]"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assertUsageError(t, bin, repo, tt.args, tt.reason, tt.usage)
+		})
+	}
+}
+
 func buildWTK(t *testing.T) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "wtk")
@@ -228,6 +255,39 @@ func runWTKErr(bin, dir string, args ...string) (string, error) {
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	return string(out), err
+}
+
+func assertUsageError(t *testing.T, bin, dir string, args []string, reason, usage string) {
+	t.Helper()
+	stdout, stderr, err := runWTKErrSplit(bin, dir, args...)
+	if err == nil {
+		t.Fatalf("wtk %s unexpectedly succeeded:\nstdout:\n%sstderr:\n%s", strings.Join(args, " "), stdout, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("usage error wrote stdout, want empty stdout:\n%s", stdout)
+	}
+	if strings.Count(stderr, reason) != 1 {
+		t.Fatalf("stderr should contain reason %q once:\n%s", reason, stderr)
+	}
+	if strings.Count(stderr, "Usage:") != 1 {
+		t.Fatalf("stderr should contain one Usage section:\n%s", stderr)
+	}
+	if !strings.Contains(stderr, usage) {
+		t.Fatalf("stderr missing command usage %q:\n%s", usage, stderr)
+	}
+	if !strings.Contains(stderr, "Flags:") {
+		t.Fatalf("stderr missing Flags:\n%s", stderr)
+	}
+}
+
+func runWTKErrSplit(bin, dir string, args ...string) (string, string, error) {
+	cmd := exec.Command(bin, args...)
+	cmd.Dir = dir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	return stdout.String(), stderr.String(), err
 }
 
 func repoRoot(t *testing.T) string {

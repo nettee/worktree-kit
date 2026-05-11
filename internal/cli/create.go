@@ -10,7 +10,7 @@ func newCreateCmd(svc worktree.Service) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "create <branch>",
 		Short: "Create a linked worktree",
-		Args:  cobra.ExactArgs(1),
+		Args:  requiredArg("branch"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.Branch = args[0]
 			return applyClipboard(svc, opts.NoClipboard).Create(cmd.Context(), opts)
