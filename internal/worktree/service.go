@@ -23,7 +23,6 @@ type Options struct {
 	Branch       string
 	Path         string
 	Base         string
-	New          bool
 	DeleteBranch bool
 	NoClipboard  bool
 }
@@ -45,17 +44,37 @@ func (s Service) Create(ctx context.Context, opts Options) error {
 	if _, err := os.Stat(path); err == nil {
 		return fmt.Errorf("target path already exists: %s", path)
 	}
-	base := opts.Base
 	args := []string{"worktree", "add"}
-	if opts.New {
-		base, err = s.prepareBase(ctx, repo, opts.Base)
-		if err != nil {
-			return err
-		}
-		args = append(args, "-b", branch, path, base)
-	} else {
-		args = append(args, path, branch)
+	base, err := s.prepareBase(ctx, repo, opts.Base)
+	if err != nil {
+		return err
 	}
+	args = append(args, "-b", branch, path, base)
+	s.Output.Git(repo.MainRoot, args...)
+	if _, _, err := s.Git.Run(ctx, repo.MainRoot, args...); err != nil {
+		return err
+	}
+	return s.finish(ctx, opts.NoClipboard, path, "created worktree at %s", path)
+}
+
+func (s Service) Checkout(ctx context.Context, opts Options) error {
+	repo, err := s.repo(ctx)
+	if err != nil {
+		return err
+	}
+	branch := opts.Branch
+	if branch == "" {
+		return errors.New("branch is required")
+	}
+	path := opts.Path
+	if path == "" {
+		path = DefaultPath(repo.MainRoot, branch)
+	}
+	path, _ = filepath.Abs(path)
+	if _, err := os.Stat(path); err == nil {
+		return fmt.Errorf("target path already exists: %s", path)
+	}
+	args := []string{"worktree", "add", path, branch}
 	s.Output.Git(repo.MainRoot, args...)
 	if _, _, err := s.Git.Run(ctx, repo.MainRoot, args...); err != nil {
 		return err
