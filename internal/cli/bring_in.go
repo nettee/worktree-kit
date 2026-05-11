@@ -8,14 +8,14 @@ import (
 func newBringInCmd(svc worktree.Service) *cobra.Command {
 	var opts worktree.Options
 	cmd := &cobra.Command{
-		Use:   "bring-in <linked-worktree-path>",
+		Use:   "bring-in <branch>",
 		Short: "Move a linked worktree branch back into the main worktree",
-		Args:  requiredArg("linked-worktree-path"),
+		Args:  requiredArg("branch"),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			opts.Path = args[0]
+			opts.Branch = args[0]
 			return applyClipboard(svc, opts.NoClipboard).BringIn(cmd.Context(), opts)
 		},
-		ValidArgsFunction: worktreeCompletion(),
+		ValidArgsFunction: linkedWorktreeBranchCompletion(),
 	}
 	cmd.Flags().BoolVar(&opts.NoClipboard, "no-clipboard", false, "skip clipboard copy")
 	return cmd

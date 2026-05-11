@@ -180,26 +180,26 @@ func (s Service) BringIn(ctx context.Context, opts Options) error {
 	if !repo.CurrentIsMain {
 		return errors.New("bring-in must be run from the main worktree")
 	}
-	target := opts.Path
+	branch := opts.Branch
+	if branch == "" {
+		return errors.New("branch is required")
+	}
+	target := ""
+	for _, wt := range repo.Worktrees {
+		if wt.Branch == branch && !samePath(wt.Path, repo.MainRoot) {
+			target = wt.Path
+			break
+		}
+	}
 	if target == "" {
-		return errors.New("linked worktree path is required")
+		return fmt.Errorf("branch is not checked out in a linked worktree: %s", branch)
 	}
 	target, _ = filepath.Abs(target)
-	if _, ok := repo.WorktreeByPath(target); !ok || samePath(target, repo.MainRoot) {
-		return fmt.Errorf("target is not a linked worktree: %s", target)
-	}
 	if err := s.requireClean(ctx, repo.MainRoot); err != nil {
 		return err
 	}
 	if err := s.requireClean(ctx, target); err != nil {
 		return err
-	}
-	branch, _, err := s.Git.Run(ctx, target, "branch", "--show-current")
-	if err != nil {
-		return err
-	}
-	if branch == "" {
-		return errors.New("bring-in requires linked worktree to be on a named branch")
 	}
 	if _, _, err := s.Git.Run(ctx, repo.MainRoot, "rev-parse", "--verify", branch); err != nil {
 		return fmt.Errorf("branch cannot be checked out in main worktree: %w", err)
