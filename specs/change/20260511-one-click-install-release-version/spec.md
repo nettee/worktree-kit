@@ -1,7 +1,7 @@
 ---
 id: 20260511-one-click-install-release-version
 name: One Click Install Release Version
-status: designed
+status: implemented
 created: '2026-05-11'
 ---
 
@@ -163,27 +163,27 @@ Installer:
 
 ## Plan
 
-- [ ] Step 1: CLI version support
-  - [ ] Substep 1.1 Implement: add `Version = "0.0.1"` and wire it into Cobra root.
-  - [ ] Substep 1.2 Implement: expose version injection path for release ldflags.
-  - [ ] Substep 1.3 Verify: add/run Go test for `wtk --version`.
-- [ ] Step 2: Release artifact pipeline
-  - [ ] Substep 2.1 Implement: add release workflow triggered by `v*` tags.
-  - [ ] Substep 2.2 Implement: cross-build supported OS/arch binaries with version ldflags.
-  - [ ] Substep 2.3 Implement: package tar.gz assets and generate `checksums.txt`.
-  - [ ] Substep 2.4 Implement: upload assets with `gh release upload`.
-  - [ ] Substep 2.5 Verify: run local build/package script or workflow-equivalent commands where practical.
-- [ ] Step 3: Release-based installer
-  - [ ] Substep 3.1 Implement: replace Go preflight and `go install` with platform detection, download, checksum, extraction, and install.
-  - [ ] Substep 3.2 Implement: preserve install dir, PATH, profile update, and completion guidance behavior.
-  - [ ] Substep 3.3 Implement: add `WTK_REPO`, `WTK_VERSION`, and `WTK_DOWNLOAD_BASE_URL` handling.
-  - [ ] Substep 3.4 Verify: update installer tests with local fixture assets and version assertions.
-  - [ ] Substep 3.5 Verify: cover missing dependency, unsupported platform, and checksum mismatch failures.
-- [ ] Step 4: Documentation and full validation
-  - [ ] Substep 4.1 Implement: update README install, release, and version notes.
-  - [ ] Substep 4.2 Verify: run `sh scripts/test-install.sh`.
-  - [ ] Substep 4.3 Verify: run `go test ./...`.
-  - [ ] Substep 4.4 Verify: build a release-style binary and run `wtk --version`.
+- [x] Step 1: CLI version support
+  - [x] Substep 1.1 Implement: add `Version = "0.0.1"` and wire it into Cobra root.
+  - [x] Substep 1.2 Implement: expose version injection path for release ldflags.
+  - [x] Substep 1.3 Verify: add/run Go test for `wtk --version`.
+- [x] Step 2: Release artifact pipeline
+  - [x] Substep 2.1 Implement: add release workflow triggered by `v*` tags.
+  - [x] Substep 2.2 Implement: cross-build supported OS/arch binaries with version ldflags.
+  - [x] Substep 2.3 Implement: package tar.gz assets and generate `checksums.txt`.
+  - [x] Substep 2.4 Implement: upload assets with `gh release upload`.
+  - [x] Substep 2.5 Verify: run local build/package script or workflow-equivalent commands where practical.
+- [x] Step 3: Release-based installer
+  - [x] Substep 3.1 Implement: replace Go preflight and `go install` with platform detection, download, checksum, extraction, and install.
+  - [x] Substep 3.2 Implement: preserve install dir, PATH, profile update, and completion guidance behavior.
+  - [x] Substep 3.3 Implement: add `WTK_REPO`, `WTK_VERSION`, and `WTK_DOWNLOAD_BASE_URL` handling.
+  - [x] Substep 3.4 Verify: update installer tests with local fixture assets and version assertions.
+  - [x] Substep 3.5 Verify: cover missing dependency, unsupported platform, and checksum mismatch failures.
+- [x] Step 4: Documentation and full validation
+  - [x] Substep 4.1 Implement: update README install, release, and version notes.
+  - [x] Substep 4.2 Verify: run `sh scripts/test-install.sh`.
+  - [x] Substep 4.3 Verify: run `go test ./...`.
+  - [x] Substep 4.4 Verify: build a release-style binary and run `wtk --version`.
 
 ## Notes
 
@@ -191,8 +191,17 @@ Installer:
 
 ### Implementation
 
-<!-- Files created/modified, decisions made during coding, deviations from design -->
+- `internal/cli/root.go` - added package-level `Version = "0.0.1"` and wired Cobra version output.
+- `internal/cli/root_test.go` - added `--version` coverage.
+- `.github/workflows/release.yml` - added tag-triggered release workflow that cross-builds darwin/linux amd64/arm64 tarballs, generates `checksums.txt`, and creates or updates the GitHub Release assets.
+- `scripts/install.sh` - replaced Go install flow with release asset download, OS/arch detection, checksum verification, temp-binary version verification before install, install-dir placement, PATH guidance, and completion guidance.
+- `scripts/test-install.sh` - added local release fixture install test plus missing dependency, unsupported OS, and checksum mismatch failure coverage.
+- `README.md` - updated install docs for release assets, pinned version installs, developer `go install`, and `wtk --version`.
 
 ### Verification
 
-<!-- How the feature was verified: tests written, manual testing steps, results -->
+- `sh scripts/test-install.sh` - passed.
+- `go test ./...` - passed.
+- Local release workflow equivalent cross-build/package/checksum loop for darwin/linux amd64/arm64 - passed.
+- Release-style local binary with ldflags version injection ran `wtk --version` and printed `wtk version 0.0.1`.
+- Oracle review findings were addressed before final validation.

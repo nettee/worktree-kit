@@ -17,12 +17,24 @@ One-click install:
 curl -fsSL https://raw.githubusercontent.com/nettee/worktree-kit/main/scripts/install.sh | sh
 ```
 
-The installer requires Go 1.25 or newer and installs `wtk` into `${WTK_INSTALL_DIR:-$HOME/.local/bin}`. It prints PATH and completion setup guidance after verifying the installed binary.
+The installer downloads the matching GitHub release asset, verifies its checksum, and installs `wtk` into `${WTK_INSTALL_DIR:-$HOME/.local/bin}`. It prints PATH and completion setup guidance after verifying `wtk --version`.
 
-Go install is also supported:
+Install a specific release:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nettee/worktree-kit/main/scripts/install.sh | WTK_VERSION=0.0.1 sh
+```
+
+Go install is also supported for development machines with Go 1.25 or newer:
 
 ```bash
 go install github.com/nettee/worktree-kit/cmd/wtk@latest
+```
+
+Check the installed version:
+
+```bash
+wtk --version
 ```
 
 ## Usage

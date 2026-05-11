@@ -14,6 +14,8 @@ import (
 	"github.com/nettee/worktree-kit/internal/worktree"
 )
 
+var Version = "0.0.1"
+
 func Execute(ctx context.Context, args []string) error {
 	cmd := NewRoot(ctx, os.Stdout)
 	cmd.SetArgs(args)
@@ -25,6 +27,7 @@ func NewRoot(ctx context.Context, out io.Writer) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "wtk",
 		Short:         "Friendly Git worktree workflows",
+		Version:       Version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
