@@ -2,8 +2,7 @@
 set -eu
 
 APP_NAME="wtk"
-DEFAULT_MODULE="github.com/nettee/worktree-kit/cmd/wtk"
-REQUIRED_GO_VERSION="1.25.0"
+DEFAULT_REPO="nettee/worktree-kit"
 
 fail() {
   printf 'wtk installer: %s\n' "$1" >&2
@@ -16,38 +15,6 @@ info() {
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "missing required command: $1"
-}
-
-version_number() {
-  printf '%s\n' "$1" | grep -Eo '[0-9]+(\.[0-9]+){1,2}' | head -n 1
-}
-
-version_ge() {
-  current=$1
-  required=$2
-
-  current_major=$(printf '%s' "$current" | cut -d. -f1)
-  current_minor=$(printf '%s' "$current" | cut -d. -f2)
-  current_patch=$(printf '%s' "$current" | cut -d. -f3)
-  required_major=$(printf '%s' "$required" | cut -d. -f1)
-  required_minor=$(printf '%s' "$required" | cut -d. -f2)
-  required_patch=$(printf '%s' "$required" | cut -d. -f3)
-
-  current_patch=${current_patch:-0}
-  required_patch=${required_patch:-0}
-
-  [ "$current_major" -gt "$required_major" ] && return 0
-  [ "$current_major" -lt "$required_major" ] && return 1
-  [ "$current_minor" -gt "$required_minor" ] && return 0
-  [ "$current_minor" -lt "$required_minor" ] && return 1
-  [ "$current_patch" -ge "$required_patch" ]
-}
-
-require_go_version() {
-  go_output=$(go version) || fail "failed to run go version"
-  go_version=$(version_number "$go_output")
-  [ -n "$go_version" ] || fail "could not parse Go version from: $go_output"
-  version_ge "$go_version" "$REQUIRED_GO_VERSION" || fail "Go $REQUIRED_GO_VERSION or newer is required; found $go_version"
 }
 
 default_install_dir() {
@@ -113,39 +80,154 @@ maybe_update_profile() {
   esac
 }
 
+detect_os() {
+  os=${WTK_OS:-$(uname -s)}
+  case "$os" in
+    Darwin|darwin) printf 'darwin\n' ;;
+    Linux|linux) printf 'linux\n' ;;
+    *) fail "unsupported platform OS: $os" ;;
+  esac
+}
+
+detect_arch() {
+  arch=${WTK_ARCH:-$(uname -m)}
+  case "$arch" in
+    x86_64|amd64) printf 'amd64\n' ;;
+    arm64|aarch64) printf 'arm64\n' ;;
+    *) fail "unsupported platform architecture: $arch" ;;
+  esac
+}
+
+checksum_tool() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf 'sha256sum\n'
+    return 0
+  fi
+  if command -v shasum >/dev/null 2>&1; then
+    printf 'shasum\n'
+    return 0
+  fi
+  fail 'missing required command: sha256sum or shasum'
+}
+
+sha256_file() {
+  tool=$1
+  file=$2
+  case "$tool" in
+    sha256sum) sha256sum "$file" | cut -d' ' -f1 ;;
+    shasum) shasum -a 256 "$file" | cut -d' ' -f1 ;;
+    *) fail "unsupported checksum tool: $tool" ;;
+  esac
+}
+
+download_file() {
+  url=$1
+  dest=$2
+  curl -fsSL "$url" -o "$dest" || fail "failed to download: $url"
+}
+
+resolve_version() {
+  repo=$1
+  if [ "${WTK_VERSION+x}" = x ]; then
+    [ -n "$WTK_VERSION" ] || fail 'WTK_VERSION must not be empty'
+    printf '%s\n' "$WTK_VERSION"
+    return 0
+  fi
+  api_url="https://api.github.com/repos/$repo/releases/latest"
+  latest_json=$(curl -fsSL "$api_url") || fail "failed to resolve latest release: $api_url"
+  tag=$(printf '%s\n' "$latest_json" | grep '"tag_name"' | head -n 1 | cut -d '"' -f4)
+  [ -n "$tag" ] || fail "failed to parse latest release tag from: $api_url"
+  case "$tag" in
+    v*) printf '%s\n' "${tag#v}" ;;
+    *) fail "latest release tag must start with v: $tag" ;;
+  esac
+}
+
+asset_url() {
+  repo=$1
+  version=$2
+  asset=$3
+  if [ "${WTK_DOWNLOAD_BASE_URL+x}" = x ]; then
+    [ -n "$WTK_DOWNLOAD_BASE_URL" ] || fail 'WTK_DOWNLOAD_BASE_URL must not be empty'
+    printf '%s/%s\n' "${WTK_DOWNLOAD_BASE_URL%/}" "$asset"
+  else
+    printf 'https://github.com/%s/releases/download/v%s/%s\n' "$repo" "$version" "$asset"
+  fi
+}
+
+verify_checksum() {
+  tool=$1
+  checksums=$2
+  asset=$3
+  file=$4
+  expected=$(grep "  $asset\$" "$checksums" | head -n 1 | cut -d' ' -f1)
+  [ -n "$expected" ] || fail "checksum missing for asset: $asset"
+  actual=$(sha256_file "$tool" "$file")
+  [ "$actual" = "$expected" ] || fail "checksum mismatch for asset: $asset"
+}
+
 main() {
-  require_command go
+  require_command curl
+  require_command tar
+  require_command mktemp
+  require_command uname
   require_command grep
   require_command head
   require_command cut
   require_command basename
   require_command dirname
   require_command mkdir
+  require_command chmod
+  require_command cp
 
-  require_go_version
+  checksum=$(checksum_tool)
 
-  module=${WTK_MODULE:-$DEFAULT_MODULE}
-  version=${WTK_VERSION-latest}
-  install_dir=${WTK_INSTALL_DIR:-$(default_install_dir)}
+  if [ "${WTK_REPO+x}" = x ]; then
+    repo=$WTK_REPO
+  else
+    repo=$DEFAULT_REPO
+  fi
+  if [ "${WTK_INSTALL_DIR+x}" = x ]; then
+    install_dir=$WTK_INSTALL_DIR
+  else
+    install_dir=$(default_install_dir)
+  fi
+  os=$(detect_os)
+  arch=$(detect_arch)
+  version=$(resolve_version "$repo")
+  asset="${APP_NAME}_${version}_${os}_${arch}.tar.gz"
 
-  [ -n "$module" ] || fail 'WTK_MODULE must not be empty'
+  [ -n "$repo" ] || fail 'WTK_REPO must not be empty'
   [ -n "$install_dir" ] || fail 'install directory must not be empty'
+  [ -n "$version" ] || fail 'release version must not be empty'
+
+  work_dir=$(mktemp -d) || fail 'failed to create temporary directory'
+  trap 'rm -rf "$work_dir"' EXIT INT TERM
+
+  archive="$work_dir/$asset"
+  checksums="$work_dir/checksums.txt"
+  extract_dir="$work_dir/extract"
+  mkdir -p "$extract_dir" || fail "failed to create extraction directory: $extract_dir"
+
+  info "Installing $APP_NAME $version for $os/$arch into $install_dir"
+
+  download_file "$(asset_url "$repo" "$version" "$asset")" "$archive"
+  download_file "$(asset_url "$repo" "$version" checksums.txt)" "$checksums"
+  verify_checksum "$checksum" "$checksums" "$asset" "$archive"
+
+  tar -xzf "$archive" -C "$extract_dir" || fail "failed to extract asset: $asset"
+  [ -f "$extract_dir/$APP_NAME" ] || fail "asset missing binary: $APP_NAME"
+  chmod 0755 "$extract_dir/$APP_NAME" || fail "failed to mark extracted binary executable: $extract_dir/$APP_NAME"
+  version_output=$("$extract_dir/$APP_NAME" --version) || fail "extracted binary failed verification: $extract_dir/$APP_NAME --version"
+  printf '%s\n' "$version_output" | grep -F "$version" >/dev/null 2>&1 || fail "extracted binary version mismatch: expected $version, got $version_output"
 
   mkdir -p "$install_dir" || fail "failed to create install directory: $install_dir"
-
-  if [ -n "$version" ]; then
-    install_target="$module@$version"
-  else
-    install_target="$module"
-  fi
-
-  info "Installing $APP_NAME from $install_target into $install_dir"
-  GOBIN=$install_dir go install "$install_target" || fail "go install failed for $install_target"
+  cp "$extract_dir/$APP_NAME" "$install_dir/$APP_NAME" || fail "failed to install binary into: $install_dir"
+  chmod 0755 "$install_dir/$APP_NAME" || fail "failed to mark binary executable: $install_dir/$APP_NAME"
 
   install_path="$install_dir/$APP_NAME"
   [ -f "$install_path" ] || fail "installed binary missing: $install_path"
   [ -x "$install_path" ] || fail "installed binary is not executable: $install_path"
-  "$install_path" --help >/dev/null || fail "installed binary failed verification: $install_path --help"
 
   info "Installed $APP_NAME at $install_path"
 
@@ -164,7 +246,7 @@ main() {
   info '  wtk completion fish > ~/.config/fish/completions/wtk.fish'
   info '  wtk completion powershell > wtk.ps1'
   info ''
-  info 'Run: wtk --help'
+  info 'Run: wtk --version'
 }
 
 main "$@"
