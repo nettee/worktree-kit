@@ -178,6 +178,26 @@ func worktreeCompletion() cobra.CompletionFunc {
 	}
 }
 
+func linkedWorktreeBranchCompletion() cobra.CompletionFunc {
+	return func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		out, err := gitLines(cmd.Context(), "worktree", "list", "--porcelain")
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		var branches []string
+		for _, line := range out {
+			const prefix = "branch refs/heads/"
+			if strings.HasPrefix(line, prefix) {
+				branches = append(branches, strings.TrimPrefix(line, prefix))
+			}
+		}
+		if len(branches) > 0 {
+			branches = branches[1:]
+		}
+		return filterPrefix(branches, toComplete), cobra.ShellCompDirectiveNoFileComp
+	}
+}
+
 func gitLines(ctx context.Context, args ...string) ([]string, error) {
 	out, _, err := gitexec.Git{}.Run(ctx, ".", args...)
 	if err != nil || out == "" {

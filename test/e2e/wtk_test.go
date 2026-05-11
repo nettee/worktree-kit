@@ -43,6 +43,17 @@ func TestCreateRemoveSendOutBringInAndCompletion(t *testing.T) {
 	if branch := strings.TrimSpace(runGit(t, repo, "branch", "--show-current")); branch != "feature/send" {
 		t.Fatalf("branch = %q", branch)
 	}
+	out = runWTK(t, bin, repo, "send-out", "--no-clipboard")
+	if !strings.Contains(out, "sent feature/send out") {
+		t.Fatalf("unexpected second send-out output:\n%s", out)
+	}
+	completed := completionLines(t, bin, repo, "__complete", "bring-in", "fea")
+	if !containsLine(completed, "feature/send") {
+		t.Fatalf("bring-in completion missing branch: %v", completed)
+	}
+	if containsLine(completed, linked) {
+		t.Fatalf("bring-in completion unexpectedly included linked path: %v", completed)
+	}
 
 	for _, shell := range []string{"bash", "zsh", "fish", "powershell"} {
 		out := runWTK(t, bin, repo, "completion", shell)
@@ -281,6 +292,29 @@ func assertUsageError(t *testing.T, bin, dir string, args []string, reason, usag
 	if !strings.Contains(stderr, "Flags:") {
 		t.Fatalf("stderr missing Flags:\n%s", stderr)
 	}
+}
+
+func completionLines(t *testing.T, bin, dir string, args ...string) []string {
+	t.Helper()
+	out := runWTK(t, bin, dir, args...)
+	var lines []string
+	for _, line := range strings.Split(strings.ReplaceAll(out, "\r\n", "\n"), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, ":") || strings.HasPrefix(line, "Completion ended") {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+func containsLine(lines []string, want string) bool {
+	for _, line := range lines {
+		if line == want {
+			return true
+		}
+	}
+	return false
 }
 
 func runWTKErrSplit(bin, dir string, args ...string) (string, string, error) {

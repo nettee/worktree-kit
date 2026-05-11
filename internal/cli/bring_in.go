@@ -15,7 +15,7 @@ func newBringInCmd(svc worktree.Service) *cobra.Command {
 			opts.Branch = args[0]
 			return applyClipboard(svc, opts.NoClipboard).BringIn(cmd.Context(), opts)
 		},
-		ValidArgsFunction: worktreeCompletion(),
+		ValidArgsFunction: linkedWorktreeBranchCompletion(),
 	}
 	cmd.Flags().BoolVar(&opts.NoClipboard, "no-clipboard", false, "skip clipboard copy")
 	return cmd
