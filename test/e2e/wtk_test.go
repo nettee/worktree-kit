@@ -83,6 +83,34 @@ func TestCreateNewWithTrunkAndDirtyFailures(t *testing.T) {
 	}
 }
 
+func TestCreateFromCurrentBranch(t *testing.T) {
+	bin := buildWTK(t)
+	repo := initRepo(t, "main")
+	runGit(t, repo, "switch", "-c", "feature/base")
+	if err := os.WriteFile(filepath.Join(repo, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", ".")
+	runGit(t, repo, "commit", "-m", "base")
+
+	runWTK(t, bin, repo, "create", "feature/from-current", "--from-current", "--no-clipboard")
+	linked := filepath.Join(filepath.Dir(repo), filepath.Base(repo)+"-wt-feature-from-current")
+	if _, err := os.Stat(filepath.Join(linked, "base.txt")); err != nil {
+		t.Fatalf("from-current worktree missing current-branch file: %v", err)
+	}
+
+	runWTK(t, bin, repo, "create", "feature/from-current-short", "-C", "--no-clipboard")
+	linked = filepath.Join(filepath.Dir(repo), filepath.Base(repo)+"-wt-feature-from-current-short")
+	if _, err := os.Stat(filepath.Join(linked, "base.txt")); err != nil {
+		t.Fatalf("-C worktree missing current-branch file: %v", err)
+	}
+
+	out, err := runWTKErr(bin, repo, "create", "feature/conflict", "--base", "main", "--from-current", "--no-clipboard")
+	if err == nil || !strings.Contains(out, "--base and --from-current cannot be used together") {
+		t.Fatalf("expected base/from-current conflict, out=%s err=%v", out, err)
+	}
+}
+
 func TestDirtyLinkedFailures(t *testing.T) {
 	bin := buildWTK(t)
 	repo := initRepo(t, "main")

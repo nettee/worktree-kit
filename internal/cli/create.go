@@ -19,6 +19,7 @@ func newCreateCmd(svc worktree.Service) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&opts.Path, "path", "", "linked worktree path")
 	cmd.Flags().StringVar(&opts.Base, "base", "", "base branch for the new branch")
+	cmd.Flags().BoolVarP(&opts.FromCurrent, "from-current", "C", false, "use the current branch as the base for the new branch")
 	cmd.Flags().BoolVar(&opts.NoClipboard, "no-clipboard", false, "skip clipboard copy")
 	_ = cmd.RegisterFlagCompletionFunc("base", branchCompletion())
 	return cmd
