@@ -42,6 +42,7 @@ wtk --version
 
 ```bash
 wtk create feature/foo
+wtk create feature/from-current --from-current
 wtk checkout feature/existing
 wtk remove ../repo-wt-feature-foo
 wtk send-out
@@ -50,14 +51,15 @@ wtk bring-in feature/foo
 
 Every command prints the underlying `git` commands it runs. Successful commands copy the useful path or branch payload to the clipboard. Use `--no-clipboard` in CI or headless environments.
 
-## Main branch detection
+## Create base selection
 
-`wtk` detects the base branch by this precedence:
+`wtk create` selects the base for the new branch by this precedence:
 
 1. `--base`
-2. `git config worktree-kit.mainBranch`
-3. `origin/HEAD`
-4. one unambiguous local branch among `main`, `master`, `trunk`, `develop`
+2. `--from-current` / `-C`, which uses the branch checked out in the current worktree
+3. `git config worktree-kit.mainBranch`
+4. `origin/HEAD`
+5. one unambiguous local branch among `main`, `master`, `trunk`, `develop`
 
 Set an explicit default when needed:
 

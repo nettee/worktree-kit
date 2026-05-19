@@ -23,6 +23,7 @@ type Options struct {
 	Branch       string
 	Path         string
 	Base         string
+	FromCurrent  bool
 	DeleteBranch bool
 	NoClipboard  bool
 }
@@ -45,7 +46,7 @@ func (s Service) Create(ctx context.Context, opts Options) error {
 		return fmt.Errorf("target path already exists: %s", path)
 	}
 	args := []string{"worktree", "add"}
-	base, err := s.prepareBase(ctx, repo, opts.Base)
+	base, err := s.prepareCreateBase(ctx, repo, opts)
 	if err != nil {
 		return err
 	}
@@ -303,6 +304,24 @@ func (s Service) prepareBase(ctx context.Context, repo gitexec.RepoContext, expl
 		return "", err
 	}
 	return base, nil
+}
+
+func (s Service) prepareCreateBase(ctx context.Context, repo gitexec.RepoContext, opts Options) (string, error) {
+	if opts.FromCurrent {
+		if opts.Base != "" {
+			return "", errors.New("--base and --from-current cannot be used together")
+		}
+		current, _, err := s.Git.Run(ctx, repo.CurrentRoot, "branch", "--show-current")
+		if err != nil {
+			return "", err
+		}
+		current = strings.TrimSpace(current)
+		if current == "" {
+			return "", errors.New("--from-current requires the current worktree to be on a named branch")
+		}
+		return current, nil
+	}
+	return s.prepareBase(ctx, repo, opts.Base)
 }
 
 func ensureCreatableParent(path string) error {
