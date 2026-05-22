@@ -191,13 +191,21 @@ fn parse_create(args: &[String]) -> Result<Parsed, UsageError> {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--path" => {
-                i += 1;
-                options.path = require_flag_value(args, i, "--path", usage)?;
+            flag if flag == "--path" || flag.starts_with("--path=") => {
+                if let Some(value) = inline_flag_value(flag, "--path") {
+                    options.path = value;
+                } else {
+                    i += 1;
+                    options.path = require_flag_value(args, i, "--path", usage)?;
+                }
             }
-            "--base" => {
-                i += 1;
-                options.base = require_flag_value(args, i, "--base", usage)?;
+            flag if flag == "--base" || flag.starts_with("--base=") => {
+                if let Some(value) = inline_flag_value(flag, "--base") {
+                    options.base = value;
+                } else {
+                    i += 1;
+                    options.base = require_flag_value(args, i, "--base", usage)?;
+                }
             }
             "--from-current" | "-C" => options.from_current = true,
             "--no-clipboard" => options.no_clipboard = true,
@@ -229,9 +237,13 @@ fn parse_checkout(args: &[String]) -> Result<Parsed, UsageError> {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--path" => {
-                i += 1;
-                options.path = require_flag_value(args, i, "--path", usage)?;
+            flag if flag == "--path" || flag.starts_with("--path=") => {
+                if let Some(value) = inline_flag_value(flag, "--path") {
+                    options.path = value;
+                } else {
+                    i += 1;
+                    options.path = require_flag_value(args, i, "--path", usage)?;
+                }
             }
             "--no-clipboard" => options.no_clipboard = true,
             "--help" | "-h" => return Ok(Parsed::HelpText(usage)),
@@ -288,13 +300,21 @@ fn parse_send_out(args: &[String]) -> Result<Parsed, UsageError> {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--path" => {
-                i += 1;
-                options.path = require_flag_value(args, i, "--path", usage)?;
+            flag if flag == "--path" || flag.starts_with("--path=") => {
+                if let Some(value) = inline_flag_value(flag, "--path") {
+                    options.path = value;
+                } else {
+                    i += 1;
+                    options.path = require_flag_value(args, i, "--path", usage)?;
+                }
             }
-            "--base" => {
-                i += 1;
-                options.base = require_flag_value(args, i, "--base", usage)?;
+            flag if flag == "--base" || flag.starts_with("--base=") => {
+                if let Some(value) = inline_flag_value(flag, "--base") {
+                    options.base = value;
+                } else {
+                    i += 1;
+                    options.base = require_flag_value(args, i, "--base", usage)?;
+                }
             }
             "--no-clipboard" => options.no_clipboard = true,
             "--help" | "-h" => return Ok(Parsed::HelpText(usage)),
@@ -376,6 +396,12 @@ fn require_flag_value(
         .filter(|value| !value.starts_with('-'))
         .cloned()
         .ok_or_else(|| UsageError::new(format!("missing value for {flag}"), usage))
+}
+
+fn inline_flag_value(flag: &str, name: &str) -> Option<String> {
+    flag.strip_prefix(name)
+        .and_then(|suffix| suffix.strip_prefix('='))
+        .map(str::to_string)
 }
 
 fn root_help() -> &'static str {
@@ -580,7 +606,7 @@ fn powershell_completion_script() -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{TOP_LEVEL_COMMANDS, dynamic_candidates, parse_args};
+    use super::{Options, Parsed, TOP_LEVEL_COMMANDS, dynamic_candidates, parse_args};
 
     #[test]
     fn parses_version_flag() {
@@ -595,5 +621,58 @@ mod tests {
         for command in TOP_LEVEL_COMMANDS {
             assert!(candidates.contains(&command.to_string()));
         }
+    }
+
+    #[test]
+    fn parses_inline_flag_values_for_create() {
+        let parsed = parse_args(&[
+            "wtk".to_string(),
+            "create".to_string(),
+            "--path=../feature".to_string(),
+            "--base=main".to_string(),
+            "topic".to_string(),
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            parsed,
+            Parsed::Create(Options {
+                branch,
+                path,
+                base,
+                ..
+            }) if branch == "topic" && path == "../feature" && base == "main"
+        ));
+    }
+
+    #[test]
+    fn parses_inline_flag_values_for_checkout_and_send_out() {
+        let parsed = parse_args(&[
+            "wtk".to_string(),
+            "checkout".to_string(),
+            "--path=../feature".to_string(),
+            "topic".to_string(),
+        ])
+        .unwrap();
+        assert!(matches!(
+            parsed,
+            Parsed::Checkout(Options {
+                branch,
+                path,
+                ..
+            }) if branch == "topic" && path == "../feature"
+        ));
+
+        let parsed = parse_args(&[
+            "wtk".to_string(),
+            "send-out".to_string(),
+            "--path=../feature".to_string(),
+            "--base=main".to_string(),
+        ])
+        .unwrap();
+        assert!(matches!(
+            parsed,
+            Parsed::SendOut(Options { path, base, .. }) if path == "../feature" && base == "main"
+        ));
     }
 }
