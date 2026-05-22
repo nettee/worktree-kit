@@ -26,16 +26,34 @@ Install a specific release:
 curl -fsSL https://raw.githubusercontent.com/nettee/worktree-kit/main/scripts/install.sh | WTK_VERSION=0.0.1 sh
 ```
 
-Go install is also supported for development machines with Go 1.25 or newer:
+Local source install for development machines:
 
 ```bash
-go install github.com/nettee/worktree-kit/cmd/wtk@latest
+sh scripts/install-local.sh
 ```
 
 Check the installed version:
 
 ```bash
 wtk --version
+```
+
+## Development
+
+`wtk` is now a Rust CLI.
+
+Build locally:
+
+```bash
+cargo build --release --bin wtk
+```
+
+Run the full test suite:
+
+```bash
+cargo test
+sh scripts/test-install.sh
+sh scripts/test-install-local.sh
 ```
 
 ## Usage

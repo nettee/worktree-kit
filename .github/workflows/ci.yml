@@ -9,9 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.25.x'
+      - uses: dtolnay/rust-toolchain@stable
       - run: sh scripts/test-install.sh
       - run: sh scripts/test-install-local.sh
-      - run: go test ./...
+      - run: cargo test

@@ -29,7 +29,9 @@ install_dir="$tmpdir/bin"
 home_dir="$tmpdir/home"
 mkdir -p "$home_dir"
 
-output=$(cd "$repo_root" && HOME="$home_dir" WTK_INSTALL_DIR="$install_dir" sh "$installer")
+[ -n "${RUSTUP_HOME:-}" ] || RUSTUP_HOME="$HOME/.rustup"
+[ -n "${CARGO_HOME:-}" ] || CARGO_HOME="$HOME/.cargo"
+output=$(cd "$repo_root" && HOME="$home_dir" RUSTUP_HOME="$RUSTUP_HOME" CARGO_HOME="$CARGO_HOME" WTK_INSTALL_DIR="$install_dir" sh "$installer")
 [ -x "$install_dir/wtk" ] || fail "wtk binary was not installed as executable"
 version_output=$("$install_dir/wtk" --version)
 assert_contains "$version_output" "dev commit="
@@ -39,16 +41,16 @@ assert_contains "$output" "Version:"
 
 missing_path="$tmpdir/missing-path"
 mkdir -p "$missing_path"
-for cmd in git date mkdir chmod; do
+for cmd in git date mkdir chmod cp; do
   cmd_path=$(command -v "$cmd") || fail "required test command not found: $cmd"
   ln -s "$cmd_path" "$missing_path/$cmd"
 done
 
 set +e
-missing_output=$(PATH="$missing_path" HOME="$home_dir" WTK_INSTALL_DIR="$tmpdir/missing-go-bin" /bin/sh "$installer" 2>&1)
+missing_output=$(PATH="$missing_path" HOME="$home_dir" RUSTUP_HOME="$RUSTUP_HOME" CARGO_HOME="$CARGO_HOME" WTK_INSTALL_DIR="$tmpdir/missing-cargo-bin" /bin/sh "$installer" 2>&1)
 missing_status=$?
 set -e
-[ "$missing_status" -ne 0 ] || fail "local installer succeeded with go missing"
-assert_contains "$missing_output" "missing required command: go"
+[ "$missing_status" -ne 0 ] || fail "local installer succeeded with cargo missing"
+assert_contains "$missing_output" "missing required command: cargo"
 
 printf 'local installer test: ok\n'
