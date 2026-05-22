@@ -31,6 +31,7 @@ home_dir="$tmpdir/home"
 config_cargo_home="$tmpdir/config-cargo-home"
 custom_target_dir="$tmpdir/shared-target"
 config_target_dir="$tmpdir/config-target"
+wrapper_bin="$tmpdir/wrapper-bin"
 mkdir -p "$home_dir"
 
 [ -n "${RUSTUP_HOME:-}" ] || RUSTUP_HOME="$HOME/.rustup"
@@ -55,6 +56,25 @@ config_output=$(cd "$repo_root" && HOME="$home_dir" RUSTUP_HOME="$RUSTUP_HOME" C
 [ ! -e "$config_target_dir/release/wtk" ] || fail "installer unexpectedly used cargo config target-dir"
 assert_contains "$config_output" "Installed wtk at $config_install_dir/wtk"
 assert_contains "$config_output" "Version:"
+
+mkdir -p "$wrapper_bin"
+real_cargo=$(command -v cargo) || fail 'required test command not found: cargo'
+cat >"$wrapper_bin/cargo" <<'EOF'
+#!/bin/sh
+case "${1:-}" in
+  +*)
+    printf 'wrapper cargo rejected rustup syntax: %s\n' "$1" >&2
+    exit 1
+    ;;
+esac
+exec "$REAL_CARGO" "$@"
+EOF
+chmod 0755 "$wrapper_bin/cargo"
+
+wrapper_install_dir="$tmpdir/wrapper-bin-install"
+wrapper_output=$(cd "$repo_root" && PATH="$wrapper_bin:$PATH" REAL_CARGO="$real_cargo" HOME="$home_dir" RUSTUP_HOME="$RUSTUP_HOME" CARGO_HOME="$CARGO_HOME" WTK_INSTALL_DIR="$wrapper_install_dir" sh "$installer")
+[ -x "$wrapper_install_dir/wtk" ] || fail "wtk binary was not installed with wrapper cargo"
+assert_contains "$wrapper_output" "Installed wtk at $wrapper_install_dir/wtk"
 
 missing_path="$tmpdir/missing-path"
 mkdir -p "$missing_path"

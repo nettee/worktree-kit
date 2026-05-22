@@ -14,6 +14,7 @@ const TOP_LEVEL_COMMANDS: &[&str] = &[
     "send-out",
     "bring-in",
     "completion",
+    "help",
 ];
 const SHELLS: &[&str] = &["bash", "zsh", "fish", "powershell"];
 
@@ -170,6 +171,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
     match rest[0].as_str() {
         "--version" | "-V" => Ok(Parsed::Version),
         "--help" | "-h" => Ok(Parsed::Help),
+        "help" => Ok(Parsed::Help),
         "create" => parse_create(rest),
         "checkout" => parse_checkout(rest),
         "remove" => parse_remove(rest),
@@ -414,7 +416,8 @@ fn root_help() -> &'static str {
         "  remove      Remove a linked worktree\n",
         "  send-out    Move the current main-worktree branch to a linked worktree\n",
         "  bring-in    Move a linked worktree branch back into the main worktree\n",
-        "  completion  Generate shell completion script\n\n",
+        "  completion  Generate shell completion script\n",
+        "  help        Show help\n\n",
         "Flags:\n",
         "  -h, --help       Show help\n",
         "  -V, --version    Show version\n",
@@ -612,6 +615,12 @@ mod tests {
     fn parses_version_flag() {
         let parsed = parse_args(&["wtk".to_string(), "--version".to_string()]).unwrap();
         assert!(matches!(parsed, super::Parsed::Version));
+    }
+
+    #[test]
+    fn parses_help_subcommand() {
+        let parsed = parse_args(&["wtk".to_string(), "help".to_string()]).unwrap();
+        assert!(matches!(parsed, Parsed::Help));
     }
 
     #[test]
