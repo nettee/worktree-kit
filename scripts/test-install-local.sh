@@ -26,8 +26,11 @@ trap cleanup EXIT INT TERM
 sh -n "$installer"
 
 install_dir="$tmpdir/bin"
+config_install_dir="$tmpdir/config-bin"
 home_dir="$tmpdir/home"
+config_cargo_home="$tmpdir/config-cargo-home"
 custom_target_dir="$tmpdir/shared-target"
+config_target_dir="$tmpdir/config-target"
 mkdir -p "$home_dir"
 
 [ -n "${RUSTUP_HOME:-}" ] || RUSTUP_HOME="$HOME/.rustup"
@@ -40,6 +43,18 @@ assert_contains "$version_output" "dev commit="
 assert_contains "$version_output" "built="
 assert_contains "$output" "Installed wtk at $install_dir/wtk"
 assert_contains "$output" "Version:"
+
+mkdir -p "$config_cargo_home"
+cat >"$config_cargo_home/config.toml" <<EOF
+[build]
+target-dir = "$config_target_dir"
+EOF
+
+config_output=$(cd "$repo_root" && HOME="$home_dir" RUSTUP_HOME="$RUSTUP_HOME" CARGO_HOME="$config_cargo_home" WTK_INSTALL_DIR="$config_install_dir" sh "$installer")
+[ -x "$config_install_dir/wtk" ] || fail "wtk binary was not installed as executable with cargo config target-dir"
+[ ! -e "$config_target_dir/release/wtk" ] || fail "installer unexpectedly used cargo config target-dir"
+assert_contains "$config_output" "Installed wtk at $config_install_dir/wtk"
+assert_contains "$config_output" "Version:"
 
 missing_path="$tmpdir/missing-path"
 mkdir -p "$missing_path"
