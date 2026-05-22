@@ -27,12 +27,14 @@ sh -n "$installer"
 
 install_dir="$tmpdir/bin"
 home_dir="$tmpdir/home"
+custom_target_dir="$tmpdir/shared-target"
 mkdir -p "$home_dir"
 
 [ -n "${RUSTUP_HOME:-}" ] || RUSTUP_HOME="$HOME/.rustup"
 [ -n "${CARGO_HOME:-}" ] || CARGO_HOME="$HOME/.cargo"
-output=$(cd "$repo_root" && HOME="$home_dir" RUSTUP_HOME="$RUSTUP_HOME" CARGO_HOME="$CARGO_HOME" WTK_INSTALL_DIR="$install_dir" sh "$installer")
+output=$(cd "$repo_root" && HOME="$home_dir" RUSTUP_HOME="$RUSTUP_HOME" CARGO_HOME="$CARGO_HOME" CARGO_TARGET_DIR="$custom_target_dir" WTK_INSTALL_DIR="$install_dir" sh "$installer")
 [ -x "$install_dir/wtk" ] || fail "wtk binary was not installed as executable"
+[ ! -e "$custom_target_dir/release/wtk" ] || fail "installer unexpectedly used caller-provided CARGO_TARGET_DIR"
 version_output=$("$install_dir/wtk" --version)
 assert_contains "$version_output" "dev commit="
 assert_contains "$version_output" "built="

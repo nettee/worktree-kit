@@ -44,13 +44,14 @@ built=$(date -u +"%Y-%m-%dT%H:%M:%SZ") || fail 'failed to generate build time'
 version="dev commit=$commit built=$built"
 toolchain=${WTK_RUST_TOOLCHAIN:-stable}
 [ -n "$toolchain" ] || fail 'WTK_RUST_TOOLCHAIN must not be empty'
+target_dir="$repo_root/target"
 
 mkdir -p "$install_dir" || fail "failed to create install directory: $install_dir"
 (
   cd "$repo_root" &&
-  WTK_VERSION="$version" cargo +"$toolchain" build --release --bin "$APP_NAME"
+  CARGO_TARGET_DIR="$target_dir" WTK_VERSION="$version" cargo +"$toolchain" build --release --bin "$APP_NAME"
 ) || fail 'cargo build failed'
-cp "$repo_root/target/release/$APP_NAME" "$install_dir/$APP_NAME" || fail "failed to copy built binary into: $install_dir"
+cp "$target_dir/release/$APP_NAME" "$install_dir/$APP_NAME" || fail "failed to copy built binary into: $install_dir"
 chmod 0755 "$install_dir/$APP_NAME" || fail "failed to chmod installed binary: $install_dir/$APP_NAME"
 
 version_output=$("$install_dir/$APP_NAME" --version) || fail 'installed binary failed --version'
