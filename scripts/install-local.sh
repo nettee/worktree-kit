@@ -26,10 +26,11 @@ script_dir=${0%/*}
 repo_root=$(CDPATH= cd -- "$script_dir/.." && pwd) || fail 'failed to resolve repository root'
 
 require_command git
-require_command go
+require_command cargo
 require_command date
 require_command mkdir
 require_command chmod
+require_command cp
 
 install_dir=${WTK_INSTALL_DIR:-$(default_install_dir)}
 [ -n "$install_dir" ] || fail 'WTK_INSTALL_DIR must not be empty'
@@ -41,9 +42,14 @@ built=$(date -u +"%Y-%m-%dT%H:%M:%SZ") || fail 'failed to generate build time'
 [ -n "$built" ] || fail 'date returned an empty build time'
 
 version="dev commit=$commit built=$built"
+target_dir="$repo_root/target"
 
 mkdir -p "$install_dir" || fail "failed to create install directory: $install_dir"
-go build -trimpath -ldflags "-X 'github.com/nettee/worktree-kit/internal/cli.Version=$version'" -o "$install_dir/$APP_NAME" "$repo_root/cmd/$APP_NAME" || fail 'go build failed'
+(
+  cd "$repo_root" &&
+  CARGO_TARGET_DIR="$target_dir" WTK_VERSION="$version" cargo build --release --bin "$APP_NAME"
+) || fail 'cargo build failed'
+cp "$target_dir/release/$APP_NAME" "$install_dir/$APP_NAME" || fail "failed to copy built binary into: $install_dir"
 chmod 0755 "$install_dir/$APP_NAME" || fail "failed to chmod installed binary: $install_dir/$APP_NAME"
 
 version_output=$("$install_dir/$APP_NAME" --version) || fail 'installed binary failed --version'

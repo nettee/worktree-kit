@@ -1,4 +1,5 @@
 .opencode/
 .agents/
+target/
 
 specs/change/active

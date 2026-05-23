@@ -9,29 +9,77 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    runs-on: ubuntu-latest
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            asset_os: linux
+            asset_arch: amd64
+            use_zigbuild: true
+          - runner: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            asset_os: linux
+            asset_arch: arm64
+            use_zigbuild: true
+          - runner: macos-latest
+            target: x86_64-apple-darwin
+            asset_os: darwin
+            asset_arch: amd64
+            use_zigbuild: false
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+            asset_os: darwin
+            asset_arch: arm64
+            use_zigbuild: false
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          go-version: '1.25.x'
-      - name: Build release assets
+          targets: ${{ matrix.target }}
+      - uses: goto-bus-stop/setup-zig@v2
+        if: matrix.use_zigbuild
+      - name: Install cargo-zigbuild
+        if: matrix.use_zigbuild
+        run: cargo install cargo-zigbuild --locked
+      - name: Build release asset
         shell: bash
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
           mkdir -p dist
-          for os in darwin linux; do
-            for arch in amd64 arm64; do
-              work="dist/wtk_${version}_${os}_${arch}"
-              mkdir -p "$work"
-              GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags "-s -w -X github.com/nettee/worktree-kit/internal/cli.Version=${version}" -o "$work/wtk" ./cmd/wtk
-              tar -C "$work" -czf "dist/wtk_${version}_${os}_${arch}.tar.gz" wtk
-            done
-          done
+          if [ "${{ matrix.use_zigbuild }}" = "true" ]; then
+            WTK_VERSION="$version" cargo zigbuild --release --bin wtk --target "${{ matrix.target }}"
+          else
+            WTK_VERSION="$version" cargo build --release --bin wtk --target "${{ matrix.target }}"
+          fi
+          work="dist/wtk_${version}_${{ matrix.asset_os }}_${{ matrix.asset_arch }}"
+          mkdir -p "$work"
+          cp "target/${{ matrix.target }}/release/wtk" "$work/wtk"
+          tar -C "$work" -czf "dist/wtk_${version}_${{ matrix.asset_os }}_${{ matrix.asset_arch }}.tar.gz" wtk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wtk-${{ matrix.asset_os }}-${{ matrix.asset_arch }}
+          path: dist/*.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist-artifacts
+      - name: Prepare release bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          find dist-artifacts -name '*.tar.gz' -exec cp {} dist/ \;
           cd dist
-          sha256sum wtk_${version}_*.tar.gz > checksums.txt
+          sha256sum wtk_*.tar.gz > checksums.txt
       - name: Upload release assets
         env:
           GH_TOKEN: ${{ github.token }}
