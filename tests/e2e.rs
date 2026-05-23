@@ -90,6 +90,242 @@ fn create_new_with_trunk_and_dirty_failures() {
 }
 
 #[test]
+fn create_copies_ignored_root_env() {
+    let bin = build_wtk();
+    let repo = init_repo("main");
+    commit_files(&repo, &[(".gitignore", ".env\n")], "add gitignore");
+    std::fs::write(repo.join(".env"), "ROOT=value\n").unwrap();
+
+    let out = run_wtk(
+        &bin,
+        &repo,
+        [
+            "create",
+            "feature/root-env",
+            "--base",
+            "main",
+            "--no-clipboard",
+        ],
+    );
+    let linked = linked_worktree_path(&repo, "feature/root-env");
+
+    assert_eq!(
+        std::fs::read_to_string(linked.join(".env")).unwrap(),
+        "ROOT=value\n"
+    );
+    assert!(out.contains("copied ignored .env: .env"));
+}
+
+#[test]
+fn create_recursively_copies_ignored_child_env_files() {
+    let bin = build_wtk();
+    let repo = init_repo("main");
+    commit_files(
+        &repo,
+        &[
+            (".gitignore", "apps/web/.env\nservices/api/.env\n"),
+            ("apps/web/keep.txt", "web\n"),
+            ("services/api/keep.txt", "api\n"),
+        ],
+        "add tracked dirs",
+    );
+    std::fs::write(repo.join("apps/web/.env"), "WEB=value\n").unwrap();
+    std::fs::write(repo.join("services/api/.env"), "API=value\n").unwrap();
+
+    let out = run_wtk(
+        &bin,
+        &repo,
+        [
+            "create",
+            "feature/child-envs",
+            "--base",
+            "main",
+            "--no-clipboard",
+        ],
+    );
+    let linked = linked_worktree_path(&repo, "feature/child-envs");
+
+    assert_eq!(
+        std::fs::read_to_string(linked.join("apps/web/.env")).unwrap(),
+        "WEB=value\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(linked.join("services/api/.env")).unwrap(),
+        "API=value\n"
+    );
+    assert!(out.contains("copied ignored .env: apps/web/.env"));
+    assert!(out.contains("copied ignored .env: services/api/.env"));
+}
+
+#[test]
+fn checkout_copies_ignored_env_files() {
+    let bin = build_wtk();
+    let repo = init_repo("main");
+    run_git(&repo, ["branch", "feature/existing-env"]);
+    commit_files(&repo, &[(".gitignore", ".env\n")], "add gitignore");
+    std::fs::write(repo.join(".env"), "CHECKOUT=value\n").unwrap();
+
+    let out = run_wtk(
+        &bin,
+        &repo,
+        ["checkout", "feature/existing-env", "--no-clipboard"],
+    );
+    let linked = linked_worktree_path(&repo, "feature/existing-env");
+
+    assert_eq!(
+        std::fs::read_to_string(linked.join(".env")).unwrap(),
+        "CHECKOUT=value\n"
+    );
+    assert!(out.contains("copied ignored .env: .env"));
+}
+
+#[test]
+fn send_out_copies_ignored_env_files() {
+    let bin = build_wtk();
+    let repo = init_repo("main");
+    commit_files(&repo, &[(".gitignore", ".env\n")], "add gitignore");
+    std::fs::write(repo.join(".env"), "SENDOUT=value\n").unwrap();
+    run_git(&repo, ["switch", "-c", "feature/send-env"]);
+
+    let out = run_wtk(&bin, &repo, ["send-out", "--no-clipboard"]);
+    let linked = linked_worktree_path(&repo, "feature/send-env");
+
+    assert_eq!(
+        std::fs::read_to_string(linked.join(".env")).unwrap(),
+        "SENDOUT=value\n"
+    );
+    assert!(out.contains("copied ignored .env: .env"));
+}
+
+#[test]
+fn tracked_env_files_are_not_reported_by_copy_mechanism() {
+    let bin = build_wtk();
+    let repo = init_repo("main");
+    commit_files(&repo, &[(".env", "TRACKED=value\n")], "add tracked env");
+
+    let out = run_wtk(
+        &bin,
+        &repo,
+        [
+            "create",
+            "feature/tracked-env",
+            "--base",
+            "main",
+            "--no-clipboard",
+        ],
+    );
+    let linked = linked_worktree_path(&repo, "feature/tracked-env");
+
+    assert_eq!(
+        std::fs::read_to_string(linked.join(".env")).unwrap(),
+        "TRACKED=value\n"
+    );
+    assert!(!out.contains("copied ignored .env:"));
+}
+
+#[test]
+fn similarly_named_env_files_are_not_copied() {
+    let bin = build_wtk();
+    let repo = init_repo("main");
+    commit_files(
+        &repo,
+        &[
+            (
+                ".gitignore",
+                ".env.local\n.env.example\n.envrc\nconfig/.env.local\n",
+            ),
+            ("config/keep.txt", "keep\n"),
+        ],
+        "add ignore patterns",
+    );
+    std::fs::write(repo.join(".env.local"), "LOCAL=value\n").unwrap();
+    std::fs::write(repo.join(".env.example"), "EXAMPLE=value\n").unwrap();
+    std::fs::write(repo.join(".envrc"), "DIRENV=value\n").unwrap();
+    std::fs::write(repo.join("config/.env.local"), "CHILD=value\n").unwrap();
+
+    let out = run_wtk(
+        &bin,
+        &repo,
+        [
+            "create",
+            "feature/named-envs",
+            "--base",
+            "main",
+            "--no-clipboard",
+        ],
+    );
+    let linked = linked_worktree_path(&repo, "feature/named-envs");
+
+    assert!(!linked.join(".env.local").exists());
+    assert!(!linked.join(".env.example").exists());
+    assert!(!linked.join(".envrc").exists());
+    assert!(!linked.join("config/.env.local").exists());
+    assert!(!out.contains("copied ignored .env:"));
+}
+
+#[test]
+fn no_ignored_env_files_is_silent_success() {
+    let bin = build_wtk();
+    let repo = init_repo("main");
+
+    let out = run_wtk(
+        &bin,
+        &repo,
+        [
+            "create",
+            "feature/no-env",
+            "--base",
+            "main",
+            "--no-clipboard",
+        ],
+    );
+
+    assert!(out.contains("created worktree"));
+    assert!(!out.contains("copied ignored .env:"));
+}
+
+#[test]
+fn copy_output_uses_git_root_relative_paths_one_per_line() {
+    let bin = build_wtk();
+    let repo = init_repo("main");
+    commit_files(
+        &repo,
+        &[
+            (".gitignore", ".env\napps/web/.env\n"),
+            ("apps/web/keep.txt", "web\n"),
+        ],
+        "add env paths",
+    );
+    std::fs::write(repo.join(".env"), "ROOT=value\n").unwrap();
+    std::fs::write(repo.join("apps/web/.env"), "WEB=value\n").unwrap();
+
+    let out = run_wtk(
+        &bin,
+        &repo.join("apps"),
+        [
+            "create",
+            "feature/output-env",
+            "--base",
+            "main",
+            "--no-clipboard",
+        ],
+    );
+
+    let normalized = out.replace("\r\n", "\n");
+    let copied_lines: Vec<_> = normalized
+        .lines()
+        .filter(|line| line.starts_with("copied ignored .env: "))
+        .collect();
+    assert_eq!(
+        copied_lines,
+        vec![
+            "copied ignored .env: .env",
+            "copied ignored .env: apps/web/.env",
+        ]
+    );
+}
+
+#[test]
 fn create_from_current_branch() {
     let bin = build_wtk();
     let repo = init_repo("main");
@@ -371,6 +607,26 @@ fn init_repo(branch: &str) -> PathBuf {
     run_git(&dir, ["add", "."]);
     run_git(&dir, ["commit", "-m", "init"]);
     dir
+}
+
+fn linked_worktree_path(repo: &Path, branch: &str) -> PathBuf {
+    repo.parent().unwrap().join(format!(
+        "{}-wt-{}",
+        repo.file_name().unwrap().to_string_lossy(),
+        branch.replace(['/', '\\'], "-")
+    ))
+}
+
+fn commit_files(repo: &Path, files: &[(&str, &str)], message: &str) {
+    for (path, contents) in files {
+        let full_path = repo.join(path);
+        if let Some(parent) = full_path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(full_path, contents).unwrap();
+    }
+    run_git(&repo, ["add", "."]);
+    run_git(&repo, ["commit", "-m", message]);
 }
 
 fn run_git<const N: usize>(dir: &Path, args: [&str; N]) -> String {
