@@ -28,6 +28,12 @@ pub struct GitOutput {
 }
 
 #[derive(Debug)]
+pub struct GitOutputBytes {
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+
+#[derive(Debug)]
 pub struct GitError {
     pub args: Vec<String>,
     pub exit_code: Option<i32>,
@@ -97,6 +103,48 @@ impl Git {
                 exit_code: output.status.code(),
                 stderr,
                 stdout,
+                source: std::io::Error::other("git command failed"),
+            }))
+        }
+    }
+
+    pub fn run_bytes<I, S>(&self, dir: &Path, args: I) -> AppResult<GitOutputBytes>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let rendered: Vec<String> = args
+            .into_iter()
+            .map(|arg| arg.as_ref().to_string())
+            .collect();
+        let mut command = Command::new("git");
+        command.current_dir(dir);
+        command.args(rendered.iter().map(String::as_str));
+        let output = command.output().map_err(|source| {
+            Error::Git(GitError {
+                args: rendered.clone(),
+                exit_code: None,
+                stderr: String::new(),
+                stdout: String::new(),
+                source,
+            })
+        })?;
+
+        if output.status.success() {
+            Ok(GitOutputBytes {
+                stdout: output.stdout,
+                stderr: output.stderr,
+            })
+        } else {
+            Err(Error::Git(GitError {
+                args: rendered,
+                exit_code: output.status.code(),
+                stderr: String::from_utf8_lossy(&output.stderr)
+                    .trim_end()
+                    .to_string(),
+                stdout: String::from_utf8_lossy(&output.stdout)
+                    .trim_end()
+                    .to_string(),
                 source: std::io::Error::other("git command failed"),
             }))
         }

@@ -3,8 +3,15 @@ use crate::gitexec::{Git, RepoContext, absolute_path, is_git_exit, resolve, same
 use crate::output;
 use crate::paths::default_path;
 use crate::{AppResult, Error};
+use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::ffi::OsStringExt;
+#[cfg(unix)]
+use std::os::unix::fs as unix_fs;
+#[cfg(windows)]
+use std::os::windows::fs as windows_fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -40,6 +47,23 @@ impl<'a> Session<'a> {
     }
 }
 
+#[derive(Debug, Clone)]
+struct IgnoredEnvFile {
+    relative: PathBuf,
+    kind: IgnoredEnvFileKind,
+}
+
+#[derive(Debug, Clone)]
+enum IgnoredEnvFileKind {
+    File {
+        contents: Vec<u8>,
+        permissions: fs::Permissions,
+    },
+    Symlink {
+        target: PathBuf,
+    },
+}
+
 pub fn create(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
     let repo = repo(session)?;
     if opts.branch.is_empty() {
@@ -48,6 +72,7 @@ pub fn create(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
 
     let path = create_target_path(&repo, &opts.branch, &opts.path)?;
     let base = prepare_create_base(session, &repo, &opts)?;
+    let ignored_env_files = snapshot_ignored_env_files(session, &repo.main_root)?;
     let args = vec![
         "worktree".to_string(),
         "add".to_string(),
@@ -60,6 +85,14 @@ pub fn create(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
     session
         .git
         .run(&repo.main_root, args.iter().map(String::as_str))?;
+    print_copied_ignored_env_files(
+        session,
+        copy_ignored_env_files(&ignored_env_files, &path).map_err(|error| {
+            Error::message(format!(
+                "worktree created, but ignored .env copy failed: {error}"
+            ))
+        })?,
+    )?;
     finish(
         session,
         opts.no_clipboard,
@@ -75,6 +108,7 @@ pub fn checkout(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
     }
 
     let path = create_target_path(&repo, &opts.branch, &opts.path)?;
+    let ignored_env_files = snapshot_ignored_env_files(session, &repo.main_root)?;
     let args = vec![
         "worktree".to_string(),
         "add".to_string(),
@@ -85,6 +119,14 @@ pub fn checkout(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
     session
         .git
         .run(&repo.main_root, args.iter().map(String::as_str))?;
+    print_copied_ignored_env_files(
+        session,
+        copy_ignored_env_files(&ignored_env_files, &path).map_err(|error| {
+            Error::message(format!(
+                "worktree created, but ignored .env copy failed: {error}"
+            ))
+        })?,
+    )?;
     finish(
         session,
         opts.no_clipboard,
@@ -198,6 +240,8 @@ pub fn send_out(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
     let path = create_target_path(&repo, branch.trim(), &opts.path)?;
     ensure_creatable_parent(&path)?;
 
+    let ignored_env_files = snapshot_ignored_env_files(session, &repo.main_root)?;
+
     let switch_args = vec!["switch".to_string(), base.clone()];
     output::git(session.out, &repo.main_root, &switch_args)?;
     session
@@ -223,6 +267,14 @@ pub fn send_out(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
             error
         )));
     }
+    print_copied_ignored_env_files(
+        session,
+        copy_ignored_env_files(&ignored_env_files, &path).map_err(|error| {
+            Error::message(format!(
+                "main worktree switched to {base} and linked worktree created, but ignored .env copy failed: {error}"
+            ))
+        })?,
+    )?;
 
     finish(
         session,
@@ -552,6 +604,175 @@ fn ensure_creatable_parent(path: &Path) -> AppResult<()> {
     })?;
     drop(file);
     fs::remove_file(&probe_path)?;
+    Ok(())
+}
+
+fn copy_ignored_env_files(
+    ignored: &[IgnoredEnvFile],
+    new_worktree_path: &Path,
+) -> AppResult<Vec<PathBuf>> {
+    let mut copied = Vec::with_capacity(ignored.len());
+    for file in ignored {
+        let target = new_worktree_path.join(&file.relative);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                Error::message(format!(
+                    "failed to create target parent {}: {}",
+                    parent.display(),
+                    error
+                ))
+            })?;
+        }
+        match &file.kind {
+            IgnoredEnvFileKind::File {
+                contents,
+                permissions,
+            } => {
+                fs::write(&target, contents).map_err(|error| {
+                    Error::message(format!(
+                        "failed to copy {} to {}: {}",
+                        file.relative.display(),
+                        target.display(),
+                        error
+                    ))
+                })?;
+                fs::set_permissions(&target, permissions.clone()).map_err(|error| {
+                    Error::message(format!(
+                        "failed to set permissions on {}: {}",
+                        target.display(),
+                        error
+                    ))
+                })?;
+            }
+            IgnoredEnvFileKind::Symlink {
+                target: symlink_target,
+            } => {
+                create_symlink(symlink_target, &target).map_err(|error| {
+                    Error::message(format!(
+                        "failed to copy symlink {} to {}: {}",
+                        file.relative.display(),
+                        target.display(),
+                        error
+                    ))
+                })?;
+            }
+        }
+        copied.push(file.relative.clone());
+    }
+    Ok(copied)
+}
+
+fn snapshot_ignored_env_files(
+    session: &Session<'_>,
+    main_root: &Path,
+) -> AppResult<Vec<IgnoredEnvFile>> {
+    let mut ignored = Vec::new();
+    for relative in ignored_env_files(session, main_root)? {
+        if let Some(snapshot) = snapshot_ignored_env_file(main_root, relative)? {
+            ignored.push(snapshot);
+        }
+    }
+    Ok(ignored)
+}
+
+fn snapshot_ignored_env_file(
+    main_root: &Path,
+    relative: PathBuf,
+) -> AppResult<Option<IgnoredEnvFile>> {
+    let source = main_root.join(&relative);
+    let metadata = fs::symlink_metadata(&source).map_err(|error| {
+        Error::message(format!(
+            "failed to read source {}: {}",
+            source.display(),
+            error
+        ))
+    })?;
+    if metadata.file_type().is_symlink() {
+        let target = fs::read_link(&source).map_err(|error| {
+            Error::message(format!(
+                "failed to read symlink target {}: {}",
+                source.display(),
+                error
+            ))
+        })?;
+        return Ok(Some(IgnoredEnvFile {
+            relative,
+            kind: IgnoredEnvFileKind::Symlink { target },
+        }));
+    }
+    if !metadata.file_type().is_file() {
+        return Ok(None);
+    }
+
+    let contents = fs::read(&source).map_err(|error| {
+        Error::message(format!(
+            "failed to read source {}: {}",
+            source.display(),
+            error
+        ))
+    })?;
+    Ok(Some(IgnoredEnvFile {
+        relative,
+        kind: IgnoredEnvFileKind::File {
+            contents,
+            permissions: metadata.permissions(),
+        },
+    }))
+}
+
+#[cfg(unix)]
+fn create_symlink(target: &Path, path: &Path) -> std::io::Result<()> {
+    unix_fs::symlink(target, path)
+}
+
+#[cfg(windows)]
+fn create_symlink(target: &Path, path: &Path) -> std::io::Result<()> {
+    windows_fs::symlink_file(target, path)
+}
+
+fn ignored_env_files(session: &Session<'_>, main_root: &Path) -> AppResult<Vec<PathBuf>> {
+    let output = session.git.run_bytes(
+        main_root,
+        [
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--full-name",
+            "-z",
+            "--",
+            ".env",
+            ":(glob)**/.env",
+        ],
+    )?;
+    let mut ignored: Vec<_> = output
+        .stdout
+        .split(|byte| *byte == b'\0')
+        .filter(|path| !path.is_empty())
+        .map(path_buf_from_git_bytes)
+        .filter(|path| path.file_name().is_some_and(|name| name == ".env"))
+        .collect();
+    ignored.sort();
+    Ok(ignored)
+}
+
+#[cfg(unix)]
+fn path_buf_from_git_bytes(path: &[u8]) -> PathBuf {
+    PathBuf::from(OsString::from_vec(path.to_vec()))
+}
+
+#[cfg(not(unix))]
+fn path_buf_from_git_bytes(path: &[u8]) -> PathBuf {
+    PathBuf::from(String::from_utf8_lossy(path).into_owned())
+}
+
+fn print_copied_ignored_env_files(
+    session: &mut Session<'_>,
+    copied: Vec<PathBuf>,
+) -> AppResult<()> {
+    for relative in copied {
+        writeln!(session.out, "copied ignored .env: {}", relative.display())?;
+    }
     Ok(())
 }
 

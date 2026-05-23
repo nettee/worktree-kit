@@ -69,6 +69,8 @@ wtk bring-in feature/foo
 
 Every command prints the underlying `git` commands it runs. Successful commands copy the useful path or branch payload to the clipboard. Use `--no-clipboard` in CI or headless environments.
 
+Commands that create linked worktrees also copy ignored files named exactly `.env` from the main worktree into the new worktree at the same Git-root-relative paths. Files such as `.env.local`, `.env.example`, and `.envrc` are not copied. When matching ignored `.env` files are copied, `wtk` prints one `copied ignored .env: <path>` line per file; when none are found, it prints nothing for this step.
+
 ## Create base selection
 
 `wtk create` selects the base for the new branch by this precedence:
@@ -96,4 +98,4 @@ wtk completion powershell > wtk.ps1
 
 ## Failure behavior
 
-Dirty worktrees, ambiguous main branch detection, missing Git context, failed Git commands, and clipboard failures are reported directly. If Git succeeds and clipboard copy fails, `wtk` prints the Git success and exits non-zero so the partial failure is visible.
+Dirty worktrees, ambiguous main branch detection, missing Git context, failed Git commands, ignored `.env` copy failures, and clipboard failures are reported directly. If Git succeeds and a later required step fails, `wtk` exits non-zero so the partial failure is visible.
