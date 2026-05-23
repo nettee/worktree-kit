@@ -14,5 +14,9 @@ pub fn warn(out: &mut dyn Write, message: &str) -> io::Result<()> {
 }
 
 pub fn git(out: &mut dyn Write, dir: &Path, args: &[String]) -> io::Result<()> {
-    writeln!(out, "$ git -C {} {}", dir.display(), args.join(" "))
+    command(out, dir, "git", args)
+}
+
+pub fn command(out: &mut dyn Write, dir: &Path, program: &str, args: &[String]) -> io::Result<()> {
+    writeln!(out, "$ {program} -C {} {}", dir.display(), args.join(" "))
 }

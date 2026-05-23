@@ -6,6 +6,7 @@ use crate::{AppResult, Error};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Default, Clone)]
@@ -60,6 +61,11 @@ pub fn create(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
     session
         .git
         .run(&repo.main_root, args.iter().map(String::as_str))?;
+    maybe_run_pnpm_install(
+        session.out,
+        &path,
+        &format!("worktree created at {}", path.display()),
+    )?;
     finish(
         session,
         opts.no_clipboard,
@@ -85,6 +91,11 @@ pub fn checkout(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
     session
         .git
         .run(&repo.main_root, args.iter().map(String::as_str))?;
+    maybe_run_pnpm_install(
+        session.out,
+        &path,
+        &format!("worktree created at {}", path.display()),
+    )?;
     finish(
         session,
         opts.no_clipboard,
@@ -223,6 +234,16 @@ pub fn send_out(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
             error
         )));
     }
+
+    maybe_run_pnpm_install(
+        session.out,
+        &path,
+        &format!(
+            "main worktree switched to {}, and worktree created at {}",
+            base,
+            path.display()
+        ),
+    )?;
 
     finish(
         session,
@@ -518,6 +539,59 @@ fn prepare_create_base(
         return Ok(current.to_string());
     }
     prepare_base(session, repo, &opts.base)
+}
+
+fn maybe_run_pnpm_install(
+    out: &mut dyn Write,
+    worktree_path: &Path,
+    created_state: &str,
+) -> AppResult<()> {
+    if !is_pnpm_project(worktree_path) {
+        return Ok(());
+    }
+
+    let args = vec!["install".to_string()];
+    output::command(out, worktree_path, "pnpm", &args)?;
+    let output = Command::new("pnpm")
+        .current_dir(worktree_path)
+        .args(args.iter().map(String::as_str))
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let details = if !stderr.is_empty() {
+                stderr
+            } else if !stdout.is_empty() {
+                stdout
+            } else {
+                format!("exit code {:?}", output.status.code())
+            };
+            Err(Error::message(format!(
+                "{}, but pnpm install failed; run 'pnpm install' in {} after resolving the issue: {}",
+                created_state,
+                worktree_path.display(),
+                details
+            )))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(Error::message(format!(
+            "{}, but pnpm project detected and pnpm was not found on PATH",
+            created_state
+        ))),
+        Err(error) => Err(Error::message(format!(
+            "{}, but pnpm install failed; run 'pnpm install' in {} after resolving the issue: {}",
+            created_state,
+            worktree_path.display(),
+            error
+        ))),
+    }
+}
+
+fn is_pnpm_project(worktree_path: &Path) -> bool {
+    worktree_path.join("pnpm-lock.yaml").is_file()
+        || worktree_path.join("pnpm-workspace.yaml").is_file()
 }
 
 fn ensure_creatable_parent(path: &Path) -> AppResult<()> {

@@ -270,6 +270,195 @@ fn create_new_default_refuses_non_fast_forward_base() {
 }
 
 #[test]
+fn create_checkout_and_send_out_run_pnpm_install_for_pnpm_projects() {
+    let bin = build_wtk();
+    let repo = init_repo("main");
+    std::fs::write(repo.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\n").unwrap();
+    run_git(&repo, ["add", "."]);
+    run_git(&repo, ["commit", "-m", "add pnpm lockfile"]);
+    run_git(&repo, ["branch", "feature/existing"]);
+
+    let fake_bin = temp_dir().join("fake-bin");
+    std::fs::create_dir_all(&fake_bin).unwrap();
+    let log_path = temp_dir().join("pnpm.log");
+    install_fake_pnpm(&fake_bin, &log_path);
+
+    run_wtk_with_env(
+        &bin,
+        &repo,
+        [("PATH", path_with_prefix(&fake_bin))],
+        ["create", "feature/new", "--base", "main", "--no-clipboard"],
+    );
+    run_wtk_with_env(
+        &bin,
+        &repo,
+        [("PATH", path_with_prefix(&fake_bin))],
+        ["checkout", "feature/existing", "--no-clipboard"],
+    );
+
+    run_git(&repo, ["switch", "-c", "feature/send"]);
+    run_wtk_with_env(
+        &bin,
+        &repo,
+        [("PATH", path_with_prefix(&fake_bin))],
+        ["send-out", "--no-clipboard"],
+    );
+
+    let create_path = repo.parent().unwrap().join(format!(
+        "{}-wt-feature-new",
+        repo.file_name().unwrap().to_string_lossy()
+    ));
+    let checkout_path = repo.parent().unwrap().join(format!(
+        "{}-wt-feature-existing",
+        repo.file_name().unwrap().to_string_lossy()
+    ));
+    let send_out_path = repo.parent().unwrap().join(format!(
+        "{}-wt-feature-send",
+        repo.file_name().unwrap().to_string_lossy()
+    ));
+
+    let log = std::fs::read_to_string(&log_path).unwrap();
+    let lines: Vec<_> = log.lines().collect();
+    assert_eq!(lines.len(), 3, "unexpected pnpm log: {log}");
+    assert_logged_path(&lines, &create_path);
+    assert_logged_path(&lines, &checkout_path);
+    assert_logged_path(&lines, &send_out_path);
+}
+
+#[test]
+fn non_pnpm_projects_do_not_run_pnpm_install() {
+    let bin = build_wtk();
+    let repo = init_repo("main");
+    let fake_bin = temp_dir().join("fake-bin");
+    std::fs::create_dir_all(&fake_bin).unwrap();
+    let log_path = temp_dir().join("pnpm.log");
+    install_fake_pnpm(&fake_bin, &log_path);
+
+    run_wtk_with_env(
+        &bin,
+        &repo,
+        [("PATH", path_with_prefix(&fake_bin))],
+        [
+            "create",
+            "feature/no-pnpm",
+            "--base",
+            "main",
+            "--no-clipboard",
+        ],
+    );
+
+    assert!(
+        !log_path.exists()
+            || std::fs::read_to_string(&log_path)
+                .unwrap()
+                .trim()
+                .is_empty()
+    );
+}
+
+#[test]
+fn pnpm_project_fails_fast_when_pnpm_is_missing() {
+    let bin = build_wtk();
+    let repo = init_repo("main");
+    std::fs::write(repo.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\n").unwrap();
+    run_git(&repo, ["add", "."]);
+    run_git(&repo, ["commit", "-m", "add pnpm lockfile"]);
+
+    let empty_bin = temp_dir().join("empty-bin");
+    std::fs::create_dir_all(&empty_bin).unwrap();
+    let (out, status) = run_wtk_err_with_env(
+        &bin,
+        &repo,
+        [("PATH", path_with_git_only(&empty_bin))],
+        [
+            "create",
+            "feature/missing-pnpm",
+            "--base",
+            "main",
+            "--no-clipboard",
+        ],
+    );
+
+    assert!(!status.success());
+    assert!(out.contains("pnpm project detected and pnpm was not found on PATH"));
+    assert!(!out.contains("✓ created worktree"));
+    let linked = repo.parent().unwrap().join(format!(
+        "{}-wt-feature-missing-pnpm",
+        repo.file_name().unwrap().to_string_lossy()
+    ));
+    assert!(linked.exists());
+}
+
+#[test]
+fn pnpm_project_surfaces_install_failures() {
+    let bin = build_wtk();
+    let repo = init_repo("main");
+    std::fs::write(repo.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\n").unwrap();
+    run_git(&repo, ["add", "."]);
+    run_git(&repo, ["commit", "-m", "add pnpm lockfile"]);
+
+    let fake_bin = temp_dir().join("fake-bin");
+    std::fs::create_dir_all(&fake_bin).unwrap();
+    let log_path = temp_dir().join("pnpm.log");
+    install_fake_pnpm(&fake_bin, &log_path);
+    let (out, status) = run_wtk_err_with_env(
+        &bin,
+        &repo,
+        [
+            ("PATH", path_with_prefix(&fake_bin)),
+            ("WTK_TEST_PNPM_FAIL", "1".to_string()),
+        ],
+        [
+            "create",
+            "feature/pnpm-fail",
+            "--base",
+            "main",
+            "--no-clipboard",
+        ],
+    );
+
+    assert!(!status.success());
+    assert!(out.contains("pnpm install failed"));
+    assert!(out.contains("fake pnpm failure"));
+    assert!(!out.contains("✓ created worktree"));
+}
+
+#[test]
+fn send_out_reports_state_when_pnpm_install_fails() {
+    let bin = build_wtk();
+    let repo = init_repo("main");
+    std::fs::write(repo.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\n").unwrap();
+    run_git(&repo, ["add", "."]);
+    run_git(&repo, ["commit", "-m", "add pnpm lockfile"]);
+    run_git(&repo, ["switch", "-c", "feature/send-fail"]);
+
+    let fake_bin = temp_dir().join("fake-bin");
+    std::fs::create_dir_all(&fake_bin).unwrap();
+    let log_path = temp_dir().join("pnpm.log");
+    install_fake_pnpm(&fake_bin, &log_path);
+    let (out, status) = run_wtk_err_with_env(
+        &bin,
+        &repo,
+        [
+            ("PATH", path_with_prefix(&fake_bin)),
+            ("WTK_TEST_PNPM_FAIL", "1".to_string()),
+        ],
+        ["send-out", "--no-clipboard"],
+    );
+
+    assert!(!status.success());
+    assert!(out.contains("main worktree switched to main, and worktree created at"));
+    assert!(out.contains("pnpm install failed"));
+    assert!(!out.contains("✓ sent feature/send-fail out"));
+    assert_eq!(run_git(&repo, ["branch", "--show-current"]).trim(), "main");
+    let linked = repo.parent().unwrap().join(format!(
+        "{}-wt-feature-send-fail",
+        repo.file_name().unwrap().to_string_lossy()
+    ));
+    assert!(linked.exists());
+}
+
+#[test]
 fn ambiguous_main_branch_fails() {
     let bin = build_wtk();
     let repo = init_repo("main");
@@ -399,6 +588,21 @@ fn run_wtk<const N: usize>(bin: &Path, dir: &Path, args: [&str; N]) -> String {
     output
 }
 
+fn run_wtk_with_env<const N: usize, const M: usize, K: AsRef<str>>(
+    bin: &Path,
+    dir: &Path,
+    envs: [(K, String); M],
+    args: [&str; N],
+) -> String {
+    let (output, status) = run_wtk_err_with_env(bin, dir, envs, args);
+    assert!(
+        status.success(),
+        "wtk {:?} failed: {status}\n{output}",
+        args
+    );
+    output
+}
+
 fn run_wtk_err<const N: usize>(
     bin: &Path,
     dir: &Path,
@@ -409,6 +613,23 @@ fn run_wtk_err<const N: usize>(
         .current_dir(dir)
         .output()
         .unwrap();
+    let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
+    combined.push_str(&String::from_utf8_lossy(&output.stderr));
+    (combined, output.status)
+}
+
+fn run_wtk_err_with_env<const N: usize, const M: usize, K: AsRef<str>>(
+    bin: &Path,
+    dir: &Path,
+    envs: [(K, String); M],
+    args: [&str; N],
+) -> (String, std::process::ExitStatus) {
+    let mut command = Command::new(bin);
+    command.args(args).current_dir(dir);
+    for (key, value) in envs {
+        command.env(key.as_ref(), value);
+    }
+    let output = command.output().unwrap();
     let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
     combined.push_str(&String::from_utf8_lossy(&output.stderr));
     (combined, output.status)
@@ -468,4 +689,69 @@ fn temp_dir() -> PathBuf {
     let path = std::env::temp_dir().join(format!("wtk-rs-test-{}-{unique}", std::process::id()));
     std::fs::create_dir_all(&path).unwrap();
     path
+}
+
+fn install_fake_pnpm(dir: &Path, log_path: &Path) {
+    let script_path = dir.join("pnpm");
+    std::fs::write(
+        &script_path,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$PWD\" >> \"{}\"\nif [ \"${{WTK_TEST_PNPM_FAIL:-}}\" = \"1\" ]; then\n  echo 'fake pnpm failure' >&2\n  exit 7\nfi\n",
+            log_path.display()
+        ),
+    )
+    .unwrap();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(&script_path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script_path, permissions).unwrap();
+    }
+}
+
+fn path_with_prefix(prefix: &Path) -> String {
+    let mut entries = vec![prefix.to_path_buf()];
+    if let Some(existing) = std::env::var_os("PATH") {
+        entries.extend(std::env::split_paths(&existing));
+    }
+    std::env::join_paths(entries)
+        .unwrap()
+        .into_string()
+        .unwrap()
+}
+
+fn path_with_git_only(prefix: &Path) -> String {
+    std::env::join_paths([prefix.to_path_buf(), git_bin_dir()])
+        .unwrap()
+        .into_string()
+        .unwrap()
+}
+
+fn git_bin_dir() -> PathBuf {
+    let output = Command::new("which").arg("git").output().unwrap();
+    assert!(
+        output.status.success(),
+        "which git failed: {:?}",
+        output.status
+    );
+    PathBuf::from(String::from_utf8_lossy(&output.stdout).trim())
+        .parent()
+        .unwrap()
+        .to_path_buf()
+}
+
+fn assert_logged_path(lines: &[&str], expected: &Path) {
+    let expected = std::fs::canonicalize(expected).unwrap();
+    assert!(
+        lines.iter().any(|line| {
+            std::fs::canonicalize(line)
+                .map(|path| path == expected)
+                .unwrap_or(false)
+        }),
+        "missing logged path {} in {:?}",
+        expected.display(),
+        lines
+    );
 }
