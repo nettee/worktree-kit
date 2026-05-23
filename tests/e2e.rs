@@ -237,8 +237,60 @@ fn send_out_copies_env_ignored_only_on_task_branch() {
     let linked = linked_worktree_path(&repo, "feature/send-branch-ignore");
 
     assert_eq!(run_git(&repo, ["branch", "--show-current"]).trim(), "main");
-    assert_eq!(std::fs::read_to_string(linked.join(".env")).unwrap(), "BRANCH_ONLY=value\n");
+    assert_eq!(
+        std::fs::read_to_string(linked.join(".env")).unwrap(),
+        "BRANCH_ONLY=value\n"
+    );
     assert!(out.contains("copied ignored .env: .env"));
+}
+
+#[test]
+fn send_out_preserves_ignored_env_contents_when_base_tracks_env() {
+    let bin = build_wtk();
+    let repo = init_repo("main");
+    commit_files(&repo, &[(".env", "BASE=value\n")], "track env on main");
+    run_git(&repo, ["switch", "-c", "feature/send-preserve-env"]);
+    commit_files(&repo, &[(".gitignore", ".env\n")], "ignore env on feature");
+    run_git(&repo, ["rm", "--cached", ".env"]);
+    run_git(&repo, ["commit", "-m", "stop tracking env on feature"]);
+    std::fs::write(repo.join(".env"), "LOCAL=value\n").unwrap();
+
+    let out = run_wtk(&bin, &repo, ["send-out", "--no-clipboard"]);
+    let linked = linked_worktree_path(&repo, "feature/send-preserve-env");
+
+    assert_eq!(
+        std::fs::read_to_string(linked.join(".env")).unwrap(),
+        "LOCAL=value\n"
+    );
+    assert!(out.contains("copied ignored .env: .env"));
+}
+
+#[test]
+fn create_copies_ignored_env_with_non_ascii_path() {
+    let bin = build_wtk();
+    let repo = init_repo("main");
+    commit_files(&repo, &[(".gitignore", "café/\n")], "ignore unicode dir");
+    std::fs::create_dir_all(repo.join("café")).unwrap();
+    std::fs::write(repo.join("café/.env"), "UNICODE=value\n").unwrap();
+
+    let out = run_wtk(
+        &bin,
+        &repo,
+        [
+            "create",
+            "feature/unicode-env",
+            "--base",
+            "main",
+            "--no-clipboard",
+        ],
+    );
+    let linked = linked_worktree_path(&repo, "feature/unicode-env");
+
+    assert_eq!(
+        std::fs::read_to_string(linked.join("café/.env")).unwrap(),
+        "UNICODE=value\n"
+    );
+    assert!(out.contains("copied ignored .env: café/.env"));
 }
 
 #[test]
