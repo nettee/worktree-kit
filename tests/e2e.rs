@@ -435,6 +435,31 @@ fn similarly_named_env_files_are_not_copied() {
 }
 
 #[test]
+fn ignored_env_directory_contents_are_not_copied() {
+    let bin = build_wtk();
+    let repo = init_repo("main");
+    commit_files(&repo, &[(".gitignore", ".env/\n")], "ignore env dir");
+    std::fs::create_dir_all(repo.join(".env")).unwrap();
+    std::fs::write(repo.join(".env/secrets.txt"), "SECRET=value\n").unwrap();
+
+    let out = run_wtk(
+        &bin,
+        &repo,
+        [
+            "create",
+            "feature/env-dir",
+            "--base",
+            "main",
+            "--no-clipboard",
+        ],
+    );
+    let linked = linked_worktree_path(&repo, "feature/env-dir");
+
+    assert!(!linked.join(".env/secrets.txt").exists());
+    assert!(!out.contains("copied ignored .env:"));
+}
+
+#[test]
 fn no_ignored_env_files_is_silent_success() {
     let bin = build_wtk();
     let repo = init_repo("main");

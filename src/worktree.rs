@@ -750,6 +750,7 @@ fn ignored_env_files(session: &Session<'_>, main_root: &Path) -> AppResult<Vec<P
         .split(|byte| *byte == b'\0')
         .filter(|path| !path.is_empty())
         .map(path_buf_from_git_bytes)
+        .filter(|path| path.file_name().is_some_and(|name| name == ".env"))
         .collect();
     ignored.sort();
     Ok(ignored)
