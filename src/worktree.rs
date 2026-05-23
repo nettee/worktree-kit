@@ -47,6 +47,7 @@ impl<'a> Session<'a> {
 struct IgnoredEnvFile {
     relative: PathBuf,
     contents: Vec<u8>,
+    permissions: fs::Permissions,
 }
 
 pub fn create(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
@@ -616,6 +617,13 @@ fn copy_ignored_env_files(
                 error
             ))
         })?;
+        fs::set_permissions(&target, file.permissions.clone()).map_err(|error| {
+            Error::message(format!(
+                "failed to set permissions on {}: {}",
+                target.display(),
+                error
+            ))
+        })?;
         copied.push(file.relative.clone());
     }
     Ok(copied)
@@ -657,7 +665,11 @@ fn snapshot_ignored_env_file(
             error
         ))
     })?;
-    Ok(Some(IgnoredEnvFile { relative, contents }))
+    Ok(Some(IgnoredEnvFile {
+        relative,
+        contents,
+        permissions: metadata.permissions(),
+    }))
 }
 
 fn ignored_env_files(session: &Session<'_>, main_root: &Path) -> AppResult<Vec<PathBuf>> {

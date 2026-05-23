@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 static BIN_PATH: OnceLock<PathBuf> = OnceLock::new();
 
@@ -114,6 +116,40 @@ fn create_copies_ignored_root_env() {
         "ROOT=value\n"
     );
     assert!(out.contains("copied ignored .env: .env"));
+}
+
+#[cfg(unix)]
+#[test]
+fn create_preserves_ignored_root_env_permissions() {
+    let bin = build_wtk();
+    let repo = init_repo("main");
+    commit_files(&repo, &[(".gitignore", ".env\n")], "add gitignore");
+    std::fs::write(repo.join(".env"), "ROOT=value\n").unwrap();
+    let mut permissions = std::fs::metadata(repo.join(".env")).unwrap().permissions();
+    permissions.set_mode(0o600);
+    std::fs::set_permissions(repo.join(".env"), permissions).unwrap();
+
+    run_wtk(
+        &bin,
+        &repo,
+        [
+            "create",
+            "feature/root-env-mode",
+            "--base",
+            "main",
+            "--no-clipboard",
+        ],
+    );
+    let linked = linked_worktree_path(&repo, "feature/root-env-mode");
+
+    assert_eq!(
+        std::fs::metadata(linked.join(".env"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
 }
 
 #[test]
