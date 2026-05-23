@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
           fetch-depth: 0
 
       - name: Resolve release version
@@ -84,9 +84,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          merge_commit_sha='${{ github.event.pull_request.merge_commit_sha }}'
           version='${{ steps.version.outputs.version }}'
           tag="v$version"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git tag -a "$tag" -m "Release $tag"
+          git tag -a "$tag" "$merge_commit_sha" -m "Release $tag"
           git push origin "$tag"
