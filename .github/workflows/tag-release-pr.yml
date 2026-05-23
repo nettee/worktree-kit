@@ -1,0 +1,92 @@
+name: Tag Release PR
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  tag:
+    if: >-
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'main' &&
+      contains(github.event.pull_request.labels.*.name, 'release')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(python3 - <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          text = Path('Cargo.toml').read_text()
+          match = re.search(r'(?m)^version = "([^"]+)"$', text)
+          if not match:
+              print('Cargo.toml is missing a top-level version field', file=sys.stderr)
+              raise SystemExit(1)
+          version = match.group(1)
+          if not re.fullmatch(r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)', version):
+              print(f'Cargo.toml version must be MAJOR.MINOR.PATCH, got: {version}', file=sys.stderr)
+              raise SystemExit(1)
+          print(version)
+          PY
+          )
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Validate release tag does not roll back
+        shell: bash
+        run: |
+          set -euo pipefail
+          version='${{ steps.version.outputs.version }}'
+          tag="v$version"
+          git fetch --tags origin
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            printf 'release tag already exists: %s\n' "$tag" >&2
+            exit 1
+          fi
+
+          python3 - "$version" <<'PY'
+          import re
+          import subprocess
+          import sys
+
+          target = tuple(int(part) for part in sys.argv[1].split('.'))
+          tags = subprocess.run(
+              ['git', 'tag', '--list', 'v[0-9]*'],
+              check=True,
+              text=True,
+              stdout=subprocess.PIPE,
+          ).stdout.splitlines()
+          versions = []
+          for tag in tags:
+              value = tag.removeprefix('v')
+              if re.fullmatch(r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)', value):
+                  versions.append(tuple(int(part) for part in value.split('.')))
+          if versions and target <= max(versions):
+              latest = '.'.join(str(part) for part in max(versions))
+              print(f'target version {sys.argv[1]} must be greater than latest release tag v{latest}', file=sys.stderr)
+              raise SystemExit(1)
+          PY
+
+      - name: Create and push release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          version='${{ steps.version.outputs.version }}'
+          tag="v$version"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git tag -a "$tag" -m "Release $tag"
+          git push origin "$tag"
