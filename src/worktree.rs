@@ -8,6 +8,10 @@ use std::fs::{self, File};
 use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::ffi::OsStringExt;
+#[cfg(unix)]
+use std::os::unix::fs as unix_fs;
+#[cfg(windows)]
+use std::os::windows::fs as windows_fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -46,8 +50,18 @@ impl<'a> Session<'a> {
 #[derive(Debug, Clone)]
 struct IgnoredEnvFile {
     relative: PathBuf,
-    contents: Vec<u8>,
-    permissions: fs::Permissions,
+    kind: IgnoredEnvFileKind,
+}
+
+#[derive(Debug, Clone)]
+enum IgnoredEnvFileKind {
+    File {
+        contents: Vec<u8>,
+        permissions: fs::Permissions,
+    },
+    Symlink {
+        target: PathBuf,
+    },
 }
 
 pub fn create(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
@@ -609,21 +623,40 @@ fn copy_ignored_env_files(
                 ))
             })?;
         }
-        fs::write(&target, &file.contents).map_err(|error| {
-            Error::message(format!(
-                "failed to copy {} to {}: {}",
-                file.relative.display(),
-                target.display(),
-                error
-            ))
-        })?;
-        fs::set_permissions(&target, file.permissions.clone()).map_err(|error| {
-            Error::message(format!(
-                "failed to set permissions on {}: {}",
-                target.display(),
-                error
-            ))
-        })?;
+        match &file.kind {
+            IgnoredEnvFileKind::File {
+                contents,
+                permissions,
+            } => {
+                fs::write(&target, contents).map_err(|error| {
+                    Error::message(format!(
+                        "failed to copy {} to {}: {}",
+                        file.relative.display(),
+                        target.display(),
+                        error
+                    ))
+                })?;
+                fs::set_permissions(&target, permissions.clone()).map_err(|error| {
+                    Error::message(format!(
+                        "failed to set permissions on {}: {}",
+                        target.display(),
+                        error
+                    ))
+                })?;
+            }
+            IgnoredEnvFileKind::Symlink {
+                target: symlink_target,
+            } => {
+                create_symlink(symlink_target, &target).map_err(|error| {
+                    Error::message(format!(
+                        "failed to copy symlink {} to {}: {}",
+                        file.relative.display(),
+                        target.display(),
+                        error
+                    ))
+                })?;
+            }
+        }
         copied.push(file.relative.clone());
     }
     Ok(copied)
@@ -654,6 +687,19 @@ fn snapshot_ignored_env_file(
             error
         ))
     })?;
+    if metadata.file_type().is_symlink() {
+        let target = fs::read_link(&source).map_err(|error| {
+            Error::message(format!(
+                "failed to read symlink target {}: {}",
+                source.display(),
+                error
+            ))
+        })?;
+        return Ok(Some(IgnoredEnvFile {
+            relative,
+            kind: IgnoredEnvFileKind::Symlink { target },
+        }));
+    }
     if !metadata.file_type().is_file() {
         return Ok(None);
     }
@@ -667,9 +713,21 @@ fn snapshot_ignored_env_file(
     })?;
     Ok(Some(IgnoredEnvFile {
         relative,
-        contents,
-        permissions: metadata.permissions(),
+        kind: IgnoredEnvFileKind::File {
+            contents,
+            permissions: metadata.permissions(),
+        },
     }))
+}
+
+#[cfg(unix)]
+fn create_symlink(target: &Path, path: &Path) -> std::io::Result<()> {
+    unix_fs::symlink(target, path)
+}
+
+#[cfg(windows)]
+fn create_symlink(target: &Path, path: &Path) -> std::io::Result<()> {
+    windows_fs::symlink_file(target, path)
 }
 
 fn ignored_env_files(session: &Session<'_>, main_root: &Path) -> AppResult<Vec<PathBuf>> {

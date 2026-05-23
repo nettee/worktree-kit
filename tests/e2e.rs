@@ -1,8 +1,10 @@
+#[cfg(unix)]
+use std::os::unix::fs as unix_fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 
 static BIN_PATH: OnceLock<PathBuf> = OnceLock::new();
 
@@ -111,6 +113,43 @@ fn create_copies_ignored_root_env() {
     );
     let linked = linked_worktree_path(&repo, "feature/root-env");
 
+    assert_eq!(
+        std::fs::read_to_string(linked.join(".env")).unwrap(),
+        "ROOT=value\n"
+    );
+    assert!(out.contains("copied ignored .env: .env"));
+}
+
+#[cfg(unix)]
+#[test]
+fn create_copies_ignored_root_env_symlink() {
+    let bin = build_wtk();
+    let repo = init_repo("main");
+    commit_files(&repo, &[(".gitignore", ".env\n")], "add gitignore");
+    let shared_env = repo.parent().unwrap().join("shared.env");
+    std::fs::write(&shared_env, "ROOT=value\n").unwrap();
+    unix_fs::symlink(&shared_env, repo.join(".env")).unwrap();
+
+    let out = run_wtk(
+        &bin,
+        &repo,
+        [
+            "create",
+            "feature/root-env-symlink",
+            "--base",
+            "main",
+            "--no-clipboard",
+        ],
+    );
+    let linked = linked_worktree_path(&repo, "feature/root-env-symlink");
+
+    assert!(
+        std::fs::symlink_metadata(linked.join(".env"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(std::fs::read_link(linked.join(".env")).unwrap(), shared_env);
     assert_eq!(
         std::fs::read_to_string(linked.join(".env")).unwrap(),
         "ROOT=value\n"
