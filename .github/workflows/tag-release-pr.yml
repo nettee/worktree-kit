@@ -5,6 +5,7 @@ on:
     types: [closed]
 
 permissions:
+  actions: write
   contents: write
   pull-requests: read
 
@@ -91,3 +92,13 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git tag -a "$tag" "$merge_commit_sha" -m "Release $tag"
           git push origin "$tag"
+
+      - name: Trigger release workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version='${{ steps.version.outputs.version }}'
+          tag="v$version"
+          gh workflow run release.yml --ref '${{ github.event.pull_request.base.ref }}' -f tag="$tag"
