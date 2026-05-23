@@ -48,6 +48,7 @@ pub fn create(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
 
     let path = create_target_path(&repo, &opts.branch, &opts.path)?;
     let base = prepare_create_base(session, &repo, &opts)?;
+    let ignored_env_files = ignored_env_files(session, &repo.main_root)?;
     let args = vec![
         "worktree".to_string(),
         "add".to_string(),
@@ -62,7 +63,7 @@ pub fn create(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
         .run(&repo.main_root, args.iter().map(String::as_str))?;
     print_copied_ignored_env_files(
         session,
-        copy_ignored_env_files(session, &repo.main_root, &path).map_err(|error| {
+        copy_ignored_env_files(&ignored_env_files, &repo.main_root, &path).map_err(|error| {
             Error::message(format!(
                 "worktree created, but ignored .env copy failed: {error}"
             ))
@@ -83,6 +84,7 @@ pub fn checkout(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
     }
 
     let path = create_target_path(&repo, &opts.branch, &opts.path)?;
+    let ignored_env_files = ignored_env_files(session, &repo.main_root)?;
     let args = vec![
         "worktree".to_string(),
         "add".to_string(),
@@ -95,7 +97,7 @@ pub fn checkout(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
         .run(&repo.main_root, args.iter().map(String::as_str))?;
     print_copied_ignored_env_files(
         session,
-        copy_ignored_env_files(session, &repo.main_root, &path).map_err(|error| {
+        copy_ignored_env_files(&ignored_env_files, &repo.main_root, &path).map_err(|error| {
             Error::message(format!(
                 "worktree created, but ignored .env copy failed: {error}"
             ))
@@ -214,6 +216,8 @@ pub fn send_out(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
     let path = create_target_path(&repo, branch.trim(), &opts.path)?;
     ensure_creatable_parent(&path)?;
 
+    let ignored_env_files = ignored_env_files(session, &repo.main_root)?;
+
     let switch_args = vec!["switch".to_string(), base.clone()];
     output::git(session.out, &repo.main_root, &switch_args)?;
     session
@@ -241,7 +245,7 @@ pub fn send_out(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
     }
     print_copied_ignored_env_files(
         session,
-        copy_ignored_env_files(session, &repo.main_root, &path).map_err(|error| {
+        copy_ignored_env_files(&ignored_env_files, &repo.main_root, &path).map_err(|error| {
             Error::message(format!(
                 "main worktree switched to {base} and linked worktree created, but ignored .env copy failed: {error}"
             ))
@@ -580,14 +584,13 @@ fn ensure_creatable_parent(path: &Path) -> AppResult<()> {
 }
 
 fn copy_ignored_env_files(
-    session: &Session<'_>,
+    ignored: &[PathBuf],
     main_root: &Path,
     new_worktree_path: &Path,
 ) -> AppResult<Vec<PathBuf>> {
-    let ignored = ignored_env_files(session, main_root)?;
     let mut copied = Vec::with_capacity(ignored.len());
     for relative in ignored {
-        let source = main_root.join(&relative);
+        let source = main_root.join(relative);
         let metadata = fs::symlink_metadata(&source).map_err(|error| {
             Error::message(format!(
                 "failed to read source {}: {}",
@@ -599,7 +602,7 @@ fn copy_ignored_env_files(
             continue;
         }
 
-        let target = new_worktree_path.join(&relative);
+        let target = new_worktree_path.join(relative);
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent).map_err(|error| {
                 Error::message(format!(
@@ -617,7 +620,7 @@ fn copy_ignored_env_files(
                 error
             ))
         })?;
-        copied.push(relative);
+        copied.push(relative.clone());
     }
     Ok(copied)
 }

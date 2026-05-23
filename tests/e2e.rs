@@ -226,6 +226,22 @@ fn send_out_copies_ignored_env_files() {
 }
 
 #[test]
+fn send_out_copies_env_ignored_only_on_task_branch() {
+    let bin = build_wtk();
+    let repo = init_repo("main");
+    run_git(&repo, ["switch", "-c", "feature/send-branch-ignore"]);
+    commit_files(&repo, &[(".gitignore", ".env\n")], "ignore env on feature");
+    std::fs::write(repo.join(".env"), "BRANCH_ONLY=value\n").unwrap();
+
+    let out = run_wtk(&bin, &repo, ["send-out", "--no-clipboard"]);
+    let linked = linked_worktree_path(&repo, "feature/send-branch-ignore");
+
+    assert_eq!(run_git(&repo, ["branch", "--show-current"]).trim(), "main");
+    assert_eq!(std::fs::read_to_string(linked.join(".env")).unwrap(), "BRANCH_ONLY=value\n");
+    assert!(out.contains("copied ignored .env: .env"));
+}
+
+#[test]
 fn tracked_env_files_are_not_reported_by_copy_mechanism() {
     let bin = build_wtk();
     let repo = init_repo("main");
