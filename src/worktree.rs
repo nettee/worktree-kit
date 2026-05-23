@@ -584,12 +584,7 @@ fn copy_ignored_env_files(
     main_root: &Path,
     new_worktree_path: &Path,
 ) -> AppResult<Vec<PathBuf>> {
-    let candidates = discover_env_files(main_root, main_root)?;
-    if candidates.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let ignored = ignored_env_files(session, main_root, &candidates)?;
+    let ignored = ignored_env_files(session, main_root)?;
     let mut copied = Vec::with_capacity(ignored.len());
     for relative in ignored {
         let source = main_root.join(&relative);
@@ -605,6 +600,15 @@ fn copy_ignored_env_files(
         }
 
         let target = new_worktree_path.join(&relative);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                Error::message(format!(
+                    "failed to create target parent {}: {}",
+                    parent.display(),
+                    error
+                ))
+            })?;
+        }
         fs::copy(&source, &target).map_err(|error| {
             Error::message(format!(
                 "failed to copy {} to {}: {}",
@@ -618,58 +622,28 @@ fn copy_ignored_env_files(
     Ok(copied)
 }
 
-fn discover_env_files(root: &Path, dir: &Path) -> AppResult<Vec<PathBuf>> {
-    let mut files = Vec::new();
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        let file_type = entry.file_type()?;
-        let name = entry.file_name();
-        if file_type.is_dir() {
-            if name == ".git" {
-                continue;
-            }
-            files.extend(discover_env_files(root, &path)?);
-            continue;
-        }
-        if !file_type.is_file() || name != ".env" {
-            continue;
-        }
-        files.push(
-            path.strip_prefix(root)
-                .map_err(|error| {
-                    Error::message(format!(
-                        "failed to resolve {} relative to {}: {}",
-                        path.display(),
-                        root.display(),
-                        error
-                    ))
-                })?
-                .to_path_buf(),
-        );
-    }
-    files.sort();
-    Ok(files)
-}
-
-fn ignored_env_files(
-    session: &Session<'_>,
-    main_root: &Path,
-    candidates: &[PathBuf],
-) -> AppResult<Vec<PathBuf>> {
-    let mut args = Vec::with_capacity(1 + candidates.len());
-    args.push("check-ignore".to_string());
-    args.extend(candidates.iter().map(|path| path.display().to_string()));
-    match session.git.run(main_root, args.iter().map(String::as_str)) {
-        Ok(output) => Ok(output
-            .stdout
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(PathBuf::from)
-            .collect()),
-        Err(error) if is_git_exit(&error, 1) => Ok(Vec::new()),
-        Err(error) => Err(error),
-    }
+fn ignored_env_files(session: &Session<'_>, main_root: &Path) -> AppResult<Vec<PathBuf>> {
+    let output = session.git.run(
+        main_root,
+        [
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--full-name",
+            "--",
+            ".env",
+            ":(glob)**/.env",
+        ],
+    )?;
+    let mut ignored: Vec<_> = output
+        .stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(PathBuf::from)
+        .collect();
+    ignored.sort();
+    Ok(ignored)
 }
 
 fn print_copied_ignored_env_files(

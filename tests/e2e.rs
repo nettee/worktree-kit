@@ -158,6 +158,34 @@ fn create_recursively_copies_ignored_child_env_files() {
 }
 
 #[test]
+fn create_copies_ignored_env_inside_ignored_only_directory() {
+    let bin = build_wtk();
+    let repo = init_repo("main");
+    commit_files(&repo, &[(".gitignore", "secrets/\n")], "ignore secrets");
+    std::fs::create_dir_all(repo.join("secrets")).unwrap();
+    std::fs::write(repo.join("secrets/.env"), "SECRET=value\n").unwrap();
+
+    let out = run_wtk(
+        &bin,
+        &repo,
+        [
+            "create",
+            "feature/ignored-dir-env",
+            "--base",
+            "main",
+            "--no-clipboard",
+        ],
+    );
+    let linked = linked_worktree_path(&repo, "feature/ignored-dir-env");
+
+    assert_eq!(
+        std::fs::read_to_string(linked.join("secrets/.env")).unwrap(),
+        "SECRET=value\n"
+    );
+    assert!(out.contains("copied ignored .env: secrets/.env"));
+}
+
+#[test]
 fn checkout_copies_ignored_env_files() {
     let bin = build_wtk();
     let repo = init_repo("main");
