@@ -23,7 +23,7 @@ The installer downloads the matching GitHub release asset, verifies its checksum
 Install a specific release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nettee/worktree-kit/main/scripts/install.sh | WTK_VERSION=0.0.1 sh
+curl -fsSL https://raw.githubusercontent.com/nettee/worktree-kit/main/scripts/install.sh | WTK_VERSION=0.1.0 sh
 ```
 
 Local source install for development machines:
