@@ -289,7 +289,6 @@ fn create_runs_pnpm_install_for_pnpm_worktrees() {
     commit_files(
         &repo,
         &[
-            ("package.json", "{\"name\":\"repo\",\"private\":true}\n"),
             ("pnpm-lock.yaml", "lockfileVersion: '9.0'\n"),
         ],
         "add pnpm files",

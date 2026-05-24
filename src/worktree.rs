@@ -825,9 +825,8 @@ fn maybe_run_pnpm_install(
 }
 
 fn should_run_pnpm_install(worktree_path: &Path) -> bool {
-    worktree_path.join("package.json").is_file()
-        && (worktree_path.join("pnpm-lock.yaml").is_file()
-            || worktree_path.join("pnpm-workspace.yaml").is_file())
+    worktree_path.join("pnpm-lock.yaml").is_file()
+        || worktree_path.join("pnpm-workspace.yaml").is_file()
 }
 
 fn finish(
@@ -907,13 +906,11 @@ mod tests {
 
         let pnpm_lock = root.join("pnpm-lock");
         std::fs::create_dir_all(&pnpm_lock).unwrap();
-        std::fs::write(pnpm_lock.join("package.json"), "{}\n").unwrap();
         std::fs::write(pnpm_lock.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\n").unwrap();
         assert!(should_run_pnpm_install(&pnpm_lock));
 
         let pnpm_workspace = root.join("pnpm-workspace");
         std::fs::create_dir_all(&pnpm_workspace).unwrap();
-        std::fs::write(pnpm_workspace.join("package.json"), "{}\n").unwrap();
         std::fs::write(
             pnpm_workspace.join("pnpm-workspace.yaml"),
             "packages:\n  - .\n",
