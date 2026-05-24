@@ -13,6 +13,7 @@ use std::os::unix::fs as unix_fs;
 #[cfg(windows)]
 use std::os::windows::fs as windows_fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Default, Clone)]
@@ -93,6 +94,7 @@ pub fn create(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
             ))
         })?,
     )?;
+    maybe_run_pnpm_install(session, &path, "worktree created")?;
     finish(
         session,
         opts.no_clipboard,
@@ -127,6 +129,7 @@ pub fn checkout(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
             ))
         })?,
     )?;
+    maybe_run_pnpm_install(session, &path, "worktree created")?;
     finish(
         session,
         opts.no_clipboard,
@@ -274,6 +277,11 @@ pub fn send_out(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
                 "main worktree switched to {base} and linked worktree created, but ignored .env copy failed: {error}"
             ))
         })?,
+    )?;
+    maybe_run_pnpm_install(
+        session,
+        &path,
+        &format!("main worktree switched to {base} and linked worktree created"),
     )?;
 
     finish(
@@ -776,6 +784,52 @@ fn print_copied_ignored_env_files(
     Ok(())
 }
 
+fn maybe_run_pnpm_install(
+    session: &mut Session<'_>,
+    worktree_path: &Path,
+    partial_success_prefix: &str,
+) -> AppResult<()> {
+    if !should_run_pnpm_install(worktree_path) {
+        return Ok(());
+    }
+
+    output::info(
+        session.out,
+        &format!("running pnpm install in {}", worktree_path.display()),
+    )?;
+    let output = Command::new("pnpm")
+        .arg("install")
+        .current_dir(worktree_path)
+        .output()
+        .map_err(|error| {
+            Error::message(format!(
+                "{partial_success_prefix}, but pnpm install failed: {error}"
+            ))
+        })?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let details = if !stderr.is_empty() {
+        stderr
+    } else if !stdout.is_empty() {
+        stdout
+    } else {
+        format!("exit status {}", output.status)
+    };
+    Err(Error::message(format!(
+        "{partial_success_prefix}, but pnpm install failed: {details}"
+    )))
+}
+
+fn should_run_pnpm_install(worktree_path: &Path) -> bool {
+    worktree_path.join("package.json").is_file()
+        && (worktree_path.join("pnpm-lock.yaml").is_file()
+            || worktree_path.join("pnpm-workspace.yaml").is_file())
+}
+
 fn finish(
     session: &mut Session<'_>,
     no_clipboard: bool,
@@ -797,7 +851,7 @@ fn finish(
 
 #[cfg(test)]
 mod tests {
-    use super::finish;
+    use super::{finish, should_run_pnpm_install};
     use crate::clipboard::ClipboardProvider;
     use crate::{AppResult, Error};
     use std::io;
@@ -828,5 +882,45 @@ mod tests {
                 .to_string()
                 .contains("operation succeeded, but clipboard copy failed")
         );
+    }
+
+    #[test]
+    fn should_run_pnpm_install_only_for_pnpm_worktrees() {
+        let root = std::env::temp_dir().join(format!(
+            "wtk-pnpm-detect-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+
+        let non_node = root.join("non-node");
+        std::fs::create_dir_all(&non_node).unwrap();
+        assert!(!should_run_pnpm_install(&non_node));
+
+        let npm_only = root.join("npm-only");
+        std::fs::create_dir_all(&npm_only).unwrap();
+        std::fs::write(npm_only.join("package.json"), "{}\n").unwrap();
+        assert!(!should_run_pnpm_install(&npm_only));
+
+        let pnpm_lock = root.join("pnpm-lock");
+        std::fs::create_dir_all(&pnpm_lock).unwrap();
+        std::fs::write(pnpm_lock.join("package.json"), "{}\n").unwrap();
+        std::fs::write(pnpm_lock.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\n").unwrap();
+        assert!(should_run_pnpm_install(&pnpm_lock));
+
+        let pnpm_workspace = root.join("pnpm-workspace");
+        std::fs::create_dir_all(&pnpm_workspace).unwrap();
+        std::fs::write(pnpm_workspace.join("package.json"), "{}\n").unwrap();
+        std::fs::write(
+            pnpm_workspace.join("pnpm-workspace.yaml"),
+            "packages:\n  - .\n",
+        )
+        .unwrap();
+        assert!(should_run_pnpm_install(&pnpm_workspace));
+
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

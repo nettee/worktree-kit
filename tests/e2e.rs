@@ -283,6 +283,50 @@ fn checkout_copies_ignored_env_files() {
 }
 
 #[test]
+fn create_runs_pnpm_install_for_pnpm_worktrees() {
+    let bin = build_wtk();
+    let repo = init_repo("main");
+    commit_files(
+        &repo,
+        &[
+            ("package.json", "{\"name\":\"repo\",\"private\":true}\n"),
+            ("pnpm-lock.yaml", "lockfileVersion: '9.0'\n"),
+        ],
+        "add pnpm files",
+    );
+
+    let fake_bin = temp_dir().join("fake-bin");
+    std::fs::create_dir_all(&fake_bin).unwrap();
+    let log_path = fake_bin.join("pnpm.log");
+    write_fake_pnpm(&fake_bin, &log_path);
+    let path = prepend_path(&fake_bin);
+
+    let out = run_wtk_with_env(
+        &bin,
+        &repo,
+        [
+            "create",
+            "feature/pnpm-install",
+            "--base",
+            "main",
+            "--no-clipboard",
+        ],
+        &[("PATH", path)],
+    );
+    let linked =
+        std::fs::canonicalize(linked_worktree_path(&repo, "feature/pnpm-install")).unwrap();
+
+    assert!(linked.exists());
+    assert!(out.contains("running pnpm install"));
+    let log = std::fs::read_to_string(log_path).unwrap();
+    assert!(log.contains("ARGS:install"), "missing args in log: {log}");
+    assert!(
+        log.contains(&format!("PWD:{}", linked.display())),
+        "missing cwd in log: {log}"
+    );
+}
+
+#[test]
 fn send_out_copies_ignored_env_files() {
     let bin = build_wtk();
     let repo = init_repo("main");
@@ -851,6 +895,29 @@ fn run_wtk<const N: usize>(bin: &Path, dir: &Path, args: [&str; N]) -> String {
     output
 }
 
+fn run_wtk_with_env<const N: usize>(
+    bin: &Path,
+    dir: &Path,
+    args: [&str; N],
+    envs: &[(&str, std::ffi::OsString)],
+) -> String {
+    let output = Command::new(bin)
+        .args(args)
+        .current_dir(dir)
+        .envs(envs.iter().map(|(key, value)| (*key, value)))
+        .output()
+        .unwrap();
+    let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
+    combined.push_str(&String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "wtk command failed: {}\n{}",
+        output.status,
+        combined
+    );
+    combined
+}
+
 fn run_wtk_err<const N: usize>(
     bin: &Path,
     dir: &Path,
@@ -920,4 +987,41 @@ fn temp_dir() -> PathBuf {
     let path = std::env::temp_dir().join(format!("wtk-rs-test-{}-{unique}", std::process::id()));
     std::fs::create_dir_all(&path).unwrap();
     path
+}
+
+fn prepend_path(bin_dir: &Path) -> std::ffi::OsString {
+    let mut paths = vec![bin_dir.to_path_buf()];
+    if let Some(existing) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&existing));
+    }
+    std::env::join_paths(paths).unwrap()
+}
+
+fn write_fake_pnpm(bin_dir: &Path, log_path: &Path) {
+    #[cfg(windows)]
+    {
+        let script = format!(
+            "@echo off\r\necho ARGS:%*>>\"{}\"\r\necho PWD:%CD%>>\"{}\"\r\n",
+            log_path.display(),
+            log_path.display()
+        );
+        std::fs::write(bin_dir.join("pnpm.cmd"), script).unwrap();
+    }
+
+    #[cfg(not(windows))]
+    {
+        let script = format!(
+            "#!/bin/sh\nprintf 'ARGS:%s\\n' \"$*\" >> \"{}\"\nprintf 'PWD:%s\\n' \"$PWD\" >> \"{}\"\n",
+            log_path.display(),
+            log_path.display()
+        );
+        let script_path = bin_dir.join("pnpm");
+        std::fs::write(&script_path, script).unwrap();
+        let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
+        #[cfg(unix)]
+        {
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&script_path, perms).unwrap();
+        }
+    }
 }

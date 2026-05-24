@@ -71,6 +71,8 @@ Every command prints the underlying `git` commands it runs. Successful commands 
 
 Commands that create linked worktrees also copy ignored files named exactly `.env` from the main worktree into the new worktree at the same Git-root-relative paths. Files such as `.env.local`, `.env.example`, and `.envrc` are not copied. When matching ignored `.env` files are copied, `wtk` prints one `copied ignored .env: <path>` line per file; when none are found, it prints nothing for this step.
 
+If the new worktree looks like a pnpm repo (`package.json` plus `pnpm-lock.yaml` or `pnpm-workspace.yaml`), `wtk` then runs `pnpm install` inside the new worktree before reporting success.
+
 ## Create base selection
 
 `wtk create` selects the base for the new branch by this precedence:
