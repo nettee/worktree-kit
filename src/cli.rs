@@ -25,6 +25,7 @@ enum Parsed {
     InitWorktree {
         source_root: String,
         worktree_path: String,
+        ignored_env_snapshot_root: Option<String>,
     },
     Remove(Options),
     SendOut(Options),
@@ -116,8 +117,14 @@ where
         Parsed::InitWorktree {
             source_root,
             worktree_path,
+            ignored_env_snapshot_root,
         } => execute_worktree(stdout, stderr, true, |session| {
-            worktree::init_worktree(session, Path::new(&source_root), Path::new(&worktree_path))
+            worktree::init_worktree(
+                session,
+                Path::new(&source_root),
+                Path::new(&worktree_path),
+                ignored_env_snapshot_root.as_deref().map(Path::new),
+            )
         }),
         Parsed::Remove(options) => {
             execute_worktree(stdout, stderr, options.no_clipboard, |session| {
@@ -286,21 +293,44 @@ fn parse_init_worktree(args: &[String]) -> Result<Parsed, UsageError> {
     if args.len() == 2 && matches!(args[1].as_str(), "--help" | "-h") {
         return Ok(Parsed::HelpText(usage));
     }
-    if args.len() < 3 {
+    let mut positionals = Vec::new();
+    let mut ignored_env_snapshot_root = None;
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            flag if flag == "--snapshot-root" || flag.starts_with("--snapshot-root=") => {
+                if let Some(value) = inline_flag_value(flag, "--snapshot-root") {
+                    ignored_env_snapshot_root = Some(value);
+                } else {
+                    i += 1;
+                    ignored_env_snapshot_root =
+                        Some(require_flag_value(args, i, "--snapshot-root", usage)?);
+                }
+            }
+            "--help" | "-h" => return Ok(Parsed::HelpText(usage)),
+            flag if flag.starts_with('-') => {
+                return Err(UsageError::new(format!("unknown flag: {flag}"), usage));
+            }
+            value => positionals.push(value.to_string()),
+        }
+        i += 1;
+    }
+    if positionals.len() < 2 {
         return Err(UsageError::new(
             "missing required arguments: source-root and worktree-path",
             usage,
         ));
     }
-    if args.len() > 3 {
+    if positionals.len() > 2 {
         return Err(UsageError::new(
             "too many arguments: expected source-root and worktree-path",
             usage,
         ));
     }
     Ok(Parsed::InitWorktree {
-        source_root: args[1].clone(),
-        worktree_path: args[2].clone(),
+        source_root: positionals[0].clone(),
+        worktree_path: positionals[1].clone(),
+        ignored_env_snapshot_root,
     })
 }
 

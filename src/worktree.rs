@@ -85,13 +85,15 @@ pub fn create(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
     session
         .git
         .run(&repo.main_root, args.iter().map(String::as_str))?;
+    let ignored_env_files = snapshot_ignored_env_files(session, &repo.main_root)?;
+    let ignored_env_snapshot_root = write_ignored_env_snapshot(&ignored_env_files, &path)?;
     finish(
         session,
         opts.no_clipboard,
         path.display().to_string(),
         format!("created worktree at {}", path.display()),
     )?;
-    start_async_init_worktree(session, &repo.main_root, &path)
+    start_async_init_worktree(session, &repo.main_root, &path, &ignored_env_snapshot_root)
 }
 
 pub fn checkout(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
@@ -133,8 +135,12 @@ pub fn init_worktree(
     session: &mut Session<'_>,
     source_root: &Path,
     worktree_path: &Path,
+    ignored_env_snapshot_root: Option<&Path>,
 ) -> AppResult<()> {
-    let ignored_env_files = snapshot_ignored_env_files(session, source_root)?;
+    let ignored_env_files = match ignored_env_snapshot_root {
+        Some(snapshot_root) => snapshot_ignored_env_files_from_root(snapshot_root)?,
+        None => snapshot_ignored_env_files(session, source_root)?,
+    };
     print_copied_ignored_env_files(
         session,
         copy_ignored_env_files(&ignored_env_files, worktree_path)
@@ -688,6 +694,66 @@ fn snapshot_ignored_env_files(
     Ok(ignored)
 }
 
+fn snapshot_ignored_env_files_from_root(root: &Path) -> AppResult<Vec<IgnoredEnvFile>> {
+    let mut ignored = Vec::new();
+    collect_ignored_env_files_from_root(root, root, &mut ignored)?;
+    ignored.sort_by(|left, right| left.relative.cmp(&right.relative));
+    Ok(ignored)
+}
+
+fn collect_ignored_env_files_from_root(
+    root: &Path,
+    current: &Path,
+    ignored: &mut Vec<IgnoredEnvFile>,
+) -> AppResult<()> {
+    let mut entries = fs::read_dir(current)
+        .map_err(|error| {
+            Error::message(format!(
+                "failed to read snapshot root {}: {error}",
+                current.display()
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            Error::message(format!(
+                "failed to read snapshot root {}: {error}",
+                current.display()
+            ))
+        })?;
+    entries.sort_by_key(|entry| entry.path());
+
+    for entry in entries {
+        let path = entry.path();
+        let file_type = entry.file_type().map_err(|error| {
+            Error::message(format!(
+                "failed to inspect snapshot entry {}: {error}",
+                path.display()
+            ))
+        })?;
+        if file_type.is_dir() {
+            collect_ignored_env_files_from_root(root, &path, ignored)?;
+            continue;
+        }
+
+        if path.file_name().is_none_or(|name| name != ".env") {
+            continue;
+        }
+
+        let relative = path.strip_prefix(root).map_err(|error| {
+            Error::message(format!(
+                "failed to compute snapshot path relative to {} for {}: {error}",
+                root.display(),
+                path.display()
+            ))
+        })?;
+        if let Some(snapshot) = snapshot_ignored_env_file(root, relative.to_path_buf())? {
+            ignored.push(snapshot);
+        }
+    }
+
+    Ok(())
+}
+
 fn snapshot_ignored_env_file(
     main_root: &Path,
     relative: PathBuf,
@@ -793,6 +859,7 @@ fn start_async_init_worktree(
     session: &mut Session<'_>,
     source_root: &Path,
     worktree_path: &Path,
+    ignored_env_snapshot_root: &Path,
 ) -> AppResult<()> {
     let exe = std::env::current_exe()
         .map_err(|error| Error::message(format!("worktree created, but failed to locate wtk executable for async initialization: {error}")))?;
@@ -818,6 +885,8 @@ fn start_async_init_worktree(
         .arg("init-worktree")
         .arg(source_root)
         .arg(worktree_path)
+        .arg("--snapshot-root")
+        .arg(ignored_env_snapshot_root)
         .stdin(Stdio::null())
         .stdout(stdout)
         .stderr(stderr)
@@ -828,6 +897,39 @@ fn start_async_init_worktree(
             ))
         })?;
     Ok(())
+}
+
+fn write_ignored_env_snapshot(
+    ignored_env_files: &[IgnoredEnvFile],
+    worktree_path: &Path,
+) -> AppResult<PathBuf> {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let worktree_name = worktree_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("worktree");
+    let snapshot_root = std::env::temp_dir().join(format!(
+        "wtk-init-worktree-snapshot-{}-{}-{}",
+        std::process::id(),
+        worktree_name,
+        nonce
+    ));
+    fs::create_dir_all(&snapshot_root).map_err(|error| {
+        Error::message(format!(
+            "worktree created, but failed to create ignored .env snapshot {}: {error}",
+            snapshot_root.display()
+        ))
+    })?;
+    copy_ignored_env_files(ignored_env_files, &snapshot_root).map_err(|error| {
+        Error::message(format!(
+            "worktree created, but failed to snapshot ignored .env files in {}: {error}",
+            snapshot_root.display()
+        ))
+    })?;
+    Ok(snapshot_root)
 }
 
 fn async_init_stdio(worktree_path: &Path) -> AppResult<(Stdio, Stdio, Option<PathBuf>)> {

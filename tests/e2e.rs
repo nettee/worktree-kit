@@ -627,6 +627,48 @@ fn init_worktree_output_uses_git_root_relative_paths_one_per_line() {
 }
 
 #[test]
+fn init_worktree_uses_snapshot_root_when_source_env_changes() {
+    let bin = build_wtk();
+    let repo = init_repo("main");
+    commit_files(&repo, &[(".gitignore", ".env\n")], "add gitignore");
+    std::fs::write(repo.join(".env"), "SNAPSHOT=value\n").unwrap();
+    let linked = linked_worktree_path(&repo, "feature/snapshot-root");
+    run_git(
+        &repo,
+        [
+            "worktree",
+            "add",
+            "-b",
+            "feature/snapshot-root",
+            linked.to_str().unwrap(),
+            "main",
+        ],
+    );
+
+    let snapshot_root = repo.parent().unwrap().join("ignored-env-snapshot");
+    std::fs::create_dir_all(&snapshot_root).unwrap();
+    std::fs::write(snapshot_root.join(".env"), "SNAPSHOT=value\n").unwrap();
+    std::fs::write(repo.join(".env"), "CHANGED=value\n").unwrap();
+
+    run_wtk(
+        &bin,
+        &repo,
+        [
+            "init-worktree",
+            repo.to_str().unwrap(),
+            linked.to_str().unwrap(),
+            "--snapshot-root",
+            snapshot_root.to_str().unwrap(),
+        ],
+    );
+
+    assert_eq!(
+        std::fs::read_to_string(linked.join(".env")).unwrap(),
+        "SNAPSHOT=value\n"
+    );
+}
+
+#[test]
 fn create_from_current_branch() {
     let bin = build_wtk();
     let repo = init_repo("main");
