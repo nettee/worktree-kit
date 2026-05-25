@@ -87,13 +87,19 @@ pub fn create(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
         .run(&repo.main_root, args.iter().map(String::as_str))?;
     let ignored_env_files = snapshot_ignored_env_files(session, &repo.main_root)?;
     let ignored_env_snapshot_root = write_ignored_env_snapshot(&ignored_env_files, &path)?;
-    finish(
-        session,
-        opts.no_clipboard,
-        path.display().to_string(),
-        format!("created worktree at {}", path.display()),
+    cleanup_ignored_env_snapshot_on_error(
+        finish(
+            session,
+            opts.no_clipboard,
+            path.display().to_string(),
+            format!("created worktree at {}", path.display()),
+        ),
+        &ignored_env_snapshot_root,
     )?;
-    start_async_init_worktree(session, &repo.main_root, &path, &ignored_env_snapshot_root)
+    cleanup_ignored_env_snapshot_on_error(
+        start_async_init_worktree(session, &repo.main_root, &path, &ignored_env_snapshot_root),
+        &ignored_env_snapshot_root,
+    )
 }
 
 pub fn checkout(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
@@ -959,6 +965,19 @@ fn remove_ignored_env_snapshot_root(snapshot_root: &Path) -> AppResult<()> {
     })
 }
 
+fn cleanup_ignored_env_snapshot_on_error(
+    result: AppResult<()>,
+    snapshot_root: &Path,
+) -> AppResult<()> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) => match remove_ignored_env_snapshot_root(snapshot_root) {
+            Ok(()) => Err(error),
+            Err(cleanup_error) => Err(Error::message(format!("{error}; also {cleanup_error}"))),
+        },
+    }
+}
+
 fn async_init_stdio(worktree_path: &Path) -> AppResult<(Stdio, Stdio, Option<PathBuf>)> {
     if std::io::stdout().is_terminal() && std::io::stderr().is_terminal() {
         return Ok((Stdio::inherit(), Stdio::inherit(), None));
@@ -1064,7 +1083,7 @@ fn finish(
 
 #[cfg(test)]
 mod tests {
-    use super::{finish, should_run_pnpm_install};
+    use super::{cleanup_ignored_env_snapshot_on_error, finish, should_run_pnpm_install};
     use crate::clipboard::ClipboardProvider;
     use crate::{AppResult, Error};
     use std::io;
@@ -1095,6 +1114,35 @@ mod tests {
                 .to_string()
                 .contains("operation succeeded, but clipboard copy failed")
         );
+    }
+
+    #[test]
+    fn cleanup_ignored_env_snapshot_on_error_removes_snapshot_root() {
+        let snapshot_root = std::env::temp_dir().join(format!(
+            "wtk-cleanup-snapshot-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&snapshot_root).unwrap();
+        std::fs::write(snapshot_root.join(".env"), "SECRET=value\n").unwrap();
+
+        let error = cleanup_ignored_env_snapshot_on_error(
+            Err(Error::message(
+                "operation succeeded, but clipboard copy failed",
+            )),
+            &snapshot_root,
+        )
+        .expect_err("cleanup helper should preserve the original error");
+
+        assert!(
+            error
+                .to_string()
+                .contains("operation succeeded, but clipboard copy failed")
+        );
+        assert!(!snapshot_root.exists());
     }
 
     #[test]
