@@ -1139,7 +1139,7 @@ fn finish(
 #[cfg(test)]
 mod tests {
     use super::{
-        async_init_stdio, cleanup_ignored_env_snapshot_on_error, finish,
+        cleanup_ignored_env_snapshot_on_error, finish, open_async_init_log,
         remove_ignored_env_snapshot_root, should_run_pnpm_install,
         write_ignored_env_snapshot_marker,
     };
@@ -1232,8 +1232,8 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn async_init_stdio_creates_owner_only_log_file() {
-        let worktree_path = std::env::temp_dir().join(format!(
+    fn open_async_init_log_creates_owner_only_log_file() {
+        let log_path = std::env::temp_dir().join(format!(
             "wtk-async-init-log-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
@@ -1241,17 +1241,13 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        std::fs::create_dir_all(&worktree_path).unwrap();
-
-        let (_stdout, _stderr, log_path) =
-            async_init_stdio(&worktree_path).expect("log redirection should succeed");
-        let log_path = log_path.expect("non-terminal test context should create a log file");
+        let log = open_async_init_log(&log_path).expect("log file creation should succeed");
         let mode = std::fs::metadata(&log_path).unwrap().permissions().mode() & 0o777;
 
         assert_eq!(mode, 0o600);
 
+        drop(log);
         std::fs::remove_file(&log_path).unwrap();
-        std::fs::remove_dir_all(&worktree_path).unwrap();
     }
 
     #[test]
