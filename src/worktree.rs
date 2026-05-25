@@ -10,6 +10,8 @@ use std::io::{IsTerminal, Write};
 use std::os::unix::ffi::OsStringExt;
 #[cfg(unix)]
 use std::os::unix::fs as unix_fs;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 #[cfg(windows)]
 use std::os::windows::fs as windows_fs;
 use std::path::{Path, PathBuf};
@@ -950,12 +952,17 @@ fn write_ignored_env_snapshot(
         ))
     })?;
     write_ignored_env_snapshot_marker(&snapshot_root)?;
-    copy_ignored_env_files(ignored_env_files, &snapshot_root).map_err(|error| {
-        Error::message(format!(
-            "worktree created, but failed to snapshot ignored .env files in {}: {error}",
-            snapshot_root.display()
-        ))
-    })?;
+    cleanup_ignored_env_snapshot_on_error(
+        copy_ignored_env_files(ignored_env_files, &snapshot_root)
+            .map_err(|error| {
+                Error::message(format!(
+                    "worktree created, but failed to snapshot ignored .env files in {}: {error}",
+                    snapshot_root.display()
+                ))
+            })
+            .map(|_| ()),
+        &snapshot_root,
+    )?;
     Ok(snapshot_root)
 }
 
@@ -1037,17 +1044,7 @@ fn async_init_stdio(worktree_path: &Path) -> AppResult<(Stdio, Stdio, Option<Pat
         worktree_name,
         nonce
     ));
-    let stdout = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(&log_path)
-        .map_err(|error| {
-            Error::message(format!(
-                "worktree created, but failed to open async initialization log {}: {error}",
-                log_path.display()
-            ))
-        })?;
+    let stdout = open_async_init_log(&log_path)?;
     let stderr = stdout.try_clone().map_err(|error| {
         Error::message(format!(
             "worktree created, but failed to duplicate async initialization log {}: {error}",
@@ -1055,6 +1052,19 @@ fn async_init_stdio(worktree_path: &Path) -> AppResult<(Stdio, Stdio, Option<Pat
         ))
     })?;
     Ok((Stdio::from(stdout), Stdio::from(stderr), Some(log_path)))
+}
+
+fn open_async_init_log(log_path: &Path) -> AppResult<File> {
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(true).write(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    options.open(log_path).map_err(|error| {
+        Error::message(format!(
+            "worktree created, but failed to open async initialization log {}: {error}",
+            log_path.display()
+        ))
+    })
 }
 
 fn maybe_run_pnpm_install(
@@ -1124,12 +1134,15 @@ fn finish(
 #[cfg(test)]
 mod tests {
     use super::{
-        cleanup_ignored_env_snapshot_on_error, finish, remove_ignored_env_snapshot_root,
-        should_run_pnpm_install, write_ignored_env_snapshot_marker,
+        async_init_stdio, cleanup_ignored_env_snapshot_on_error, finish,
+        remove_ignored_env_snapshot_root, should_run_pnpm_install,
+        write_ignored_env_snapshot_marker,
     };
     use crate::clipboard::ClipboardProvider;
     use crate::{AppResult, Error};
     use std::io;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
 
     struct FailingClipboard;
@@ -1210,6 +1223,30 @@ mod tests {
         assert!(error.to_string().contains("refusing to remove unmanaged"));
         assert!(snapshot_root.exists());
         std::fs::remove_dir_all(&snapshot_root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn async_init_stdio_creates_owner_only_log_file() {
+        let worktree_path = std::env::temp_dir().join(format!(
+            "wtk-async-init-log-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&worktree_path).unwrap();
+
+        let (_stdout, _stderr, log_path) =
+            async_init_stdio(&worktree_path).expect("log redirection should succeed");
+        let log_path = log_path.expect("non-terminal test context should create a log file");
+        let mode = std::fs::metadata(&log_path).unwrap().permissions().mode() & 0o777;
+
+        assert_eq!(mode, 0o600);
+
+        std::fs::remove_file(&log_path).unwrap();
+        std::fs::remove_dir_all(&worktree_path).unwrap();
     }
 
     #[test]
