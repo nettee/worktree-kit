@@ -90,7 +90,12 @@ pub fn create(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
     session
         .git
         .run(&repo.main_root, args.iter().map(String::as_str))?;
-    let ignored_env_files = snapshot_ignored_env_files(session, &repo.main_root)?;
+    let ignored_env_files =
+        snapshot_ignored_env_files(session, &repo.main_root).map_err(|error| {
+            Error::message(format!(
+                "worktree created, but failed to snapshot ignored .env files: {error}"
+            ))
+        })?;
     let ignored_env_snapshot_root = write_ignored_env_snapshot(&ignored_env_files, &path)?;
     cleanup_ignored_env_snapshot_on_error(
         finish(
