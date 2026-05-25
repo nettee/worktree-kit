@@ -4,8 +4,8 @@ use crate::output;
 use crate::paths::default_path;
 use crate::{AppResult, Error};
 use std::ffi::OsString;
-use std::fs::{self, File};
-use std::io::Write;
+use std::fs::{self, File, OpenOptions};
+use std::io::{IsTerminal, Write};
 #[cfg(unix)]
 use std::os::unix::ffi::OsStringExt;
 #[cfg(unix)]
@@ -804,13 +804,23 @@ fn start_async_init_worktree(
             worktree_path.display()
         ),
     )?;
+    let (stdout, stderr, log_path) = async_init_stdio(worktree_path)?;
+    if let Some(log_path) = log_path {
+        output::info(
+            session.out,
+            &format!(
+                "async initialization output will be written to {}",
+                log_path.display()
+            ),
+        )?;
+    }
     Command::new(exe)
         .arg("init-worktree")
         .arg(source_root)
         .arg(worktree_path)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(stdout)
+        .stderr(stderr)
         .spawn()
         .map_err(|error| {
             Error::message(format!(
@@ -818,6 +828,45 @@ fn start_async_init_worktree(
             ))
         })?;
     Ok(())
+}
+
+fn async_init_stdio(worktree_path: &Path) -> AppResult<(Stdio, Stdio, Option<PathBuf>)> {
+    if std::io::stdout().is_terminal() && std::io::stderr().is_terminal() {
+        return Ok((Stdio::inherit(), Stdio::inherit(), None));
+    }
+
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let worktree_name = worktree_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("worktree");
+    let log_path = std::env::temp_dir().join(format!(
+        "wtk-init-worktree-{}-{}-{}.log",
+        std::process::id(),
+        worktree_name,
+        nonce
+    ));
+    let stdout = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&log_path)
+        .map_err(|error| {
+            Error::message(format!(
+                "worktree created, but failed to open async initialization log {}: {error}",
+                log_path.display()
+            ))
+        })?;
+    let stderr = stdout.try_clone().map_err(|error| {
+        Error::message(format!(
+            "worktree created, but failed to duplicate async initialization log {}: {error}",
+            log_path.display()
+        ))
+    })?;
+    Ok((Stdio::from(stdout), Stdio::from(stderr), Some(log_path)))
 }
 
 fn maybe_run_pnpm_install(
