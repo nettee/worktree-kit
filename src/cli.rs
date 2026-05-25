@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 const TOP_LEVEL_COMMANDS: &[&str] = &[
     "create",
     "checkout",
+    "init-worktree",
     "remove",
     "send-out",
     "bring-in",
@@ -21,6 +22,11 @@ const SHELLS: &[&str] = &["bash", "zsh", "fish", "powershell"];
 enum Parsed {
     Create(Options),
     Checkout(Options),
+    InitWorktree {
+        source_root: String,
+        worktree_path: String,
+        ignored_env_snapshot_root: Option<String>,
+    },
     Remove(Options),
     SendOut(Options),
     BringIn(Options),
@@ -108,6 +114,18 @@ where
                 worktree::checkout(session, options)
             })
         }
+        Parsed::InitWorktree {
+            source_root,
+            worktree_path,
+            ignored_env_snapshot_root,
+        } => execute_worktree(stdout, stderr, true, |session| {
+            worktree::init_worktree(
+                session,
+                Path::new(&source_root),
+                Path::new(&worktree_path),
+                ignored_env_snapshot_root.as_deref().map(Path::new),
+            )
+        }),
         Parsed::Remove(options) => {
             execute_worktree(stdout, stderr, options.no_clipboard, |session| {
                 worktree::remove(session, options)
@@ -174,6 +192,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
         "help" => Ok(Parsed::Help),
         "create" => parse_create(rest),
         "checkout" => parse_checkout(rest),
+        "init-worktree" => parse_init_worktree(rest),
         "remove" => parse_remove(rest),
         "send-out" => parse_send_out(rest),
         "bring-in" => parse_bring_in(rest),
@@ -267,6 +286,52 @@ fn parse_checkout(args: &[String]) -> Result<Parsed, UsageError> {
     }
     options.branch = positionals.remove(0);
     Ok(Parsed::Checkout(options))
+}
+
+fn parse_init_worktree(args: &[String]) -> Result<Parsed, UsageError> {
+    let usage = command_help("init-worktree");
+    if args.len() == 2 && matches!(args[1].as_str(), "--help" | "-h") {
+        return Ok(Parsed::HelpText(usage));
+    }
+    let mut positionals = Vec::new();
+    let mut ignored_env_snapshot_root = None;
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            flag if flag == "--snapshot-root" || flag.starts_with("--snapshot-root=") => {
+                if let Some(value) = inline_flag_value(flag, "--snapshot-root") {
+                    ignored_env_snapshot_root = Some(value);
+                } else {
+                    i += 1;
+                    ignored_env_snapshot_root =
+                        Some(require_flag_value(args, i, "--snapshot-root", usage)?);
+                }
+            }
+            "--help" | "-h" => return Ok(Parsed::HelpText(usage)),
+            flag if flag.starts_with('-') => {
+                return Err(UsageError::new(format!("unknown flag: {flag}"), usage));
+            }
+            value => positionals.push(value.to_string()),
+        }
+        i += 1;
+    }
+    if positionals.len() < 2 {
+        return Err(UsageError::new(
+            "missing required arguments: source-root and worktree-path",
+            usage,
+        ));
+    }
+    if positionals.len() > 2 {
+        return Err(UsageError::new(
+            "too many arguments: expected source-root and worktree-path",
+            usage,
+        ));
+    }
+    Ok(Parsed::InitWorktree {
+        source_root: positionals[0].clone(),
+        worktree_path: positionals[1].clone(),
+        ignored_env_snapshot_root,
+    })
 }
 
 fn parse_remove(args: &[String]) -> Result<Parsed, UsageError> {
@@ -439,6 +504,13 @@ fn command_help(command: &str) -> &'static str {
             "Flags:\n",
             "      --path <path>\n",
             "      --no-clipboard\n",
+        ),
+        "init-worktree" => concat!(
+            "Usage: wtk init-worktree <source-root> <worktree-path> [flags]\n\n",
+            "Advanced command:\n",
+            "  Copy ignored .env files from source-root into worktree-path and run pnpm install when needed.\n\n",
+            "Flags:\n",
+            "  -h, --help\n",
         ),
         "remove" => concat!(
             "Usage: wtk remove [path] [flags]\n\n",

@@ -4,17 +4,22 @@ use crate::output;
 use crate::paths::default_path;
 use crate::{AppResult, Error};
 use std::ffi::OsString;
-use std::fs::{self, File};
-use std::io::Write;
+use std::fs::{self, File, OpenOptions};
+use std::io::{IsTerminal, Write};
 #[cfg(unix)]
 use std::os::unix::ffi::OsStringExt;
 #[cfg(unix)]
 use std::os::unix::fs as unix_fs;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 #[cfg(windows)]
 use std::os::windows::fs as windows_fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+const IGNORED_ENV_SNAPSHOT_PREFIX: &str = "wtk-init-worktree-snapshot-";
+const IGNORED_ENV_SNAPSHOT_MARKER: &str = ".wtk-ignored-env-snapshot";
 
 #[derive(Debug, Default, Clone)]
 pub struct Options {
@@ -73,7 +78,6 @@ pub fn create(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
 
     let path = create_target_path(&repo, &opts.branch, &opts.path)?;
     let base = prepare_create_base(session, &repo, &opts)?;
-    let ignored_env_files = snapshot_ignored_env_files(session, &repo.main_root)?;
     let args = vec![
         "worktree".to_string(),
         "add".to_string(),
@@ -86,20 +90,25 @@ pub fn create(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
     session
         .git
         .run(&repo.main_root, args.iter().map(String::as_str))?;
-    print_copied_ignored_env_files(
-        session,
-        copy_ignored_env_files(&ignored_env_files, &path).map_err(|error| {
+    let ignored_env_files =
+        snapshot_ignored_env_files(session, &repo.main_root).map_err(|error| {
             Error::message(format!(
-                "worktree created, but ignored .env copy failed: {error}"
+                "worktree created, but failed to snapshot ignored .env files: {error}"
             ))
-        })?,
+        })?;
+    let ignored_env_snapshot_root = write_ignored_env_snapshot(&ignored_env_files, &path)?;
+    cleanup_ignored_env_snapshot_on_error(
+        finish(
+            session,
+            opts.no_clipboard,
+            path.display().to_string(),
+            format!("created worktree at {}", path.display()),
+        ),
+        &ignored_env_snapshot_root,
     )?;
-    maybe_run_pnpm_install(session, &path, "worktree created")?;
-    finish(
-        session,
-        opts.no_clipboard,
-        path.display().to_string(),
-        format!("created worktree at {}", path.display()),
+    cleanup_ignored_env_snapshot_on_error(
+        start_async_init_worktree(session, &repo.main_root, &path, &ignored_env_snapshot_root),
+        &ignored_env_snapshot_root,
     )
 }
 
@@ -136,6 +145,40 @@ pub fn checkout(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
         path.display().to_string(),
         format!("created worktree at {}", path.display()),
     )
+}
+
+pub fn init_worktree(
+    session: &mut Session<'_>,
+    source_root: &Path,
+    worktree_path: &Path,
+    ignored_env_snapshot_root: Option<&Path>,
+) -> AppResult<()> {
+    let (ignored_env_files, snapshot_root) = match ignored_env_snapshot_root {
+        Some(snapshot_root) => match snapshot_ignored_env_files_from_root(snapshot_root) {
+            Ok(ignored_env_files) => (ignored_env_files, Some(snapshot_root)),
+            Err(error) => {
+                return match remove_ignored_env_snapshot_root(snapshot_root) {
+                    Ok(()) => Err(error),
+                    Err(cleanup_error) => {
+                        Err(Error::message(format!("{error}; also {cleanup_error}")))
+                    }
+                };
+            }
+        },
+        None => (snapshot_ignored_env_files(session, source_root)?, None),
+    };
+    let copy_result = copy_ignored_env_files(&ignored_env_files, worktree_path)
+        .map_err(|error| Error::message(format!("ignored .env copy failed: {error}")))
+        .and_then(|copied| print_copied_ignored_env_files(session, copied));
+    let cleanup_result = snapshot_root.map_or(Ok(()), remove_ignored_env_snapshot_root);
+    match (copy_result, cleanup_result) {
+        (Ok(()), Ok(())) => maybe_run_pnpm_install(session, worktree_path, "worktree initialized"),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(error)) => Err(error),
+        (Err(error), Err(cleanup_error)) => {
+            Err(Error::message(format!("{error}; also {cleanup_error}")))
+        }
+    }
 }
 
 pub fn remove(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
@@ -683,6 +726,66 @@ fn snapshot_ignored_env_files(
     Ok(ignored)
 }
 
+fn snapshot_ignored_env_files_from_root(root: &Path) -> AppResult<Vec<IgnoredEnvFile>> {
+    let mut ignored = Vec::new();
+    collect_ignored_env_files_from_root(root, root, &mut ignored)?;
+    ignored.sort_by(|left, right| left.relative.cmp(&right.relative));
+    Ok(ignored)
+}
+
+fn collect_ignored_env_files_from_root(
+    root: &Path,
+    current: &Path,
+    ignored: &mut Vec<IgnoredEnvFile>,
+) -> AppResult<()> {
+    let mut entries = fs::read_dir(current)
+        .map_err(|error| {
+            Error::message(format!(
+                "failed to read snapshot root {}: {error}",
+                current.display()
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            Error::message(format!(
+                "failed to read snapshot root {}: {error}",
+                current.display()
+            ))
+        })?;
+    entries.sort_by_key(|entry| entry.path());
+
+    for entry in entries {
+        let path = entry.path();
+        let file_type = entry.file_type().map_err(|error| {
+            Error::message(format!(
+                "failed to inspect snapshot entry {}: {error}",
+                path.display()
+            ))
+        })?;
+        if file_type.is_dir() {
+            collect_ignored_env_files_from_root(root, &path, ignored)?;
+            continue;
+        }
+
+        if path.file_name().is_none_or(|name| name != ".env") {
+            continue;
+        }
+
+        let relative = path.strip_prefix(root).map_err(|error| {
+            Error::message(format!(
+                "failed to compute snapshot path relative to {} for {}: {error}",
+                root.display(),
+                path.display()
+            ))
+        })?;
+        if let Some(snapshot) = snapshot_ignored_env_file(root, relative.to_path_buf())? {
+            ignored.push(snapshot);
+        }
+    }
+
+    Ok(())
+}
+
 fn snapshot_ignored_env_file(
     main_root: &Path,
     relative: PathBuf,
@@ -784,6 +887,191 @@ fn print_copied_ignored_env_files(
     Ok(())
 }
 
+fn start_async_init_worktree(
+    session: &mut Session<'_>,
+    source_root: &Path,
+    worktree_path: &Path,
+    ignored_env_snapshot_root: &Path,
+) -> AppResult<()> {
+    let exe = std::env::current_exe()
+        .map_err(|error| Error::message(format!("worktree created, but failed to locate wtk executable for async initialization: {error}")))?;
+    output::info(
+        session.out,
+        &format!(
+            "initializing worktree asynchronously: wtk init-worktree {} {}",
+            source_root.display(),
+            worktree_path.display()
+        ),
+    )?;
+    let (stdout, stderr, log_path) = async_init_stdio(worktree_path)?;
+    if let Some(log_path) = log_path {
+        output::info(
+            session.out,
+            &format!(
+                "async initialization output will be written to {}",
+                log_path.display()
+            ),
+        )?;
+    }
+    Command::new(exe)
+        .arg("init-worktree")
+        .arg(source_root)
+        .arg(worktree_path)
+        .arg("--snapshot-root")
+        .arg(ignored_env_snapshot_root)
+        .stdin(Stdio::null())
+        .stdout(stdout)
+        .stderr(stderr)
+        .spawn()
+        .map_err(|error| {
+            Error::message(format!(
+                "worktree created, but failed to start async worktree initialization: {error}"
+            ))
+        })?;
+    Ok(())
+}
+
+fn write_ignored_env_snapshot(
+    ignored_env_files: &[IgnoredEnvFile],
+    worktree_path: &Path,
+) -> AppResult<PathBuf> {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let worktree_name = worktree_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("worktree");
+    let snapshot_root = std::env::temp_dir().join(format!(
+        "{}{}-{}-{}",
+        IGNORED_ENV_SNAPSHOT_PREFIX,
+        std::process::id(),
+        worktree_name,
+        nonce
+    ));
+    fs::create_dir_all(&snapshot_root).map_err(|error| {
+        Error::message(format!(
+            "worktree created, but failed to create ignored .env snapshot {}: {error}",
+            snapshot_root.display()
+        ))
+    })?;
+    write_ignored_env_snapshot_marker(&snapshot_root)?;
+    cleanup_ignored_env_snapshot_on_error(
+        copy_ignored_env_files(ignored_env_files, &snapshot_root)
+            .map_err(|error| {
+                Error::message(format!(
+                    "worktree created, but failed to snapshot ignored .env files in {}: {error}",
+                    snapshot_root.display()
+                ))
+            })
+            .map(|_| ()),
+        &snapshot_root,
+    )?;
+    Ok(snapshot_root)
+}
+
+fn write_ignored_env_snapshot_marker(snapshot_root: &Path) -> AppResult<()> {
+    fs::write(
+        snapshot_root.join(IGNORED_ENV_SNAPSHOT_MARKER),
+        b"managed by wtk\n",
+    )
+    .map_err(|error| {
+        Error::message(format!(
+            "worktree created, but failed to mark ignored .env snapshot {}: {error}",
+            snapshot_root.display()
+        ))
+    })
+}
+
+fn remove_ignored_env_snapshot_root(snapshot_root: &Path) -> AppResult<()> {
+    validate_ignored_env_snapshot_root(snapshot_root)?;
+    fs::remove_dir_all(snapshot_root).map_err(|error| {
+        Error::message(format!(
+            "failed to remove ignored .env snapshot {}: {error}",
+            snapshot_root.display()
+        ))
+    })
+}
+
+fn validate_ignored_env_snapshot_root(snapshot_root: &Path) -> AppResult<()> {
+    let file_name = snapshot_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            Error::message(format!(
+                "refusing to remove unmanaged ignored .env snapshot {}",
+                snapshot_root.display()
+            ))
+        })?;
+    let expected_parent = std::env::temp_dir();
+    if snapshot_root.parent() != Some(expected_parent.as_path())
+        || !file_name.starts_with(IGNORED_ENV_SNAPSHOT_PREFIX)
+        || !snapshot_root.join(IGNORED_ENV_SNAPSHOT_MARKER).is_file()
+    {
+        return Err(Error::message(format!(
+            "refusing to remove unmanaged ignored .env snapshot {}",
+            snapshot_root.display()
+        )));
+    }
+    Ok(())
+}
+
+fn cleanup_ignored_env_snapshot_on_error(
+    result: AppResult<()>,
+    snapshot_root: &Path,
+) -> AppResult<()> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) => match remove_ignored_env_snapshot_root(snapshot_root) {
+            Ok(()) => Err(error),
+            Err(cleanup_error) => Err(Error::message(format!("{error}; also {cleanup_error}"))),
+        },
+    }
+}
+
+fn async_init_stdio(worktree_path: &Path) -> AppResult<(Stdio, Stdio, Option<PathBuf>)> {
+    if std::io::stdout().is_terminal() && std::io::stderr().is_terminal() {
+        return Ok((Stdio::inherit(), Stdio::inherit(), None));
+    }
+
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let worktree_name = worktree_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("worktree");
+    let log_path = std::env::temp_dir().join(format!(
+        "wtk-init-worktree-{}-{}-{}.log",
+        std::process::id(),
+        worktree_name,
+        nonce
+    ));
+    let stdout = open_async_init_log(&log_path)?;
+    let stderr = stdout.try_clone().map_err(|error| {
+        Error::message(format!(
+            "worktree created, but failed to duplicate async initialization log {}: {error}",
+            log_path.display()
+        ))
+    })?;
+    Ok((Stdio::from(stdout), Stdio::from(stderr), Some(log_path)))
+}
+
+fn open_async_init_log(log_path: &Path) -> AppResult<File> {
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(true).write(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    options.open(log_path).map_err(|error| {
+        Error::message(format!(
+            "worktree created, but failed to open async initialization log {}: {error}",
+            log_path.display()
+        ))
+    })
+}
+
 fn maybe_run_pnpm_install(
     session: &mut Session<'_>,
     worktree_path: &Path,
@@ -850,10 +1138,16 @@ fn finish(
 
 #[cfg(test)]
 mod tests {
-    use super::{finish, should_run_pnpm_install};
+    use super::{
+        async_init_stdio, cleanup_ignored_env_snapshot_on_error, finish,
+        remove_ignored_env_snapshot_root, should_run_pnpm_install,
+        write_ignored_env_snapshot_marker,
+    };
     use crate::clipboard::ClipboardProvider;
     use crate::{AppResult, Error};
     use std::io;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
 
     struct FailingClipboard;
@@ -881,6 +1175,83 @@ mod tests {
                 .to_string()
                 .contains("operation succeeded, but clipboard copy failed")
         );
+    }
+
+    #[test]
+    fn cleanup_ignored_env_snapshot_on_error_removes_snapshot_root() {
+        let snapshot_root = std::env::temp_dir().join(format!(
+            "{}{}-{}",
+            super::IGNORED_ENV_SNAPSHOT_PREFIX,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&snapshot_root).unwrap();
+        write_ignored_env_snapshot_marker(&snapshot_root).unwrap();
+        std::fs::write(snapshot_root.join(".env"), "SECRET=value\n").unwrap();
+
+        let error = cleanup_ignored_env_snapshot_on_error(
+            Err(Error::message(
+                "operation succeeded, but clipboard copy failed",
+            )),
+            &snapshot_root,
+        )
+        .expect_err("cleanup helper should preserve the original error");
+
+        assert!(
+            error
+                .to_string()
+                .contains("operation succeeded, but clipboard copy failed")
+        );
+        assert!(!snapshot_root.exists());
+    }
+
+    #[test]
+    fn remove_ignored_env_snapshot_root_rejects_unmanaged_paths() {
+        let snapshot_root = std::env::temp_dir().join(format!(
+            "{}{}-{}",
+            super::IGNORED_ENV_SNAPSHOT_PREFIX,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&snapshot_root).unwrap();
+        std::fs::write(snapshot_root.join(".env"), "SECRET=value\n").unwrap();
+
+        let error = remove_ignored_env_snapshot_root(&snapshot_root)
+            .expect_err("unmanaged snapshot root should not be deleted");
+
+        assert!(error.to_string().contains("refusing to remove unmanaged"));
+        assert!(snapshot_root.exists());
+        std::fs::remove_dir_all(&snapshot_root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn async_init_stdio_creates_owner_only_log_file() {
+        let worktree_path = std::env::temp_dir().join(format!(
+            "wtk-async-init-log-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&worktree_path).unwrap();
+
+        let (_stdout, _stderr, log_path) =
+            async_init_stdio(&worktree_path).expect("log redirection should succeed");
+        let log_path = log_path.expect("non-terminal test context should create a log file");
+        let mode = std::fs::metadata(&log_path).unwrap().permissions().mode() & 0o777;
+
+        assert_eq!(mode, 0o600);
+
+        std::fs::remove_file(&log_path).unwrap();
+        std::fs::remove_dir_all(&worktree_path).unwrap();
     }
 
     #[test]
