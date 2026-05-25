@@ -645,8 +645,20 @@ fn init_worktree_uses_snapshot_root_when_source_env_changes() {
         ],
     );
 
-    let snapshot_root = repo.parent().unwrap().join("ignored-env-snapshot");
+    let snapshot_root = std::env::temp_dir().join(format!(
+        "wtk-init-worktree-snapshot-{}-snapshot-root-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
     std::fs::create_dir_all(&snapshot_root).unwrap();
+    std::fs::write(
+        snapshot_root.join(".wtk-ignored-env-snapshot"),
+        "managed by wtk\n",
+    )
+    .unwrap();
     std::fs::write(snapshot_root.join(".env"), "SNAPSHOT=value\n").unwrap();
     std::fs::write(repo.join(".env"), "CHANGED=value\n").unwrap();
 
