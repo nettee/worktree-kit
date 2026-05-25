@@ -189,7 +189,7 @@ def ensure_changes_exist() -> None:
         fail("version update produced no file changes")
 
 
-def prepare_release(target: Version, *, base: str, remote: str, skip_tests: bool) -> None:
+def prepare_release(version: str, *, base: str, remote: str, skip_tests: bool) -> None:
     for command in ["git", "cargo", "gh"]:
         require_command(command)
 
@@ -197,6 +197,7 @@ def prepare_release(target: Version, *, base: str, remote: str, skip_tests: bool
     ensure_base_branch(base)
     run(["git", "fetch", remote, base, "--tags"])
     run(["git", "pull", "--ff-only", remote, base])
+    target = resolve_target_version(version)
     ensure_version_increases(target)
     ensure_tag_absent(target)
 
@@ -253,8 +254,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    target = resolve_target_version(args.version)
-    prepare_release(target, base=args.base, remote=args.remote, skip_tests=args.skip_tests)
+    prepare_release(args.version, base=args.base, remote=args.remote, skip_tests=args.skip_tests)
 
 
 if __name__ == "__main__":

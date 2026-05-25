@@ -21,5 +21,38 @@ class ResolveTargetVersionTests(unittest.TestCase):
             self.assertEqual(release.resolve_target_version("patch"), release.Version(1, 2, 4))
 
 
+class PrepareReleaseTests(unittest.TestCase):
+    def test_resolves_semantic_bump_after_syncing_base_branch(self) -> None:
+        events: list[str] = []
+
+        def run_side_effect(args: list[str], *, capture: bool = False) -> str:
+            if args == ["git", "pull", "--ff-only", "origin", "main"]:
+                events.append("pull")
+            return ""
+
+        def resolve_side_effect(value: str) -> release.Version:
+            events.append(f"resolve:{value}")
+            return release.Version(1, 2, 4)
+
+        with (
+            mock.patch("scripts.release.require_command"),
+            mock.patch("scripts.release.ensure_clean_worktree"),
+            mock.patch("scripts.release.ensure_base_branch"),
+            mock.patch("scripts.release.run", side_effect=run_side_effect),
+            mock.patch("scripts.release.resolve_target_version", side_effect=resolve_side_effect) as resolve_target_version,
+            mock.patch("scripts.release.ensure_version_increases") as ensure_version_increases,
+            mock.patch("scripts.release.ensure_tag_absent"),
+            mock.patch("scripts.release.ensure_branch_absent"),
+            mock.patch("scripts.release.update_version_files"),
+            mock.patch("scripts.release.ensure_changes_exist"),
+            mock.patch("scripts.release.ensure_release_label"),
+        ):
+            release.prepare_release("patch", base="main", remote="origin", skip_tests=True)
+
+        resolve_target_version.assert_called_once_with("patch")
+        ensure_version_increases.assert_called_once_with(release.Version(1, 2, 4))
+        self.assertEqual(events, ["pull", "resolve:patch"])
+
+
 if __name__ == "__main__":
     unittest.main()
