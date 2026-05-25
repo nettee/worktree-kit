@@ -666,6 +666,7 @@ fn init_worktree_uses_snapshot_root_when_source_env_changes() {
         std::fs::read_to_string(linked.join(".env")).unwrap(),
         "SNAPSHOT=value\n"
     );
+    assert!(!snapshot_root.exists());
 }
 
 #[test]

@@ -137,16 +137,34 @@ pub fn init_worktree(
     worktree_path: &Path,
     ignored_env_snapshot_root: Option<&Path>,
 ) -> AppResult<()> {
-    let ignored_env_files = match ignored_env_snapshot_root {
-        Some(snapshot_root) => snapshot_ignored_env_files_from_root(snapshot_root)?,
-        None => snapshot_ignored_env_files(session, source_root)?,
+    let (ignored_env_files, snapshot_root) = match ignored_env_snapshot_root {
+        Some(snapshot_root) => match snapshot_ignored_env_files_from_root(snapshot_root) {
+            Ok(ignored_env_files) => (ignored_env_files, Some(snapshot_root)),
+            Err(error) => {
+                return match remove_ignored_env_snapshot_root(snapshot_root) {
+                    Ok(()) => Err(error),
+                    Err(cleanup_error) => {
+                        Err(Error::message(format!("{error}; also {cleanup_error}")))
+                    }
+                };
+            }
+        },
+        None => (snapshot_ignored_env_files(session, source_root)?, None),
     };
-    print_copied_ignored_env_files(
+    let copy_result = print_copied_ignored_env_files(
         session,
         copy_ignored_env_files(&ignored_env_files, worktree_path)
             .map_err(|error| Error::message(format!("ignored .env copy failed: {error}")))?,
-    )?;
-    maybe_run_pnpm_install(session, worktree_path, "worktree initialized")
+    );
+    let cleanup_result = snapshot_root.map_or(Ok(()), remove_ignored_env_snapshot_root);
+    match (copy_result, cleanup_result) {
+        (Ok(()), Ok(())) => maybe_run_pnpm_install(session, worktree_path, "worktree initialized"),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(error)) => Err(error),
+        (Err(error), Err(cleanup_error)) => {
+            Err(Error::message(format!("{error}; also {cleanup_error}")))
+        }
+    }
 }
 
 pub fn remove(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
@@ -930,6 +948,15 @@ fn write_ignored_env_snapshot(
         ))
     })?;
     Ok(snapshot_root)
+}
+
+fn remove_ignored_env_snapshot_root(snapshot_root: &Path) -> AppResult<()> {
+    fs::remove_dir_all(snapshot_root).map_err(|error| {
+        Error::message(format!(
+            "failed to remove ignored .env snapshot {}: {error}",
+            snapshot_root.display()
+        ))
+    })
 }
 
 fn async_init_stdio(worktree_path: &Path) -> AppResult<(Stdio, Stdio, Option<PathBuf>)> {
