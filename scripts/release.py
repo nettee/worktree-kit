@@ -21,6 +21,7 @@ RELEASE_LABEL = "release"
 VERSION_PATTERN = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 CARGO_VERSION_PATTERN = re.compile(r'(?m)^version = "([^"]+)"$')
 README_PINNED_VERSION_PATTERN = re.compile(r"WTK_VERSION=\d+\.\d+\.\d+")
+SEMANTIC_BUMP_CHOICES = ("major", "minor", "patch")
 
 
 @dataclass(frozen=True, order=True)
@@ -38,6 +39,15 @@ class Version:
 
     def __str__(self) -> str:
         return f"{self.major}.{self.minor}.{self.patch}"
+
+    def bump(self, bump: str) -> "Version":
+        if bump == "major":
+            return Version(self.major + 1, 0, 0)
+        if bump == "minor":
+            return Version(self.major, self.minor + 1, 0)
+        if bump == "patch":
+            return Version(self.major, self.minor, self.patch + 1)
+        fail(f"unsupported semantic version bump: {bump}")
 
 
 def fail(message: str) -> None:
@@ -118,6 +128,12 @@ def ensure_version_increases(target: Version) -> None:
         fail(f"target version {target} must be greater than latest release tag v{latest_tag}")
 
 
+def resolve_target_version(value: str) -> Version:
+    if value in SEMANTIC_BUMP_CHOICES:
+        return read_cargo_version().bump(value)
+    return Version.parse(value)
+
+
 def ensure_tag_absent(target: Version) -> None:
     tag = f"v{target}"
     existing = run(["git", "tag", "--list", tag], capture=True)
@@ -173,7 +189,7 @@ def ensure_changes_exist() -> None:
         fail("version update produced no file changes")
 
 
-def prepare_release(target: Version, *, base: str, remote: str, skip_tests: bool) -> None:
+def prepare_release(version: str, *, base: str, remote: str, skip_tests: bool) -> None:
     for command in ["git", "cargo", "gh"]:
         require_command(command)
 
@@ -181,6 +197,7 @@ def prepare_release(target: Version, *, base: str, remote: str, skip_tests: bool
     ensure_base_branch(base)
     run(["git", "fetch", remote, base, "--tags"])
     run(["git", "pull", "--ff-only", remote, base])
+    target = resolve_target_version(version)
     ensure_version_increases(target)
     ensure_tag_absent(target)
 
@@ -225,7 +242,10 @@ def prepare_release(target: Version, *, base: str, remote: str, skip_tests: bool
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Prepare and open a release PR.")
-    parser.add_argument("version", help="Target release version, e.g. 0.1.0")
+    parser.add_argument(
+        "version",
+        help="Target release version (for example 0.1.0) or semantic bump: major, minor, patch",
+    )
     parser.add_argument("--base", default="main", help="Base branch for the release PR. Default: main")
     parser.add_argument("--remote", default="origin", help="Git remote to push to. Default: origin")
     parser.add_argument("--skip-tests", action="store_true", help="Run cargo check instead of cargo test")
@@ -234,8 +254,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    target = Version.parse(args.version)
-    prepare_release(target, base=args.base, remote=args.remote, skip_tests=args.skip_tests)
+    prepare_release(args.version, base=args.base, remote=args.remote, skip_tests=args.skip_tests)
 
 
 if __name__ == "__main__":
