@@ -7,25 +7,31 @@ manually while the PR is still open.
 
 ### 1. Prepare the release PR
 
-Run the release script from a clean `main` branch:
+Run the release script from a clean `main` branch. You can pass either an
+explicit version or a semantic bump shortcut:
 
 ```bash
 python3 scripts/release.py 0.1.0
+python3 scripts/release.py major
+python3 scripts/release.py minor
+python3 scripts/release.py patch
 ```
 
 The script will:
 
 1. Verify required commands are available: `git`, `cargo`, and `gh`.
 2. Verify the working tree is clean and the current branch is `main`.
-3. Fetch tags and verify the target version is greater than both:
+3. Resolve the target version from the explicit argument or the current
+   `Cargo.toml` version plus the requested semantic bump.
+4. Fetch tags and verify the target version is greater than both:
    - the current `Cargo.toml` version
    - the latest existing release tag
-4. Create a `release/v0.1.0` branch.
-5. Update release files such as `Cargo.toml` and README pinned install examples.
-6. Run `cargo test`.
-7. Commit the version bump.
-8. Push the release branch.
-9. Open a GitHub PR with the `release` label.
+5. Create a `release/v0.1.0` branch.
+6. Update release files such as `Cargo.toml` and README pinned install examples.
+7. Run `cargo test`.
+8. Commit the version bump.
+9. Push the release branch.
+10. Open a GitHub PR with the `release` label.
 
 For emergency use only, tests can be replaced by `cargo check`:
 
