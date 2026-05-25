@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 const TOP_LEVEL_COMMANDS: &[&str] = &[
     "create",
     "checkout",
+    "init-worktree",
     "remove",
     "send-out",
     "bring-in",
@@ -21,6 +22,10 @@ const SHELLS: &[&str] = &["bash", "zsh", "fish", "powershell"];
 enum Parsed {
     Create(Options),
     Checkout(Options),
+    InitWorktree {
+        source_root: String,
+        worktree_path: String,
+    },
     Remove(Options),
     SendOut(Options),
     BringIn(Options),
@@ -108,6 +113,12 @@ where
                 worktree::checkout(session, options)
             })
         }
+        Parsed::InitWorktree {
+            source_root,
+            worktree_path,
+        } => execute_worktree(stdout, stderr, true, |session| {
+            worktree::init_worktree(session, Path::new(&source_root), Path::new(&worktree_path))
+        }),
         Parsed::Remove(options) => {
             execute_worktree(stdout, stderr, options.no_clipboard, |session| {
                 worktree::remove(session, options)
@@ -174,6 +185,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
         "help" => Ok(Parsed::Help),
         "create" => parse_create(rest),
         "checkout" => parse_checkout(rest),
+        "init-worktree" => parse_init_worktree(rest),
         "remove" => parse_remove(rest),
         "send-out" => parse_send_out(rest),
         "bring-in" => parse_bring_in(rest),
@@ -267,6 +279,29 @@ fn parse_checkout(args: &[String]) -> Result<Parsed, UsageError> {
     }
     options.branch = positionals.remove(0);
     Ok(Parsed::Checkout(options))
+}
+
+fn parse_init_worktree(args: &[String]) -> Result<Parsed, UsageError> {
+    let usage = command_help("init-worktree");
+    if args.len() == 2 && matches!(args[1].as_str(), "--help" | "-h") {
+        return Ok(Parsed::HelpText(usage));
+    }
+    if args.len() < 3 {
+        return Err(UsageError::new(
+            "missing required arguments: source-root and worktree-path",
+            usage,
+        ));
+    }
+    if args.len() > 3 {
+        return Err(UsageError::new(
+            "too many arguments: expected source-root and worktree-path",
+            usage,
+        ));
+    }
+    Ok(Parsed::InitWorktree {
+        source_root: args[1].clone(),
+        worktree_path: args[2].clone(),
+    })
 }
 
 fn parse_remove(args: &[String]) -> Result<Parsed, UsageError> {
@@ -439,6 +474,13 @@ fn command_help(command: &str) -> &'static str {
             "Flags:\n",
             "      --path <path>\n",
             "      --no-clipboard\n",
+        ),
+        "init-worktree" => concat!(
+            "Usage: wtk init-worktree <source-root> <worktree-path> [flags]\n\n",
+            "Advanced command:\n",
+            "  Copy ignored .env files from source-root into worktree-path and run pnpm install when needed.\n\n",
+            "Flags:\n",
+            "  -h, --help\n",
         ),
         "remove" => concat!(
             "Usage: wtk remove [path] [flags]\n\n",

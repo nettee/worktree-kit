@@ -13,7 +13,7 @@ use std::os::unix::fs as unix_fs;
 #[cfg(windows)]
 use std::os::windows::fs as windows_fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Default, Clone)]
@@ -73,7 +73,6 @@ pub fn create(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
 
     let path = create_target_path(&repo, &opts.branch, &opts.path)?;
     let base = prepare_create_base(session, &repo, &opts)?;
-    let ignored_env_files = snapshot_ignored_env_files(session, &repo.main_root)?;
     let args = vec![
         "worktree".to_string(),
         "add".to_string(),
@@ -86,21 +85,13 @@ pub fn create(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
     session
         .git
         .run(&repo.main_root, args.iter().map(String::as_str))?;
-    print_copied_ignored_env_files(
-        session,
-        copy_ignored_env_files(&ignored_env_files, &path).map_err(|error| {
-            Error::message(format!(
-                "worktree created, but ignored .env copy failed: {error}"
-            ))
-        })?,
-    )?;
-    maybe_run_pnpm_install(session, &path, "worktree created")?;
     finish(
         session,
         opts.no_clipboard,
         path.display().to_string(),
         format!("created worktree at {}", path.display()),
-    )
+    )?;
+    start_async_init_worktree(session, &repo.main_root, &path)
 }
 
 pub fn checkout(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
@@ -136,6 +127,20 @@ pub fn checkout(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
         path.display().to_string(),
         format!("created worktree at {}", path.display()),
     )
+}
+
+pub fn init_worktree(
+    session: &mut Session<'_>,
+    source_root: &Path,
+    worktree_path: &Path,
+) -> AppResult<()> {
+    let ignored_env_files = snapshot_ignored_env_files(session, source_root)?;
+    print_copied_ignored_env_files(
+        session,
+        copy_ignored_env_files(&ignored_env_files, worktree_path)
+            .map_err(|error| Error::message(format!("ignored .env copy failed: {error}")))?,
+    )?;
+    maybe_run_pnpm_install(session, worktree_path, "worktree initialized")
 }
 
 pub fn remove(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
@@ -781,6 +786,37 @@ fn print_copied_ignored_env_files(
     for relative in copied {
         writeln!(session.out, "copied ignored .env: {}", relative.display())?;
     }
+    Ok(())
+}
+
+fn start_async_init_worktree(
+    session: &mut Session<'_>,
+    source_root: &Path,
+    worktree_path: &Path,
+) -> AppResult<()> {
+    let exe = std::env::current_exe()
+        .map_err(|error| Error::message(format!("worktree created, but failed to locate wtk executable for async initialization: {error}")))?;
+    output::info(
+        session.out,
+        &format!(
+            "initializing worktree asynchronously: wtk init-worktree {} {}",
+            source_root.display(),
+            worktree_path.display()
+        ),
+    )?;
+    Command::new(exe)
+        .arg("init-worktree")
+        .arg(source_root)
+        .arg(worktree_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| {
+            Error::message(format!(
+                "worktree created, but failed to start async worktree initialization: {error}"
+            ))
+        })?;
     Ok(())
 }
 

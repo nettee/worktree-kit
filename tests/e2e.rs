@@ -5,6 +5,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 static BIN_PATH: OnceLock<PathBuf> = OnceLock::new();
 
@@ -113,11 +114,12 @@ fn create_copies_ignored_root_env() {
     );
     let linked = linked_worktree_path(&repo, "feature/root-env");
 
+    wait_for_path(&linked.join(".env"));
     assert_eq!(
         std::fs::read_to_string(linked.join(".env")).unwrap(),
         "ROOT=value\n"
     );
-    assert!(out.contains("copied ignored .env: .env"));
+    assert!(out.contains("initializing worktree asynchronously"));
 }
 
 #[cfg(unix)]
@@ -143,6 +145,7 @@ fn create_copies_ignored_root_env_symlink() {
     );
     let linked = linked_worktree_path(&repo, "feature/root-env-symlink");
 
+    wait_for_path(&linked.join(".env"));
     assert!(
         std::fs::symlink_metadata(linked.join(".env"))
             .unwrap()
@@ -154,7 +157,7 @@ fn create_copies_ignored_root_env_symlink() {
         std::fs::read_to_string(linked.join(".env")).unwrap(),
         "ROOT=value\n"
     );
-    assert!(out.contains("copied ignored .env: .env"));
+    assert!(out.contains("initializing worktree asynchronously"));
 }
 
 #[cfg(unix)]
@@ -181,6 +184,11 @@ fn create_preserves_ignored_root_env_permissions() {
     );
     let linked = linked_worktree_path(&repo, "feature/root-env-mode");
 
+    wait_until("copied .env permissions to be preserved", || {
+        std::fs::metadata(linked.join(".env"))
+            .map(|metadata| metadata.permissions().mode() & 0o777 == 0o600)
+            .unwrap_or(false)
+    });
     assert_eq!(
         std::fs::metadata(linked.join(".env"))
             .unwrap()
@@ -220,6 +228,8 @@ fn create_recursively_copies_ignored_child_env_files() {
     );
     let linked = linked_worktree_path(&repo, "feature/child-envs");
 
+    wait_for_path(&linked.join("apps/web/.env"));
+    wait_for_path(&linked.join("services/api/.env"));
     assert_eq!(
         std::fs::read_to_string(linked.join("apps/web/.env")).unwrap(),
         "WEB=value\n"
@@ -228,8 +238,7 @@ fn create_recursively_copies_ignored_child_env_files() {
         std::fs::read_to_string(linked.join("services/api/.env")).unwrap(),
         "API=value\n"
     );
-    assert!(out.contains("copied ignored .env: apps/web/.env"));
-    assert!(out.contains("copied ignored .env: services/api/.env"));
+    assert!(out.contains("initializing worktree asynchronously"));
 }
 
 #[test]
@@ -253,11 +262,12 @@ fn create_copies_ignored_env_inside_ignored_only_directory() {
     );
     let linked = linked_worktree_path(&repo, "feature/ignored-dir-env");
 
+    wait_for_path(&linked.join("secrets/.env"));
     assert_eq!(
         std::fs::read_to_string(linked.join("secrets/.env")).unwrap(),
         "SECRET=value\n"
     );
-    assert!(out.contains("copied ignored .env: secrets/.env"));
+    assert!(out.contains("initializing worktree asynchronously"));
 }
 
 #[test]
@@ -288,9 +298,7 @@ fn create_runs_pnpm_install_for_pnpm_worktrees() {
     let repo = init_repo("main");
     commit_files(
         &repo,
-        &[
-            ("pnpm-lock.yaml", "lockfileVersion: '9.0'\n"),
-        ],
+        &[("pnpm-lock.yaml", "lockfileVersion: '9.0'\n")],
         "add pnpm files",
     );
 
@@ -316,13 +324,53 @@ fn create_runs_pnpm_install_for_pnpm_worktrees() {
         std::fs::canonicalize(linked_worktree_path(&repo, "feature/pnpm-install")).unwrap();
 
     assert!(linked.exists());
-    assert!(out.contains("running pnpm install"));
+    assert!(out.contains("initializing worktree asynchronously"));
+    wait_for_file_contains(&log_path, "ARGS:install");
     let log = std::fs::read_to_string(log_path).unwrap();
     assert!(log.contains("ARGS:install"), "missing args in log: {log}");
     assert!(
         log.contains(&format!("PWD:{}", linked.display())),
         "missing cwd in log: {log}"
     );
+}
+
+#[test]
+fn create_does_not_wait_for_slow_pnpm_install() {
+    let bin = build_wtk();
+    let repo = init_repo("main");
+    commit_files(
+        &repo,
+        &[("pnpm-lock.yaml", "lockfileVersion: '9.0'\n")],
+        "add pnpm files",
+    );
+
+    let fake_bin = temp_dir().join("fake-bin");
+    std::fs::create_dir_all(&fake_bin).unwrap();
+    let log_path = fake_bin.join("pnpm.log");
+    write_slow_fake_pnpm(&fake_bin, &log_path);
+    let path = prepend_path(&fake_bin);
+
+    let started = Instant::now();
+    let out = run_wtk_with_env(
+        &bin,
+        &repo,
+        [
+            "create",
+            "feature/slow-pnpm-install",
+            "--base",
+            "main",
+            "--no-clipboard",
+        ],
+        &[("PATH", path)],
+    );
+
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "create waited for slow pnpm install"
+    );
+    assert!(out.contains("created worktree"));
+    assert!(out.contains("initializing worktree asynchronously"));
+    wait_for_file_contains(&log_path, "ARGS:install");
 }
 
 #[test]
@@ -404,11 +452,12 @@ fn create_copies_ignored_env_with_non_ascii_path() {
     );
     let linked = linked_worktree_path(&repo, "feature/unicode-env");
 
+    wait_for_path(&linked.join("café/.env"));
     assert_eq!(
         std::fs::read_to_string(linked.join("café/.env")).unwrap(),
         "UNICODE=value\n"
     );
-    assert!(out.contains("copied ignored .env: café/.env"));
+    assert!(out.contains("initializing worktree asynchronously"));
 }
 
 #[test]
@@ -434,7 +483,7 @@ fn tracked_env_files_are_not_reported_by_copy_mechanism() {
         std::fs::read_to_string(linked.join(".env")).unwrap(),
         "TRACKED=value\n"
     );
-    assert!(!out.contains("copied ignored .env:"));
+    assert!(out.contains("initializing worktree asynchronously"));
 }
 
 #[test]
@@ -474,7 +523,7 @@ fn similarly_named_env_files_are_not_copied() {
     assert!(!linked.join(".env.example").exists());
     assert!(!linked.join(".envrc").exists());
     assert!(!linked.join("config/.env.local").exists());
-    assert!(!out.contains("copied ignored .env:"));
+    assert!(out.contains("initializing worktree asynchronously"));
 }
 
 #[test]
@@ -499,7 +548,7 @@ fn ignored_env_directory_contents_are_not_copied() {
     let linked = linked_worktree_path(&repo, "feature/env-dir");
 
     assert!(!linked.join(".env/secrets.txt").exists());
-    assert!(!out.contains("copied ignored .env:"));
+    assert!(out.contains("initializing worktree asynchronously"));
 }
 
 #[test]
@@ -520,11 +569,11 @@ fn no_ignored_env_files_is_silent_success() {
     );
 
     assert!(out.contains("created worktree"));
-    assert!(!out.contains("copied ignored .env:"));
+    assert!(out.contains("initializing worktree asynchronously"));
 }
 
 #[test]
-fn copy_output_uses_git_root_relative_paths_one_per_line() {
+fn init_worktree_output_uses_git_root_relative_paths_one_per_line() {
     let bin = build_wtk();
     let repo = init_repo("main");
     commit_files(
@@ -538,7 +587,7 @@ fn copy_output_uses_git_root_relative_paths_one_per_line() {
     std::fs::write(repo.join(".env"), "ROOT=value\n").unwrap();
     std::fs::write(repo.join("apps/web/.env"), "WEB=value\n").unwrap();
 
-    let out = run_wtk(
+    let _out = run_wtk(
         &bin,
         &repo.join("apps"),
         [
@@ -547,6 +596,19 @@ fn copy_output_uses_git_root_relative_paths_one_per_line() {
             "--base",
             "main",
             "--no-clipboard",
+        ],
+    );
+    let linked = linked_worktree_path(&repo, "feature/output-env");
+    wait_for_path(&linked.join(".env"));
+    wait_for_path(&linked.join("apps/web/.env"));
+
+    let out = run_wtk(
+        &bin,
+        &repo,
+        [
+            "init-worktree",
+            repo.to_str().unwrap(),
+            linked.to_str().unwrap(),
         ],
     );
 
@@ -996,6 +1058,31 @@ fn prepend_path(bin_dir: &Path) -> std::ffi::OsString {
     std::env::join_paths(paths).unwrap()
 }
 
+fn wait_for_path(path: &Path) {
+    wait_until(&format!("path to exist: {}", path.display()), || {
+        path.exists()
+    });
+}
+
+fn wait_for_file_contains(path: &Path, needle: &str) {
+    wait_until(&format!("{} to contain {needle}", path.display()), || {
+        std::fs::read_to_string(path)
+            .map(|contents| contents.contains(needle))
+            .unwrap_or(false)
+    });
+}
+
+fn wait_until(reason: &str, mut predicate: impl FnMut() -> bool) {
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(5) {
+        if predicate() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    panic!("timed out waiting for {reason}");
+}
+
 fn write_fake_pnpm(bin_dir: &Path, log_path: &Path) {
     #[cfg(windows)]
     {
@@ -1011,6 +1098,35 @@ fn write_fake_pnpm(bin_dir: &Path, log_path: &Path) {
     {
         let script = format!(
             "#!/bin/sh\nprintf 'ARGS:%s\\n' \"$*\" >> \"{}\"\nprintf 'PWD:%s\\n' \"$PWD\" >> \"{}\"\n",
+            log_path.display(),
+            log_path.display()
+        );
+        let script_path = bin_dir.join("pnpm");
+        std::fs::write(&script_path, script).unwrap();
+        let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
+        #[cfg(unix)]
+        {
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&script_path, perms).unwrap();
+        }
+    }
+}
+
+fn write_slow_fake_pnpm(bin_dir: &Path, log_path: &Path) {
+    #[cfg(windows)]
+    {
+        let script = format!(
+            "@echo off\r\ntimeout /t 2 /nobreak >nul\r\necho ARGS:%*>>\"{}\"\r\necho PWD:%CD%>>\"{}\"\r\n",
+            log_path.display(),
+            log_path.display()
+        );
+        std::fs::write(bin_dir.join("pnpm.cmd"), script).unwrap();
+    }
+
+    #[cfg(not(windows))]
+    {
+        let script = format!(
+            "#!/bin/sh\nsleep 2\nprintf 'ARGS:%s\\n' \"$*\" >> \"{}\"\nprintf 'PWD:%s\\n' \"$PWD\" >> \"{}\"\n",
             log_path.display(),
             log_path.display()
         );
