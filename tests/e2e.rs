@@ -937,15 +937,23 @@ fn argument_and_flag_usage_errors() {
 fn build_wtk() -> PathBuf {
     BIN_PATH
         .get_or_init(|| {
-            let status = Command::new("cargo")
+            let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            let target_dir = std::env::var_os("WTK_BUILD_TARGET_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| manifest_dir.join("target"));
+
+            let mut command = Command::new("cargo");
+            command
                 .args(["build", "--release", "--bin", "wtk"])
-                .current_dir(env!("CARGO_MANIFEST_DIR"))
-                .status()
-                .expect("cargo build should start");
+                .current_dir(&manifest_dir);
+            if std::env::var_os("WTK_BUILD_TARGET_DIR").is_some() {
+                command.env("CARGO_TARGET_DIR", &target_dir);
+            }
+
+            let status = command.status().expect("cargo build should start");
             assert!(status.success(), "cargo build failed with {status}");
 
-            let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-            path.push("target");
+            let mut path = target_dir;
             path.push("release");
             path.push(if cfg!(windows) { "wtk.exe" } else { "wtk" });
             path
