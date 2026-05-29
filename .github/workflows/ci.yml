@@ -4,12 +4,36 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: sh scripts/test-install.sh
-      - run: sh scripts/test-install-local.sh
-      - run: cargo test
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install llvm-tools-preview
+        run: rustup component add llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Validate remote install script
+        run: sh scripts/test-install.sh
+
+      - name: Validate local install script
+        run: sh scripts/test-install-local.sh
+
+      - name: Run test suite with coverage
+        run: cargo llvm-cov --locked --workspace --lcov --output-path lcov.info
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-coverage-lcov
+          path: lcov.info
