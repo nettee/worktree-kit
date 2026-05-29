@@ -8,6 +8,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 const TOP_LEVEL_COMMANDS: &[&str] = &[
+    "new",
     "create",
     "checkout",
     "init-worktree",
@@ -190,6 +191,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
         "--version" | "-V" => Ok(Parsed::Version),
         "--help" | "-h" => Ok(Parsed::Help),
         "help" => Ok(Parsed::Help),
+        "new" => parse_new(rest),
         "create" => parse_create(rest),
         "checkout" => parse_checkout(rest),
         "init-worktree" => parse_init_worktree(rest),
@@ -205,8 +207,16 @@ fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
     }
 }
 
+fn parse_new(args: &[String]) -> Result<Parsed, UsageError> {
+    parse_new_like(args, "new")
+}
+
 fn parse_create(args: &[String]) -> Result<Parsed, UsageError> {
-    let usage = command_help("create");
+    parse_new_like(args, "create")
+}
+
+fn parse_new_like(args: &[String], command: &'static str) -> Result<Parsed, UsageError> {
+    let usage = command_help(command);
     let mut options = Options::default();
     let mut positionals = Vec::new();
     let mut i = 1;
@@ -476,7 +486,8 @@ fn root_help() -> &'static str {
         "Friendly Git worktree workflows\n\n",
         "Usage: wtk <command> [flags]\n\n",
         "Commands:\n",
-        "  create      Create a new branch in a linked worktree\n",
+        "  new         Create a new branch in a linked worktree\n",
+        "  create      Alias for `new`\n",
         "  checkout    Check out an existing branch or ref in a linked worktree\n",
         "  remove      Remove a linked worktree\n",
         "  send-out    Move the current main-worktree branch to a linked worktree\n",
@@ -491,6 +502,14 @@ fn root_help() -> &'static str {
 
 fn command_help(command: &str) -> &'static str {
     match command {
+        "new" => concat!(
+            "Usage: wtk new <branch> [flags]\n\n",
+            "Flags:\n",
+            "      --path <path>\n",
+            "      --base <branch>\n",
+            "  -C, --from-current\n",
+            "      --no-clipboard\n",
+        ),
         "create" => concat!(
             "Usage: wtk create <branch> [flags]\n\n",
             "Flags:\n",
@@ -597,7 +616,7 @@ fn dynamic_candidates(cwd: PathBuf, args: &[String]) -> Vec<String> {
                 filter_prefix_owned(branches, to_complete)
             })
             .unwrap_or_default(),
-        "create" | "checkout" => git_lines(&cwd, ["branch", "--format=%(refname:short)"])
+        "new" | "create" | "checkout" => git_lines(&cwd, ["branch", "--format=%(refname:short)"])
             .map(|lines| filter_prefix_owned(lines, to_complete))
             .unwrap_or_default(),
         _ => Vec::new(),
@@ -705,7 +724,29 @@ mod tests {
     }
 
     #[test]
-    fn parses_inline_flag_values_for_create() {
+    fn parses_inline_flag_values_for_new() {
+        let parsed = parse_args(&[
+            "wtk".to_string(),
+            "new".to_string(),
+            "--path=../feature".to_string(),
+            "--base=main".to_string(),
+            "topic".to_string(),
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            parsed,
+            Parsed::Create(Options {
+                branch,
+                path,
+                base,
+                ..
+            }) if branch == "topic" && path == "../feature" && base == "main"
+        ));
+    }
+
+    #[test]
+    fn parses_inline_flag_values_for_create_alias() {
         let parsed = parse_args(&[
             "wtk".to_string(),
             "create".to_string(),
