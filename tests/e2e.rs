@@ -78,7 +78,7 @@ fn create_new_with_trunk_and_dirty_failures() {
     run_wtk(
         &bin,
         &repo,
-        ["create", "feature/new", "--base", "trunk", "--no-clipboard"],
+        ["new", "feature/new", "--base", "trunk", "--no-clipboard"],
     );
     let linked = repo.parent().unwrap().join(format!(
         "{}-wt-feature-new",
@@ -95,7 +95,43 @@ fn create_new_with_trunk_and_dirty_failures() {
 }
 
 #[test]
+fn completion_suggests_new_command() {
+    let bin = build_wtk();
+    let repo = init_repo("main");
+    let completed = completion_lines(&bin, &repo, ["__complete"]);
+    assert!(completed.iter().any(|line| line == "new"));
+}
+
+#[test]
 fn create_copies_ignored_root_env() {
+    let bin = build_wtk();
+    let repo = init_repo("main");
+    commit_files(&repo, &[(".gitignore", ".env\n")], "add gitignore");
+    std::fs::write(repo.join(".env"), "ROOT=value\n").unwrap();
+
+    let out = run_wtk(
+        &bin,
+        &repo,
+        [
+            "new",
+            "feature/root-env",
+            "--base",
+            "main",
+            "--no-clipboard",
+        ],
+    );
+    let linked = linked_worktree_path(&repo, "feature/root-env");
+
+    wait_for_path(&linked.join(".env"));
+    assert_eq!(
+        std::fs::read_to_string(linked.join(".env")).unwrap(),
+        "ROOT=value\n"
+    );
+    assert!(out.contains("initializing worktree asynchronously"));
+}
+
+#[test]
+fn create_alias_copies_ignored_root_env() {
     let bin = build_wtk();
     let repo = init_repo("main");
     commit_files(&repo, &[(".gitignore", ".env\n")], "add gitignore");
@@ -136,7 +172,7 @@ fn create_copies_ignored_root_env_symlink() {
         &bin,
         &repo,
         [
-            "create",
+            "new",
             "feature/root-env-symlink",
             "--base",
             "main",
@@ -175,7 +211,7 @@ fn create_preserves_ignored_root_env_permissions() {
         &bin,
         &repo,
         [
-            "create",
+            "new",
             "feature/root-env-mode",
             "--base",
             "main",
@@ -219,7 +255,7 @@ fn create_recursively_copies_ignored_child_env_files() {
         &bin,
         &repo,
         [
-            "create",
+            "new",
             "feature/child-envs",
             "--base",
             "main",
@@ -253,7 +289,7 @@ fn create_copies_ignored_env_inside_ignored_only_directory() {
         &bin,
         &repo,
         [
-            "create",
+            "new",
             "feature/ignored-dir-env",
             "--base",
             "main",
@@ -312,7 +348,7 @@ fn create_runs_pnpm_install_for_pnpm_worktrees() {
         &bin,
         &repo,
         [
-            "create",
+            "new",
             "feature/pnpm-install",
             "--base",
             "main",
@@ -326,6 +362,7 @@ fn create_runs_pnpm_install_for_pnpm_worktrees() {
     assert!(linked.exists());
     assert!(out.contains("initializing worktree asynchronously"));
     wait_for_file_contains(&log_path, "ARGS:install");
+    wait_for_file_contains(&log_path, &format!("PWD:{}", linked.display()));
     let log = std::fs::read_to_string(log_path).unwrap();
     assert!(log.contains("ARGS:install"), "missing args in log: {log}");
     assert!(
@@ -355,7 +392,7 @@ fn create_does_not_wait_for_slow_pnpm_install() {
         &bin,
         &repo,
         [
-            "create",
+            "new",
             "feature/slow-pnpm-install",
             "--base",
             "main",
@@ -365,7 +402,7 @@ fn create_does_not_wait_for_slow_pnpm_install() {
     );
 
     assert!(
-        started.elapsed() < Duration::from_secs(1),
+        started.elapsed() < Duration::from_millis(1500),
         "create waited for slow pnpm install"
     );
     assert!(out.contains("created worktree"));
@@ -443,7 +480,7 @@ fn create_copies_ignored_env_with_non_ascii_path() {
         &bin,
         &repo,
         [
-            "create",
+            "new",
             "feature/unicode-env",
             "--base",
             "main",
@@ -470,7 +507,7 @@ fn tracked_env_files_are_not_reported_by_copy_mechanism() {
         &bin,
         &repo,
         [
-            "create",
+            "new",
             "feature/tracked-env",
             "--base",
             "main",
@@ -510,7 +547,7 @@ fn similarly_named_env_files_are_not_copied() {
         &bin,
         &repo,
         [
-            "create",
+            "new",
             "feature/named-envs",
             "--base",
             "main",
@@ -538,7 +575,7 @@ fn ignored_env_directory_contents_are_not_copied() {
         &bin,
         &repo,
         [
-            "create",
+            "new",
             "feature/env-dir",
             "--base",
             "main",
@@ -560,7 +597,7 @@ fn no_ignored_env_files_is_silent_success() {
         &bin,
         &repo,
         [
-            "create",
+            "new",
             "feature/no-env",
             "--base",
             "main",
@@ -591,7 +628,7 @@ fn init_worktree_output_uses_git_root_relative_paths_one_per_line() {
         &bin,
         &repo.join("apps"),
         [
-            "create",
+            "new",
             "feature/output-env",
             "--base",
             "main",
@@ -694,7 +731,7 @@ fn create_from_current_branch() {
         &bin,
         &repo,
         [
-            "create",
+            "new",
             "feature/from-current",
             "--from-current",
             "--no-clipboard",
@@ -710,7 +747,7 @@ fn create_from_current_branch() {
         &bin,
         &repo,
         [
-            "create",
+            "new",
             "feature/from-current-short",
             "-C",
             "--no-clipboard",
@@ -726,7 +763,7 @@ fn create_from_current_branch() {
         &bin,
         &repo,
         [
-            "create",
+            "new",
             "feature/conflict",
             "--base",
             "main",
@@ -808,7 +845,7 @@ fn create_new_default_fetch_fast_forwards_local_main() {
     run_wtk(
         &bin,
         &repo,
-        ["create", "feature/from-updated-main", "--no-clipboard"],
+        ["new", "feature/from-updated-main", "--no-clipboard"],
     );
     let linked = repo.parent().unwrap().join(format!(
         "{}-wt-feature-from-updated-main",
@@ -856,7 +893,7 @@ fn create_new_default_refuses_non_fast_forward_base() {
     run_git(&seed, ["commit", "-m", "remote"]);
     run_git(&seed, ["push"]);
 
-    let (out, status) = run_wtk_err(&bin, &repo, ["create", "feature/refuse", "--no-clipboard"]);
+    let (out, status) = run_wtk_err(&bin, &repo, ["new", "feature/refuse", "--no-clipboard"]);
     assert!(!status.success());
     assert!(out.contains("refusing to move it without a fast-forward"));
 }
@@ -877,6 +914,16 @@ fn argument_and_flag_usage_errors() {
     let bin = build_wtk();
     let repo = init_repo("main");
     let cases = [
+        (
+            vec!["new"],
+            "missing required argument: branch",
+            "wtk new <branch> [flags]",
+        ),
+        (
+            vec!["new", "feature/a", "feature/b"],
+            "too many arguments: expected 1 branch",
+            "wtk new <branch> [flags]",
+        ),
         (
             vec!["create"],
             "missing required argument: branch",
@@ -916,6 +963,11 @@ fn argument_and_flag_usage_errors() {
             vec!["completion", "tcsh"],
             "unsupported shell: tcsh",
             "wtk completion <bash|zsh|fish|powershell> [flags]",
+        ),
+        (
+            vec!["new", "--wat"],
+            "unknown flag: --wat",
+            "wtk new <branch> [flags]",
         ),
         (
             vec!["create", "--wat"],

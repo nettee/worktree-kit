@@ -2,11 +2,13 @@
 
 `worktree-kit` provides the `wtk` CLI for common Git worktree workflows:
 
-- `wtk create` creates a new branch in a linked worktree.
+- `wtk new` creates a new branch in a linked worktree.
 - `wtk checkout` checks out an existing branch or ref in a linked worktree.
 - `wtk remove` removes a linked worktree.
 - `wtk send-out` moves the current main-worktree branch to a linked worktree.
 - `wtk bring-in` moves a linked worktree branch back into the main worktree.
+
+`wtk create` remains available as a compatibility alias for `wtk new`.
 
 Default linked worktree paths are sibling directories named `<repo>-wt-<branch-slug>`.
 
@@ -59,8 +61,8 @@ sh scripts/test-install-local.sh
 ## Usage
 
 ```bash
-wtk create feature/foo
-wtk create feature/from-current --from-current
+wtk new feature/foo
+wtk new feature/from-current --from-current
 wtk checkout feature/existing
 wtk remove ../repo-wt-feature-foo
 wtk send-out
@@ -75,7 +77,7 @@ If the new worktree looks like a pnpm repo (`pnpm-lock.yaml` or `pnpm-workspace.
 
 ## Create base selection
 
-`wtk create` selects the base for the new branch by this precedence:
+`wtk new` selects the base for the new branch by this precedence:
 
 1. `--base`
 2. `--from-current` / `-C`, which uses the branch checked out in the current worktree
