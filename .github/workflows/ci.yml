@@ -32,7 +32,7 @@ jobs:
       - name: Run test suite with coverage
         run: |
           cargo llvm-cov clean --workspace
-          WTK_BUILD_TARGET_DIR="$PWD/target/llvm-cov-target" cargo llvm-cov --no-report --locked --workspace
+          WTK_BUILD_TARGET_DIR="$PWD/target/llvm-cov-target" cargo llvm-cov --release --no-report --locked --workspace
           cargo llvm-cov report --release --lcov --output-path lcov.info
 
       - name: Upload coverage report
