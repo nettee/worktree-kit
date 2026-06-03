@@ -20,6 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const IGNORED_ENV_SNAPSHOT_PREFIX: &str = "wtk-init-worktree-snapshot-";
 const IGNORED_ENV_SNAPSHOT_MARKER: &str = ".wtk-ignored-env-snapshot";
+const IGNORED_SEND_OUT_ACTIVE_SPEC_PATH: &str = "specs/change/active";
 
 #[derive(Debug, Default, Clone)]
 pub struct Options {
@@ -54,13 +55,13 @@ impl<'a> Session<'a> {
 }
 
 #[derive(Debug, Clone)]
-struct IgnoredEnvFile {
+struct SnapshotFile {
     relative: PathBuf,
-    kind: IgnoredEnvFileKind,
+    kind: SnapshotFileKind,
 }
 
 #[derive(Debug, Clone)]
-enum IgnoredEnvFileKind {
+enum SnapshotFileKind {
     File {
         contents: Vec<u8>,
         permissions: fs::Permissions,
@@ -132,7 +133,7 @@ pub fn checkout(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
         .run(&repo.main_root, args.iter().map(String::as_str))?;
     print_copied_ignored_env_files(
         session,
-        copy_ignored_env_files(&ignored_env_files, &path).map_err(|error| {
+        copy_snapshot_files(&ignored_env_files, &path).map_err(|error| {
             Error::message(format!(
                 "worktree created, but ignored .env copy failed: {error}"
             ))
@@ -167,7 +168,7 @@ pub fn init_worktree(
         },
         None => (snapshot_ignored_env_files(session, source_root)?, None),
     };
-    let copy_result = copy_ignored_env_files(&ignored_env_files, worktree_path)
+    let copy_result = copy_snapshot_files(&ignored_env_files, worktree_path)
         .map_err(|error| Error::message(format!("ignored .env copy failed: {error}")))
         .and_then(|copied| print_copied_ignored_env_files(session, copied));
     let cleanup_result = snapshot_root.map_or(Ok(()), remove_ignored_env_snapshot_root);
@@ -287,6 +288,7 @@ pub fn send_out(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
     ensure_creatable_parent(&path)?;
 
     let ignored_env_files = snapshot_ignored_env_files(session, &repo.main_root)?;
+    let ignored_active_spec = snapshot_ignored_send_out_active_spec(session, &repo.main_root)?;
 
     let switch_args = vec!["switch".to_string(), base.clone()];
     output::git(session.out, &repo.main_root, &switch_args)?;
@@ -315,12 +317,23 @@ pub fn send_out(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
     }
     print_copied_ignored_env_files(
         session,
-        copy_ignored_env_files(&ignored_env_files, &path).map_err(|error| {
+        copy_snapshot_files(&ignored_env_files, &path).map_err(|error| {
             Error::message(format!(
                 "main worktree switched to {base} and linked worktree created, but ignored .env copy failed: {error}"
             ))
         })?,
     )?;
+    if let Some(active_spec) = ignored_active_spec {
+        print_copied_ignored_files(
+            session,
+            "copied ignored file",
+            copy_snapshot_files(&[active_spec], &path).map_err(|error| {
+                Error::message(format!(
+                    "main worktree switched to {base} and linked worktree created, but ignored file copy failed: {error}"
+                ))
+            })?,
+        )?;
+    }
     maybe_run_pnpm_install(
         session,
         &path,
@@ -658,8 +671,8 @@ fn ensure_creatable_parent(path: &Path) -> AppResult<()> {
     Ok(())
 }
 
-fn copy_ignored_env_files(
-    ignored: &[IgnoredEnvFile],
+fn copy_snapshot_files(
+    ignored: &[SnapshotFile],
     new_worktree_path: &Path,
 ) -> AppResult<Vec<PathBuf>> {
     let mut copied = Vec::with_capacity(ignored.len());
@@ -675,7 +688,7 @@ fn copy_ignored_env_files(
             })?;
         }
         match &file.kind {
-            IgnoredEnvFileKind::File {
+            SnapshotFileKind::File {
                 contents,
                 permissions,
             } => {
@@ -695,7 +708,7 @@ fn copy_ignored_env_files(
                     ))
                 })?;
             }
-            IgnoredEnvFileKind::Symlink {
+            SnapshotFileKind::Symlink {
                 target: symlink_target,
             } => {
                 create_symlink(symlink_target, &target).map_err(|error| {
@@ -716,17 +729,36 @@ fn copy_ignored_env_files(
 fn snapshot_ignored_env_files(
     session: &Session<'_>,
     main_root: &Path,
-) -> AppResult<Vec<IgnoredEnvFile>> {
+) -> AppResult<Vec<SnapshotFile>> {
     let mut ignored = Vec::new();
     for relative in ignored_env_files(session, main_root)? {
-        if let Some(snapshot) = snapshot_ignored_env_file(main_root, relative)? {
+        if let Some(snapshot) = snapshot_file(main_root, relative)? {
             ignored.push(snapshot);
         }
     }
     Ok(ignored)
 }
 
-fn snapshot_ignored_env_files_from_root(root: &Path) -> AppResult<Vec<IgnoredEnvFile>> {
+fn snapshot_ignored_send_out_active_spec(
+    session: &Session<'_>,
+    main_root: &Path,
+) -> AppResult<Option<SnapshotFile>> {
+    snapshot_ignored_exact_file(session, main_root, IGNORED_SEND_OUT_ACTIVE_SPEC_PATH)
+}
+
+fn snapshot_ignored_exact_file(
+    session: &Session<'_>,
+    main_root: &Path,
+    relative: &str,
+) -> AppResult<Option<SnapshotFile>> {
+    let relative_path = PathBuf::from(relative);
+    if !ignored_exact_file(session, main_root, relative)? {
+        return Ok(None);
+    }
+    snapshot_file(main_root, relative_path)
+}
+
+fn snapshot_ignored_env_files_from_root(root: &Path) -> AppResult<Vec<SnapshotFile>> {
     let mut ignored = Vec::new();
     collect_ignored_env_files_from_root(root, root, &mut ignored)?;
     ignored.sort_by(|left, right| left.relative.cmp(&right.relative));
@@ -736,7 +768,7 @@ fn snapshot_ignored_env_files_from_root(root: &Path) -> AppResult<Vec<IgnoredEnv
 fn collect_ignored_env_files_from_root(
     root: &Path,
     current: &Path,
-    ignored: &mut Vec<IgnoredEnvFile>,
+    ignored: &mut Vec<SnapshotFile>,
 ) -> AppResult<()> {
     let mut entries = fs::read_dir(current)
         .map_err(|error| {
@@ -778,7 +810,7 @@ fn collect_ignored_env_files_from_root(
                 path.display()
             ))
         })?;
-        if let Some(snapshot) = snapshot_ignored_env_file(root, relative.to_path_buf())? {
+        if let Some(snapshot) = snapshot_file(root, relative.to_path_buf())? {
             ignored.push(snapshot);
         }
     }
@@ -786,10 +818,7 @@ fn collect_ignored_env_files_from_root(
     Ok(())
 }
 
-fn snapshot_ignored_env_file(
-    main_root: &Path,
-    relative: PathBuf,
-) -> AppResult<Option<IgnoredEnvFile>> {
+fn snapshot_file(main_root: &Path, relative: PathBuf) -> AppResult<Option<SnapshotFile>> {
     let source = main_root.join(&relative);
     let metadata = fs::symlink_metadata(&source).map_err(|error| {
         Error::message(format!(
@@ -806,9 +835,9 @@ fn snapshot_ignored_env_file(
                 error
             ))
         })?;
-        return Ok(Some(IgnoredEnvFile {
+        return Ok(Some(SnapshotFile {
             relative,
-            kind: IgnoredEnvFileKind::Symlink { target },
+            kind: SnapshotFileKind::Symlink { target },
         }));
     }
     if !metadata.file_type().is_file() {
@@ -822,9 +851,9 @@ fn snapshot_ignored_env_file(
             error
         ))
     })?;
-    Ok(Some(IgnoredEnvFile {
+    Ok(Some(SnapshotFile {
         relative,
-        kind: IgnoredEnvFileKind::File {
+        kind: SnapshotFileKind::File {
             contents,
             permissions: metadata.permissions(),
         },
@@ -867,6 +896,28 @@ fn ignored_env_files(session: &Session<'_>, main_root: &Path) -> AppResult<Vec<P
     Ok(ignored)
 }
 
+fn ignored_exact_file(session: &Session<'_>, main_root: &Path, relative: &str) -> AppResult<bool> {
+    let output = session.git.run_bytes(
+        main_root,
+        [
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--full-name",
+            "-z",
+            "--",
+            relative,
+        ],
+    )?;
+    Ok(output
+        .stdout
+        .split(|byte| *byte == b'\0')
+        .filter(|path| !path.is_empty())
+        .map(path_buf_from_git_bytes)
+        .any(|path| path == Path::new(relative)))
+}
+
 #[cfg(unix)]
 fn path_buf_from_git_bytes(path: &[u8]) -> PathBuf {
     PathBuf::from(OsString::from_vec(path.to_vec()))
@@ -881,8 +932,16 @@ fn print_copied_ignored_env_files(
     session: &mut Session<'_>,
     copied: Vec<PathBuf>,
 ) -> AppResult<()> {
+    print_copied_ignored_files(session, "copied ignored .env", copied)
+}
+
+fn print_copied_ignored_files(
+    session: &mut Session<'_>,
+    label: &str,
+    copied: Vec<PathBuf>,
+) -> AppResult<()> {
     for relative in copied {
-        writeln!(session.out, "copied ignored .env: {}", relative.display())?;
+        writeln!(session.out, "{label}: {}", relative.display())?;
     }
     Ok(())
 }
@@ -932,7 +991,7 @@ fn start_async_init_worktree(
 }
 
 fn write_ignored_env_snapshot(
-    ignored_env_files: &[IgnoredEnvFile],
+    ignored_env_files: &[SnapshotFile],
     worktree_path: &Path,
 ) -> AppResult<PathBuf> {
     let nonce = SystemTime::now()
@@ -958,7 +1017,7 @@ fn write_ignored_env_snapshot(
     })?;
     write_ignored_env_snapshot_marker(&snapshot_root)?;
     cleanup_ignored_env_snapshot_on_error(
-        copy_ignored_env_files(ignored_env_files, &snapshot_root)
+        copy_snapshot_files(ignored_env_files, &snapshot_root)
             .map_err(|error| {
                 Error::message(format!(
                     "worktree created, but failed to snapshot ignored .env files in {}: {error}",

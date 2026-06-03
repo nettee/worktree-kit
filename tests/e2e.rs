@@ -469,6 +469,39 @@ fn send_out_preserves_ignored_env_contents_when_base_tracks_env() {
 }
 
 #[test]
+fn send_out_copies_ignored_active_spec_when_base_branch_drops_it() {
+    let bin = build_wtk();
+    let repo = init_repo("main");
+    commit_files(
+        &repo,
+        &[("specs/change/active", "20260510-base-spec\n")],
+        "track active spec on main",
+    );
+    run_git(&repo, ["switch", "-c", "feature/send-active-spec"]);
+    commit_files(
+        &repo,
+        &[(".gitignore", "specs/change/active\n")],
+        "ignore active spec on feature",
+    );
+    run_git(&repo, ["rm", "--cached", "specs/change/active"]);
+    run_git(
+        &repo,
+        ["commit", "-m", "stop tracking active spec on feature"],
+    );
+    std::fs::create_dir_all(repo.join("specs/change")).unwrap();
+    std::fs::write(repo.join("specs/change/active"), "20260603-local-spec\n").unwrap();
+
+    let out = run_wtk(&bin, &repo, ["send-out", "--no-clipboard"]);
+    let linked = linked_worktree_path(&repo, "feature/send-active-spec");
+
+    assert_eq!(
+        std::fs::read_to_string(linked.join("specs/change/active")).unwrap(),
+        "20260603-local-spec\n"
+    );
+    assert!(out.contains("copied ignored file: specs/change/active"));
+}
+
+#[test]
 fn create_copies_ignored_env_with_non_ascii_path() {
     let bin = build_wtk();
     let repo = init_repo("main");
@@ -574,13 +607,7 @@ fn ignored_env_directory_contents_are_not_copied() {
     let out = run_wtk(
         &bin,
         &repo,
-        [
-            "new",
-            "feature/env-dir",
-            "--base",
-            "main",
-            "--no-clipboard",
-        ],
+        ["new", "feature/env-dir", "--base", "main", "--no-clipboard"],
     );
     let linked = linked_worktree_path(&repo, "feature/env-dir");
 
@@ -596,13 +623,7 @@ fn no_ignored_env_files_is_silent_success() {
     let out = run_wtk(
         &bin,
         &repo,
-        [
-            "new",
-            "feature/no-env",
-            "--base",
-            "main",
-            "--no-clipboard",
-        ],
+        ["new", "feature/no-env", "--base", "main", "--no-clipboard"],
     );
 
     assert!(out.contains("created worktree"));
@@ -746,12 +767,7 @@ fn create_from_current_branch() {
     run_wtk(
         &bin,
         &repo,
-        [
-            "new",
-            "feature/from-current-short",
-            "-C",
-            "--no-clipboard",
-        ],
+        ["new", "feature/from-current-short", "-C", "--no-clipboard"],
     );
     linked = repo.parent().unwrap().join(format!(
         "{}-wt-feature-from-current-short",
