@@ -22,12 +22,6 @@ curl -fsSL https://raw.githubusercontent.com/nettee/worktree-kit/main/scripts/in
 
 The installer downloads the matching GitHub release asset, verifies its checksum, and installs `wtk` into `${WTK_INSTALL_DIR:-$HOME/.local/bin}`. It prints PATH and completion setup guidance after verifying `wtk --version`.
 
-Install a specific release:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/nettee/worktree-kit/main/scripts/install.sh | WTK_VERSION=0.2.1 sh
-```
-
 Local source install for development machines:
 
 ```bash
