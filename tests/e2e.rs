@@ -106,7 +106,7 @@ fn completion_suggests_new_command() {
 #[cfg(not(windows))]
 #[test]
 fn upgrade_replaces_release_binary_from_release_asset() {
-    let bin = build_wtk();
+    let bin = build_release_wtk("0.0.1");
     let repo = init_repo("main");
     let install_dir = temp_dir().join("upgrade-install");
     std::fs::create_dir_all(&install_dir).unwrap();
@@ -1109,6 +1109,26 @@ fn build_wtk() -> PathBuf {
             path
         })
         .clone()
+}
+
+#[cfg(not(windows))]
+fn build_release_wtk(version: &str) -> PathBuf {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let target_dir = temp_dir().join(format!("release-build-{version}"));
+
+    let status = Command::new("cargo")
+        .args(["build", "--release", "--bin", "wtk"])
+        .current_dir(&manifest_dir)
+        .env("CARGO_TARGET_DIR", &target_dir)
+        .env("WTK_VERSION", version)
+        .status()
+        .expect("cargo build should start");
+    assert!(status.success(), "cargo build failed with {status}");
+
+    let mut path = target_dir;
+    path.push("release");
+    path.push("wtk");
+    path
 }
 
 fn init_repo(branch: &str) -> PathBuf {
