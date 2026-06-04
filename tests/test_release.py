@@ -21,6 +21,46 @@ class ResolveTargetVersionTests(unittest.TestCase):
             self.assertEqual(release.resolve_target_version("patch"), release.Version(1, 2, 4))
 
 
+class UpdateReadmePinnedInstallVersionsTests(unittest.TestCase):
+    def test_leaves_readme_without_pinned_install_example_unchanged(self) -> None:
+        readme = """## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nettee/worktree-kit/main/scripts/install.sh | sh
+```
+"""
+
+        self.assertEqual(
+            release.update_readme_pinned_install_versions(readme, release.Version(1, 2, 3)),
+            readme,
+        )
+
+    def test_updates_all_pinned_install_examples(self) -> None:
+        readme = """Install latest:
+```bash
+curl -fsSL https://example.test/install.sh | sh
+```
+
+Install pinned:
+```bash
+curl -fsSL https://example.test/install.sh | WTK_VERSION=0.1.0 sh
+WTK_VERSION=0.1.0 sh scripts/install.sh
+```
+"""
+
+        self.assertEqual(
+            release.update_readme_pinned_install_versions(readme, release.Version(1, 2, 3)),
+            readme.replace("WTK_VERSION=0.1.0", "WTK_VERSION=1.2.3"),
+        )
+
+    def test_fails_on_malformed_pinned_install_example(self) -> None:
+        with mock.patch("sys.stderr"), self.assertRaises(SystemExit):
+            release.update_readme_pinned_install_versions(
+                "curl -fsSL https://example.test/install.sh | WTK_VERSION=latest sh\n",
+                release.Version(1, 2, 3),
+            )
+
+
 class PrepareReleaseTests(unittest.TestCase):
     def test_resolves_semantic_bump_after_syncing_base_branch(self) -> None:
         events: list[str] = []

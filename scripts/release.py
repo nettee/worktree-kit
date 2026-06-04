@@ -21,6 +21,7 @@ RELEASE_LABEL = "release"
 VERSION_PATTERN = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 CARGO_VERSION_PATTERN = re.compile(r'(?m)^version = "([^"]+)"$')
 README_PINNED_VERSION_PATTERN = re.compile(r"WTK_VERSION=\d+\.\d+\.\d+")
+README_PINNED_ASSIGNMENT_PATTERN = re.compile(r"WTK_VERSION=\S+")
 SEMANTIC_BUMP_CHOICES = ("major", "minor", "patch")
 
 
@@ -160,10 +161,23 @@ def update_version_files(target: Version) -> None:
 
     readme = repo_root() / "README.md"
     readme_text = readme.read_text()
-    readme_text, readme_count = README_PINNED_VERSION_PATTERN.subn(f"WTK_VERSION={target}", readme_text, count=1)
-    if readme_count != 1:
-        fail("failed to update README pinned install example")
+    readme_text = update_readme_pinned_install_versions(readme_text, target)
     readme.write_text(readme_text)
+
+
+def update_readme_pinned_install_versions(readme_text: str, target: Version) -> str:
+    pinned_assignments = README_PINNED_ASSIGNMENT_PATTERN.findall(readme_text)
+    if not pinned_assignments:
+        return readme_text
+
+    malformed = [assignment for assignment in pinned_assignments if not README_PINNED_VERSION_PATTERN.fullmatch(assignment)]
+    if malformed:
+        fail(f"README pinned install example is malformed: {malformed[0]}")
+
+    readme_text, readme_count = README_PINNED_VERSION_PATTERN.subn(f"WTK_VERSION={target}", readme_text)
+    if readme_count != len(pinned_assignments):
+        fail("failed to update README pinned install example")
+    return readme_text
 
 
 def ensure_release_label() -> None:
