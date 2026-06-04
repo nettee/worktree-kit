@@ -2,3 +2,7 @@
 name = "wtk"
 version = "0.2.1"
 edition = "2024"
+
+[dependencies]
+serde_json = "1.0"
+sha2 = "0.10"

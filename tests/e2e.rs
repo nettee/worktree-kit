@@ -100,6 +100,83 @@ fn completion_suggests_new_command() {
     let repo = init_repo("main");
     let completed = completion_lines(&bin, &repo, ["__complete"]);
     assert!(completed.iter().any(|line| line == "new"));
+    assert!(completed.iter().any(|line| line == "upgrade"));
+}
+
+#[cfg(not(windows))]
+#[test]
+fn upgrade_replaces_release_binary_from_release_asset() {
+    let bin = build_release_wtk("0.0.1");
+    let repo = init_repo("main");
+    let install_dir = temp_dir().join("upgrade-install");
+    std::fs::create_dir_all(&install_dir).unwrap();
+    let installed_bin = install_dir.join("wtk");
+    std::fs::copy(&bin, &installed_bin).unwrap();
+    let mut perms = std::fs::metadata(&installed_bin).unwrap().permissions();
+    #[cfg(unix)]
+    {
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&installed_bin, perms).unwrap();
+    }
+
+    let fixture_dir = temp_dir().join("upgrade-release");
+    std::fs::create_dir_all(&fixture_dir).unwrap();
+    let fixture_work = temp_dir().join("upgrade-release-work");
+    std::fs::create_dir_all(&fixture_work).unwrap();
+    let fixture_bin = fixture_work.join("wtk");
+    std::fs::write(
+        &fixture_bin,
+        "#!/bin/sh\ncase \"${1:-}\" in\n  --version) printf 'wtk 0.0.2\\n' ;;\n  *) printf 'fixture wtk\\n' ;;\nesac\n",
+    )
+    .unwrap();
+    let mut fixture_perms = std::fs::metadata(&fixture_bin).unwrap().permissions();
+    fixture_perms.set_mode(0o755);
+    std::fs::set_permissions(&fixture_bin, fixture_perms).unwrap();
+
+    let (os, arch) = host_release_target();
+    let asset_name = format!("wtk_0.0.2_{os}_{arch}.tar.gz");
+    let asset_path = fixture_dir.join(&asset_name);
+    let status = Command::new("tar")
+        .args(["-czf", asset_path.to_str().unwrap(), "-C"])
+        .arg(&fixture_work)
+        .arg("wtk")
+        .status()
+        .unwrap();
+    assert!(status.success(), "tar should build fixture archive");
+    let archive_bytes = std::fs::read(&asset_path).unwrap();
+    let checksum = sha256_hex(&archive_bytes);
+    std::fs::write(
+        fixture_dir.join("checksums.txt"),
+        format!("{checksum}  {asset_name}\n"),
+    )
+    .unwrap();
+
+    let output = run_wtk_with_env(
+        &installed_bin,
+        &repo,
+        ["upgrade"],
+        &[
+            (
+                "WTK_DOWNLOAD_BASE_URL",
+                std::ffi::OsString::from(format!("file://{}", fixture_dir.display())),
+            ),
+            ("WTK_VERSION", std::ffi::OsString::from("0.0.2")),
+            ("WTK_OS", std::ffi::OsString::from(os)),
+            ("WTK_ARCH", std::ffi::OsString::from(arch)),
+        ],
+    );
+    assert!(output.contains("Upgrading wtk from 0.0.1 to 0.0.2"));
+    assert!(output.contains("Upgraded wtk at"));
+
+    let upgraded = Command::new(&installed_bin)
+        .arg("--version")
+        .output()
+        .unwrap();
+    assert!(upgraded.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&upgraded.stdout).trim(),
+        "wtk 0.0.2"
+    );
 }
 
 #[test]
@@ -995,6 +1072,11 @@ fn argument_and_flag_usage_errors() {
             "unknown flag: --wat",
             "wtk checkout <branch> [flags]",
         ),
+        (
+            vec!["upgrade", "--wat"],
+            "unknown flag: --wat",
+            "wtk upgrade [flags]",
+        ),
     ];
 
     for (args, reason, usage) in cases {
@@ -1027,6 +1109,26 @@ fn build_wtk() -> PathBuf {
             path
         })
         .clone()
+}
+
+#[cfg(not(windows))]
+fn build_release_wtk(version: &str) -> PathBuf {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let target_dir = temp_dir().join(format!("release-build-{version}"));
+
+    let status = Command::new("cargo")
+        .args(["build", "--release", "--bin", "wtk"])
+        .current_dir(&manifest_dir)
+        .env("CARGO_TARGET_DIR", &target_dir)
+        .env("WTK_VERSION", version)
+        .status()
+        .expect("cargo build should start");
+    assert!(status.success(), "cargo build failed with {status}");
+
+    let mut path = target_dir;
+    path.push("release");
+    path.push("wtk");
+    path
 }
 
 fn init_repo(branch: &str) -> PathBuf {
@@ -1187,6 +1289,30 @@ fn prepend_path(bin_dir: &Path) -> std::ffi::OsString {
         paths.extend(std::env::split_paths(&existing));
     }
     std::env::join_paths(paths).unwrap()
+}
+
+#[cfg(not(windows))]
+fn host_release_target() -> (&'static str, &'static str) {
+    let os = match std::env::consts::OS {
+        "macos" => "darwin",
+        "linux" => "linux",
+        other => panic!("unsupported test OS: {other}"),
+    };
+    let arch = match std::env::consts::ARCH {
+        "x86_64" => "amd64",
+        "aarch64" => "arm64",
+        other => panic!("unsupported test arch: {other}"),
+    };
+    (os, arch)
+}
+
+#[cfg(not(windows))]
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
 }
 
 fn wait_for_path(path: &Path) {

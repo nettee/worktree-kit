@@ -1,6 +1,7 @@
 use crate::VERSION;
 use crate::clipboard::{DisabledClipboard, SystemClipboard};
 use crate::gitexec::Git;
+use crate::upgrade;
 use crate::worktree::{self, Options, Session};
 use crate::{AppResult, Error};
 use std::ffi::OsString;
@@ -15,6 +16,7 @@ const TOP_LEVEL_COMMANDS: &[&str] = &[
     "remove",
     "send-out",
     "bring-in",
+    "upgrade",
     "completion",
     "help",
 ];
@@ -31,6 +33,7 @@ enum Parsed {
     Remove(Options),
     SendOut(Options),
     BringIn(Options),
+    Upgrade,
     Completion(String),
     HiddenComplete(Vec<String>),
     Version,
@@ -142,6 +145,13 @@ where
                 worktree::bring_in(session, options)
             })
         }
+        Parsed::Upgrade => match upgrade::run(stdout) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let _ = writeln!(stderr, "{error}");
+                Err(1)
+            }
+        },
     }
 }
 
@@ -198,6 +208,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
         "remove" => parse_remove(rest),
         "send-out" => parse_send_out(rest),
         "bring-in" => parse_bring_in(rest),
+        "upgrade" => parse_upgrade(rest),
         "completion" => parse_completion(rest),
         "__complete" => Ok(Parsed::HiddenComplete(rest[1..].to_vec())),
         other => Err(UsageError::new(
@@ -439,6 +450,23 @@ fn parse_bring_in(args: &[String]) -> Result<Parsed, UsageError> {
     Ok(Parsed::BringIn(options))
 }
 
+fn parse_upgrade(args: &[String]) -> Result<Parsed, UsageError> {
+    let usage = command_help("upgrade");
+    if args.len() == 1 {
+        return Ok(Parsed::Upgrade);
+    }
+    if args.len() == 2 && matches!(args[1].as_str(), "--help" | "-h") {
+        return Ok(Parsed::HelpText(usage));
+    }
+    if args[1].starts_with('-') {
+        return Err(UsageError::new(format!("unknown flag: {}", args[1]), usage));
+    }
+    Err(UsageError::new(
+        format!("unexpected argument: {}", args[1]),
+        usage,
+    ))
+}
+
 fn parse_completion(args: &[String]) -> Result<Parsed, UsageError> {
     let usage = command_help("completion");
     if args.len() == 2 && matches!(args[1].as_str(), "--help" | "-h") {
@@ -492,6 +520,7 @@ fn root_help() -> &'static str {
         "  remove      Remove a linked worktree\n",
         "  send-out    Move the current main-worktree branch to a linked worktree\n",
         "  bring-in    Move a linked worktree branch back into the main worktree\n",
+        "  upgrade     Upgrade wtk from the latest GitHub release\n",
         "  completion  Generate shell completion script\n",
         "  help        Show help\n\n",
         "Flags:\n",
@@ -548,6 +577,13 @@ fn command_help(command: &str) -> &'static str {
             "Usage: wtk bring-in <branch> [flags]\n\n",
             "Flags:\n",
             "      --no-clipboard\n",
+        ),
+        "upgrade" => concat!(
+            "Usage: wtk upgrade [flags]\n\n",
+            "Advanced command:\n",
+            "  Download and install the latest GitHub release over the current release-binary install.\n\n",
+            "Flags:\n",
+            "  -h, --help\n",
         ),
         "completion" => concat!(
             "Usage: wtk completion <bash|zsh|fish|powershell> [flags]\n\n",
@@ -712,6 +748,12 @@ mod tests {
     fn parses_help_subcommand() {
         let parsed = parse_args(&["wtk".to_string(), "help".to_string()]).unwrap();
         assert!(matches!(parsed, Parsed::Help));
+    }
+
+    #[test]
+    fn parses_upgrade_subcommand() {
+        let parsed = parse_args(&["wtk".to_string(), "upgrade".to_string()]).unwrap();
+        assert!(matches!(parsed, Parsed::Upgrade));
     }
 
     #[test]
