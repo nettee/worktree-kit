@@ -6,6 +6,7 @@ pub mod paths;
 pub mod upgrade;
 pub mod worktree;
 
+pub const IS_RELEASE_BUILD: bool = option_env!("WTK_VERSION").is_some();
 pub const VERSION: &str = match option_env!("WTK_VERSION") {
     Some(version) => version,
     None => "0.0.1",

@@ -1,4 +1,4 @@
-use crate::{AppResult, Error, VERSION};
+use crate::{AppResult, Error, IS_RELEASE_BUILD, VERSION};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::fs::{self, OpenOptions};
@@ -83,12 +83,16 @@ pub fn run(stdout: &mut dyn Write) -> AppResult<()> {
 }
 
 fn current_release_version() -> AppResult<&'static str> {
-    if !looks_like_release_version(VERSION) {
+    if !is_supported_release_build(VERSION, IS_RELEASE_BUILD) {
         return Err(Error::message(format!(
             "wtk upgrade only supports release installs. Current version is {VERSION:?}; reinstall from a release or rerun scripts/install-local.sh."
         )));
     }
     Ok(VERSION)
+}
+
+fn is_supported_release_build(version: &str, is_release_build: bool) -> bool {
+    is_release_build && looks_like_release_version(version)
 }
 
 fn looks_like_release_version(version: &str) -> bool {
@@ -387,7 +391,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::looks_like_release_version;
+    use super::{is_supported_release_build, looks_like_release_version};
 
     #[test]
     fn release_version_detection_accepts_release_versions() {
@@ -401,5 +405,11 @@ mod tests {
             "dev commit=123 built=2026-01-01T00:00:00Z"
         ));
         assert!(!looks_like_release_version(""));
+    }
+
+    #[test]
+    fn release_version_detection_rejects_source_build_fallback_version() {
+        assert!(!is_supported_release_build("0.0.1", false));
+        assert!(is_supported_release_build("0.0.1", true));
     }
 }
