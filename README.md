@@ -22,6 +22,12 @@ curl -fsSL https://raw.githubusercontent.com/nettee/worktree-kit/main/scripts/in
 
 The installer downloads the matching GitHub release asset, verifies its checksum, and installs `wtk` into `${WTK_INSTALL_DIR:-$HOME/.local/bin}`. It prints PATH and completion setup guidance after verifying `wtk --version`.
 
+Upgrade an existing release install in place:
+
+```bash
+wtk upgrade
+```
+
 Local source install for development machines:
 
 ```bash
@@ -61,6 +67,7 @@ wtk checkout feature/existing
 wtk remove ../repo-wt-feature-foo
 wtk send-out
 wtk bring-in feature/foo
+wtk upgrade
 ```
 
 Every command prints the underlying `git` commands it runs. Successful commands copy the useful path or branch payload to the clipboard. Use `--no-clipboard` in CI or headless environments.

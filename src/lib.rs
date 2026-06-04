@@ -3,6 +3,7 @@ pub mod clipboard;
 pub mod gitexec;
 pub mod output;
 pub mod paths;
+pub mod upgrade;
 pub mod worktree;
 
 pub const VERSION: &str = match option_env!("WTK_VERSION") {
