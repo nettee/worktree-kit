@@ -334,17 +334,16 @@ pub fn send_out(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
             })?,
         )?;
     }
-    maybe_run_pnpm_install(
-        session,
-        &path,
-        &format!("main worktree switched to {base} and linked worktree created"),
-    )?;
-
     finish(
         session,
         opts.no_clipboard,
         path.display().to_string(),
         format!("sent {} out to {}", branch.trim(), path.display()),
+    )?;
+    start_async_pnpm_install(
+        session,
+        &path,
+        &format!("main worktree switched to {base} and linked worktree created"),
     )
 }
 
@@ -1169,6 +1168,90 @@ fn maybe_run_pnpm_install(
     Err(Error::message(format!(
         "{partial_success_prefix}, but pnpm install failed: {details}"
     )))
+}
+
+fn start_async_pnpm_install(
+    session: &mut Session<'_>,
+    worktree_path: &Path,
+    partial_success_prefix: &str,
+) -> AppResult<()> {
+    if !should_run_pnpm_install(worktree_path) {
+        return Ok(());
+    }
+
+    output::info(
+        session.out,
+        &format!(
+            "running pnpm install asynchronously in {}",
+            worktree_path.display()
+        ),
+    )?;
+    let (stdout, stderr, log_path) = async_pnpm_install_stdio(worktree_path)?;
+    if let Some(log_path) = log_path {
+        output::info(
+            session.out,
+            &format!(
+                "async pnpm install output will be written to {}",
+                log_path.display()
+            ),
+        )?;
+    }
+
+    Command::new("pnpm")
+        .arg("install")
+        .current_dir(worktree_path)
+        .stdin(Stdio::null())
+        .stdout(stdout)
+        .stderr(stderr)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| {
+            Error::message(format!(
+                "{partial_success_prefix}, but failed to start async pnpm install: {error}"
+            ))
+        })
+}
+
+fn async_pnpm_install_stdio(worktree_path: &Path) -> AppResult<(Stdio, Stdio, Option<PathBuf>)> {
+    if std::io::stdout().is_terminal() && std::io::stderr().is_terminal() {
+        return Ok((Stdio::inherit(), Stdio::inherit(), None));
+    }
+
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let worktree_name = worktree_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("worktree");
+    let log_path = std::env::temp_dir().join(format!(
+        "wtk-pnpm-install-{}-{}-{}.log",
+        std::process::id(),
+        worktree_name,
+        nonce
+    ));
+    let stdout = open_async_pnpm_install_log(&log_path)?;
+    let stderr = stdout.try_clone().map_err(|error| {
+        Error::message(format!(
+            "worktree created, but failed to duplicate async pnpm install log {}: {error}",
+            log_path.display()
+        ))
+    })?;
+    Ok((Stdio::from(stdout), Stdio::from(stderr), Some(log_path)))
+}
+
+fn open_async_pnpm_install_log(log_path: &Path) -> AppResult<File> {
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(true).write(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    options.open(log_path).map_err(|error| {
+        Error::message(format!(
+            "worktree created, but failed to open async pnpm install log {}: {error}",
+            log_path.display()
+        ))
+    })
 }
 
 fn should_run_pnpm_install(worktree_path: &Path) -> bool {

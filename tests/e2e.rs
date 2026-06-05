@@ -506,6 +506,43 @@ fn send_out_copies_ignored_env_files() {
 }
 
 #[test]
+fn send_out_does_not_wait_for_slow_pnpm_install() {
+    let bin = build_wtk();
+    let repo = init_repo("main");
+    commit_files(
+        &repo,
+        &[("pnpm-lock.yaml", "lockfileVersion: '9.0'\n")],
+        "add pnpm files",
+    );
+    run_git(&repo, ["switch", "-c", "feature/send-slow-pnpm"]);
+
+    let fake_bin = temp_dir().join("fake-bin");
+    std::fs::create_dir_all(&fake_bin).unwrap();
+    let log_path = fake_bin.join("pnpm.log");
+    write_slow_fake_pnpm(&fake_bin, &log_path);
+    let path = prepend_path(&fake_bin);
+
+    let started = Instant::now();
+    let out = run_wtk_with_env(
+        &bin,
+        &repo,
+        ["send-out", "--no-clipboard"],
+        &[("PATH", path)],
+    );
+    let linked =
+        std::fs::canonicalize(linked_worktree_path(&repo, "feature/send-slow-pnpm")).unwrap();
+
+    assert!(
+        started.elapsed() < Duration::from_millis(1500),
+        "send-out waited for slow pnpm install"
+    );
+    assert!(out.contains("sent feature/send-slow-pnpm out"));
+    assert!(out.contains("running pnpm install asynchronously"));
+    wait_for_file_contains(&log_path, "ARGS:install");
+    wait_for_file_contains(&log_path, &format!("PWD:{}", linked.display()));
+}
+
+#[test]
 fn send_out_copies_env_ignored_only_on_task_branch() {
     let bin = build_wtk();
     let repo = init_repo("main");
