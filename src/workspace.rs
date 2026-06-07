@@ -512,7 +512,10 @@ pub fn bring_in(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
             repo: entry.repo.main_root.clone(),
             branch: main_branch.clone(),
         });
-        write_ref(&entry.ref_path, &entry.repo.main_root)?;
+        if let Err(error) = write_ref(&entry.ref_path, &entry.repo.main_root) {
+            rollback_all(&session.git, session.out, rollback)?;
+            return Err(error);
+        }
     }
     writeln!(session.out, "brought workspace branches in")?;
     Ok(())

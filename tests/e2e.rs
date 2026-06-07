@@ -777,6 +777,78 @@ fn workspace_mode_bring_in_rolls_back_when_later_remove_fails() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn workspace_mode_bring_in_rolls_back_when_ref_update_fails() {
+    let bin = build_wtk();
+    let base = temp_dir();
+    let workspace = init_repo_at(&base.join("workspace"), "main");
+    let repo_a = init_repo_at(&base.join("A"), "main");
+    let repo_b = init_repo_at(&base.join("B"), "main");
+
+    run_wtk(&bin, &workspace, ["workspace", "init"]);
+    run_wtk(
+        &bin,
+        &workspace,
+        ["workspace", "add", repo_a.to_str().unwrap()],
+    );
+    run_wtk(
+        &bin,
+        &workspace,
+        ["workspace", "add", repo_b.to_str().unwrap()],
+    );
+
+    run_git(&repo_a, ["switch", "-c", "feature/bring-in-fail"]);
+    run_git(&repo_b, ["switch", "-c", "feature/bring-in-fail"]);
+    run_wtk(
+        &bin,
+        &workspace,
+        ["send-out", "--base", "main", "--no-clipboard"],
+    );
+
+    let refs_dir = workspace.join("refs");
+    let mut perms = std::fs::metadata(&refs_dir).unwrap().permissions();
+    perms.set_mode(0o555);
+    std::fs::set_permissions(&refs_dir, perms).unwrap();
+
+    let (out, status) = run_wtk_err(
+        &bin,
+        &workspace,
+        ["bring-in", "feature/bring-in-fail", "--no-clipboard"],
+    );
+
+    let mut reset_perms = std::fs::metadata(&refs_dir).unwrap().permissions();
+    reset_perms.set_mode(0o755);
+    std::fs::set_permissions(&refs_dir, reset_perms).unwrap();
+
+    assert!(!status.success());
+    assert!(out.contains("Permission denied") || out.contains("permission denied"));
+
+    let repo_a_canonical = std::fs::canonicalize(&repo_a).unwrap();
+    let repo_b_canonical = std::fs::canonicalize(&repo_b).unwrap();
+    let linked_a = linked_worktree_path(&repo_a_canonical, "feature/bring-in-fail");
+    let linked_b = linked_worktree_path(&repo_b_canonical, "feature/bring-in-fail");
+
+    assert_eq!(
+        run_git(&repo_a, ["branch", "--show-current"]).trim(),
+        "main"
+    );
+    assert_eq!(
+        run_git(&repo_b, ["branch", "--show-current"]).trim(),
+        "main"
+    );
+    assert!(linked_a.exists());
+    assert!(linked_b.exists());
+    assert_eq!(
+        std::fs::read_link(workspace.join("refs/A")).unwrap(),
+        linked_a
+    );
+    assert_eq!(
+        std::fs::read_link(workspace.join("refs/B")).unwrap(),
+        linked_b
+    );
+}
+
 #[cfg(not(windows))]
 #[test]
 fn upgrade_replaces_release_binary_from_release_asset() {
