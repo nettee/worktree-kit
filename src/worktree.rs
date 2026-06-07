@@ -62,11 +62,15 @@ struct StatusOutput {
     main_root: PathBuf,
     git_common_dir: PathBuf,
     current_is_main: bool,
-    worktrees: Vec<StatusWorktree>,
 }
 
 #[derive(Serialize)]
-struct StatusWorktree {
+struct ListOutput {
+    worktrees: Vec<ListWorktree>,
+}
+
+#[derive(Serialize)]
+struct ListWorktree {
     path: PathBuf,
     branch: String,
     bare: bool,
@@ -177,10 +181,21 @@ pub fn status(session: &mut Session<'_>) -> AppResult<()> {
         main_root: repo.main_root.clone(),
         git_common_dir: repo.git_common_dir.clone(),
         current_is_main: repo.current_is_main,
+    };
+
+    serde_yaml::to_writer(&mut *session.out, &payload)
+        .map_err(|error| Error::message(format!("failed to serialize status as YAML: {error}")))?;
+    writeln!(session.out)?;
+    Ok(())
+}
+
+pub fn list(session: &mut Session<'_>) -> AppResult<()> {
+    let repo = repo(session)?;
+    let payload = ListOutput {
         worktrees: repo
             .worktrees
             .iter()
-            .map(|worktree| StatusWorktree {
+            .map(|worktree| ListWorktree {
                 path: worktree.path.clone(),
                 branch: worktree.branch.clone(),
                 bare: worktree.bare,
@@ -192,7 +207,7 @@ pub fn status(session: &mut Session<'_>) -> AppResult<()> {
     };
 
     serde_yaml::to_writer(&mut *session.out, &payload)
-        .map_err(|error| Error::message(format!("failed to serialize status as YAML: {error}")))?;
+        .map_err(|error| Error::message(format!("failed to serialize list as YAML: {error}")))?;
     writeln!(session.out)?;
     Ok(())
 }

@@ -13,6 +13,7 @@ const TOP_LEVEL_COMMANDS: &[&str] = &[
     "create",
     "checkout",
     "status",
+    "list",
     "init-worktree",
     "remove",
     "send-out",
@@ -27,6 +28,7 @@ enum Parsed {
     Create(Options),
     Checkout(Options),
     Status,
+    List,
     InitWorktree {
         source_root: String,
         worktree_path: String,
@@ -121,6 +123,7 @@ where
             })
         }
         Parsed::Status => execute_worktree(stdout, stderr, true, worktree::status),
+        Parsed::List => execute_worktree(stdout, stderr, true, worktree::list),
         Parsed::InitWorktree {
             source_root,
             worktree_path,
@@ -208,6 +211,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
         "create" => parse_create(rest),
         "checkout" => parse_checkout(rest),
         "status" => parse_status(rest),
+        "list" => parse_list(rest),
         "init-worktree" => parse_init_worktree(rest),
         "remove" => parse_remove(rest),
         "send-out" => parse_send_out(rest),
@@ -488,6 +492,23 @@ fn parse_status(args: &[String]) -> Result<Parsed, UsageError> {
     ))
 }
 
+fn parse_list(args: &[String]) -> Result<Parsed, UsageError> {
+    let usage = command_help("list");
+    if args.len() == 1 {
+        return Ok(Parsed::List);
+    }
+    if args.len() == 2 && matches!(args[1].as_str(), "--help" | "-h") {
+        return Ok(Parsed::HelpText(usage));
+    }
+    if args[1].starts_with('-') {
+        return Err(UsageError::new(format!("unknown flag: {}", args[1]), usage));
+    }
+    Err(UsageError::new(
+        format!("unexpected argument: {}", args[1]),
+        usage,
+    ))
+}
+
 fn parse_completion(args: &[String]) -> Result<Parsed, UsageError> {
     let usage = command_help("completion");
     if args.len() == 2 && matches!(args[1].as_str(), "--help" | "-h") {
@@ -538,7 +559,8 @@ fn root_help() -> &'static str {
         "  new         Create a new branch in a linked worktree\n",
         "  create      Alias for `new`\n",
         "  checkout    Check out an existing branch or ref in a linked worktree\n",
-        "  status      Print repository worktree status as YAML\n",
+        "  status      Print current repository/worktree status as YAML\n",
+        "  list        List visible worktrees as YAML\n",
         "  remove      Remove a linked worktree\n",
         "  send-out    Move the current main-worktree branch to a linked worktree\n",
         "  bring-in    Move a linked worktree branch back into the main worktree\n",
@@ -577,6 +599,11 @@ fn command_help(command: &str) -> &'static str {
         ),
         "status" => concat!(
             "Usage: wtk status [flags]\n\n",
+            "Flags:\n",
+            "  -h, --help\n",
+        ),
+        "list" => concat!(
+            "Usage: wtk list [flags]\n\n",
             "Flags:\n",
             "  -h, --help\n",
         ),
@@ -787,6 +814,12 @@ mod tests {
     fn parses_status_subcommand() {
         let parsed = parse_args(&["wtk".to_string(), "status".to_string()]).unwrap();
         assert!(matches!(parsed, Parsed::Status));
+    }
+
+    #[test]
+    fn parses_list_subcommand() {
+        let parsed = parse_args(&["wtk".to_string(), "list".to_string()]).unwrap();
+        assert!(matches!(parsed, Parsed::List));
     }
 
     #[test]
