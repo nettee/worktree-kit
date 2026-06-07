@@ -126,6 +126,25 @@ fn status_prints_yaml_repo_context() {
     assert_eq!(yaml["cwd"].as_str(), linked_canonical.to_str());
     assert_eq!(yaml["current_root"].as_str(), linked_canonical.to_str());
     assert_eq!(yaml["main_root"].as_str(), repo_canonical.to_str());
+    assert!(yaml.get("worktrees").is_none());
+}
+
+#[test]
+fn list_prints_yaml_worktree_listing() {
+    let bin = build_wtk();
+    let repo = init_repo("main");
+    run_git(&repo, ["branch", "feature/status"]);
+    run_wtk(
+        &bin,
+        &repo,
+        ["checkout", "feature/status", "--no-clipboard"],
+    );
+    let linked = linked_worktree_path(&repo, "feature/status");
+    let repo_canonical = std::fs::canonicalize(&repo).unwrap();
+    let linked_canonical = std::fs::canonicalize(&linked).unwrap();
+
+    let output = run_wtk(&bin, &linked, ["list"]);
+    let yaml: Value = serde_yaml::from_str(&output).unwrap();
 
     let worktrees = yaml["worktrees"].as_sequence().unwrap();
     assert_eq!(worktrees.len(), 2);
