@@ -4,6 +4,7 @@
 
 - `wtk new` creates a new branch in a linked worktree.
 - `wtk checkout` checks out an existing branch or ref in a linked worktree.
+- `wtk status` prints repository worktree status in YAML format.
 - `wtk remove` removes a linked worktree.
 - `wtk send-out` moves the current main-worktree branch to a linked worktree.
 - `wtk bring-in` moves a linked worktree branch back into the main worktree.
@@ -64,6 +65,7 @@ sh scripts/test-install-local.sh
 wtk new feature/foo
 wtk new feature/from-current --from-current
 wtk checkout feature/existing
+wtk status
 wtk remove ../repo-wt-feature-foo
 wtk send-out
 wtk bring-in feature/foo

@@ -3,6 +3,7 @@ use crate::gitexec::{Git, RepoContext, absolute_path, is_git_exit, resolve, same
 use crate::output;
 use crate::paths::default_path;
 use crate::{AppResult, Error};
+use serde::Serialize;
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{IsTerminal, Write};
@@ -52,6 +53,26 @@ impl<'a> Session<'a> {
             git: Git,
         }
     }
+}
+
+#[derive(Serialize)]
+struct StatusOutput {
+    cwd: PathBuf,
+    current_root: PathBuf,
+    main_root: PathBuf,
+    git_common_dir: PathBuf,
+    current_is_main: bool,
+    worktrees: Vec<StatusWorktree>,
+}
+
+#[derive(Serialize)]
+struct StatusWorktree {
+    path: PathBuf,
+    branch: String,
+    bare: bool,
+    head: String,
+    is_main: bool,
+    is_current: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -146,6 +167,34 @@ pub fn checkout(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
         path.display().to_string(),
         format!("created worktree at {}", path.display()),
     )
+}
+
+pub fn status(session: &mut Session<'_>) -> AppResult<()> {
+    let repo = repo(session)?;
+    let payload = StatusOutput {
+        cwd: repo.cwd.clone(),
+        current_root: repo.current_root.clone(),
+        main_root: repo.main_root.clone(),
+        git_common_dir: repo.git_common_dir.clone(),
+        current_is_main: repo.current_is_main,
+        worktrees: repo
+            .worktrees
+            .iter()
+            .map(|worktree| StatusWorktree {
+                path: worktree.path.clone(),
+                branch: worktree.branch.clone(),
+                bare: worktree.bare,
+                head: worktree.head.clone(),
+                is_main: same_path(&worktree.path, &repo.main_root),
+                is_current: same_path(&worktree.path, &repo.current_root),
+            })
+            .collect(),
+    };
+
+    serde_yaml::to_writer(&mut *session.out, &payload)
+        .map_err(|error| Error::message(format!("failed to serialize status as YAML: {error}")))?;
+    writeln!(session.out)?;
+    Ok(())
 }
 
 pub fn init_worktree(
