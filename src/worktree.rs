@@ -80,13 +80,13 @@ struct ListWorktree {
 }
 
 #[derive(Debug, Clone)]
-struct SnapshotFile {
+pub(crate) struct SnapshotFile {
     relative: PathBuf,
     kind: SnapshotFileKind,
 }
 
 #[derive(Debug, Clone)]
-enum SnapshotFileKind {
+pub(crate) enum SnapshotFileKind {
     File {
         contents: Vec<u8>,
         permissions: fs::Permissions,
@@ -845,6 +845,20 @@ pub fn apply_send_out_worktree_init(
     Ok(())
 }
 
+pub(crate) fn snapshot_dot_env_files_from_root(root: &Path) -> AppResult<Vec<SnapshotFile>> {
+    let mut snapshots = Vec::new();
+    collect_dot_env_files(root, root, &mut snapshots)?;
+    snapshots.sort_by(|left, right| left.relative.cmp(&right.relative));
+    Ok(snapshots)
+}
+
+pub(crate) fn restore_snapshot_files_to_root(
+    files: &[SnapshotFile],
+    root: &Path,
+) -> AppResult<()> {
+    copy_snapshot_files(files, root).map(|_| ())
+}
+
 fn snapshot_ignored_exact_file(
     session: &Session<'_>,
     main_root: &Path,
@@ -914,6 +928,39 @@ fn collect_ignored_env_files_from_root(
         }
     }
 
+    Ok(())
+}
+
+fn collect_dot_env_files(root: &Path, current: &Path, snapshots: &mut Vec<SnapshotFile>) -> AppResult<()> {
+    let mut entries = fs::read_dir(current)
+        .map_err(|error| Error::message(format!("failed to read {}: {error}", current.display())))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| Error::message(format!("failed to read {}: {error}", current.display())))?;
+    entries.sort_by_key(|entry| entry.path());
+
+    for entry in entries {
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .map_err(|error| Error::message(format!("failed to inspect {}: {error}", path.display())))?;
+        if file_type.is_dir() {
+            collect_dot_env_files(root, &path, snapshots)?;
+            continue;
+        }
+        if path.file_name().and_then(|name| name.to_str()) != Some(".env") {
+            continue;
+        }
+        let relative = path.strip_prefix(root).map_err(|error| {
+            Error::message(format!(
+                "failed to derive relative path for {} from {}: {error}",
+                path.display(),
+                root.display()
+            ))
+        })?;
+        if let Some(snapshot) = snapshot_file(root, relative.to_path_buf())? {
+            snapshots.push(snapshot);
+        }
+    }
     Ok(())
 }
 
@@ -1359,7 +1406,7 @@ fn should_run_pnpm_install(worktree_path: &Path) -> bool {
         || worktree_path.join("pnpm-workspace.yaml").is_file()
 }
 
-fn finish(
+pub(crate) fn finish(
     session: &mut Session<'_>,
     no_clipboard: bool,
     payload: String,

@@ -131,7 +131,7 @@ where
                 match workspace::resolve_mode(&session.git, &session.cwd)? {
                     Mode::Repository => worktree::checkout(session, options),
                     Mode::Workspace => Err(Error::message(
-                        "checkout is not supported in Workspace Mode; use new, remove, send-out, or bring-in",
+                        "checkout is not supported in Workspace Mode; use new or remove",
                     )),
                 }
             })
@@ -172,7 +172,9 @@ where
             execute_worktree(stdout, stderr, options.no_clipboard, |session| {
                 match workspace::resolve_mode(&session.git, &session.cwd)? {
                     Mode::Repository => worktree::send_out(session, options),
-                    Mode::Workspace => workspace::send_out(session, options),
+                    Mode::Workspace => Err(Error::message(
+                        "send-out is not supported in Workspace Mode",
+                    )),
                 }
             })
         }
@@ -180,7 +182,9 @@ where
             execute_worktree(stdout, stderr, options.no_clipboard, |session| {
                 match workspace::resolve_mode(&session.git, &session.cwd)? {
                     Mode::Repository => worktree::bring_in(session, options),
-                    Mode::Workspace => workspace::bring_in(session, options),
+                    Mode::Workspace => Err(Error::message(
+                        "bring-in is not supported in Workspace Mode",
+                    )),
                 }
             })
         }
@@ -650,7 +654,7 @@ fn root_help() -> &'static str {
         "  remove      Remove a linked worktree\n",
         "  send-out    Move the current main-worktree branch to a linked worktree\n",
         "  bring-in    Move a linked worktree branch back into the main worktree\n",
-        "  workspace   Initialize and manage Workspace Mode refs\n",
+        "  workspace   Initialize and manage Workspace Mode membership\n",
         "  upgrade     Upgrade wtk from the latest GitHub release\n",
         "  completion  Generate shell completion script\n",
         "  help        Show help\n\n",
@@ -718,8 +722,8 @@ fn command_help(command: &str) -> &'static str {
         "workspace" => concat!(
             "Usage: wtk workspace <init|add> [args]\n\n",
             "Subcommands:\n",
-            "  init                         Initialize Workspace Mode config\n",
-            "  add <repository-path>        Add a Workspace Ref for a repository\n\n",
+            "  init                         Initialize Workspace Mode manifest\n",
+            "  add <repository-path>        Add a Linked Repository to the manifest\n\n",
             "Flags:\n",
             "  -h, --help\n",
         ),

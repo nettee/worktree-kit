@@ -1,7 +1,7 @@
 ---
 id: 20260607-workspace-worktree-state-model
 name: Workspace Worktree State Model
-status: planned
+status: implemented
 created: '2026-06-07'
 ---
 
@@ -202,9 +202,22 @@ Depends on: Steps 1-5
 
 ### Progress
 
-- [ ] Step 1: Manifest And Mode Foundation
-- [ ] Step 2: Workspace New
-- [ ] Step 3: Workspace Status
-- [ ] Step 4: Workspace Remove
-- [ ] Step 5: Unsupported Commands And Documentation
-- [ ] Step 6: Regression Coverage
+- [x] Step 1: Manifest And Mode Foundation
+- [x] Step 2: Workspace New
+- [x] Step 3: Workspace Status
+- [x] Step 4: Workspace Remove
+- [x] Step 5: Unsupported Commands And Documentation
+- [x] Step 6: Regression Coverage
+
+### Implementation
+
+- Replaced Workspace Mode discovery and config I/O with tracked `.wtk-workspace.toml` manifests.
+- Made Workspace repository worktrees participate in coordinated `new`, `status`, and `remove` flows.
+- Generated and validated per-Workspace-Worktree `refs/<name>` targets instead of mutating one shared `refs/` state.
+- Restricted `workspace init` and `workspace add` to the Workspace main worktree.
+- Rejected `checkout`, `send-out`, and `bring-in` in Workspace Mode.
+- Updated README and Workspace Mode E2E coverage for the new state model.
+
+### Verification
+
+- `cargo test`
