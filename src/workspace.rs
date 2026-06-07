@@ -273,7 +273,7 @@ pub fn new(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
     }
     let refs = load_workspace_refs(&session.git, &ctx, &workspace_branch, true)?;
     require_refs(&refs)?;
-    require_manifest_tracked(&session.git, &ctx.root)?;
+    require_manifest_committed(&session.git, &ctx.root)?;
 
     let workspace_path = default_path(&ctx.repo.main_root, &opts.branch);
     if branch_exists(&session.git, &ctx.repo.main_root, &opts.branch)? {
@@ -782,7 +782,7 @@ fn restore_ref_state(path: &Path, target: Option<&PathBuf>) -> AppResult<()> {
     }
 }
 
-fn require_manifest_tracked(git: &Git, workspace_root: &Path) -> AppResult<()> {
+fn require_manifest_committed(git: &Git, workspace_root: &Path) -> AppResult<()> {
     git.run(
         workspace_root,
         ["cat-file", "-e", &format!("HEAD:{MANIFEST_FILE}")],
@@ -797,7 +797,21 @@ fn require_manifest_tracked(git: &Git, workspace_root: &Path) -> AppResult<()> {
         } else {
             error
         }
-    })
+    })?;
+
+    let status = git.run(
+        workspace_root,
+        ["status", "--porcelain=v1", "--", MANIFEST_FILE],
+    )?;
+    if status.stdout.trim().is_empty() {
+        Ok(())
+    } else {
+        Err(Error::message(format!(
+            "Workspace Mode new requires committed {} changes; found:\n{}",
+            MANIFEST_FILE,
+            status.stdout.trim_end()
+        )))
+    }
 }
 
 fn current_branch(git: &Git, repo: &Path) -> AppResult<String> {

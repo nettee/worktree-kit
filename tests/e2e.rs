@@ -421,6 +421,46 @@ fn workspace_mode_new_copies_ignored_env_and_runs_pnpm_install() {
 
 #[cfg(unix)]
 #[test]
+fn workspace_mode_new_rejects_dirty_manifest_changes() {
+    let bin = build_wtk();
+    let base = temp_dir();
+    let workspace = init_repo_at(&base.join("workspace"), "main");
+    let repo_a = init_repo_at(&base.join("A"), "main");
+    let repo_b = init_repo_at(&base.join("B"), "main");
+
+    run_wtk(&bin, &workspace, ["workspace", "init"]);
+    run_wtk(
+        &bin,
+        &workspace,
+        ["workspace", "add", repo_a.to_str().unwrap()],
+    );
+    commit_workspace_manifest(&workspace, "record workspace manifest");
+
+    run_wtk(
+        &bin,
+        &workspace,
+        ["workspace", "add", repo_b.to_str().unwrap()],
+    );
+    let (out, status) = run_wtk_err(
+        &bin,
+        &workspace,
+        ["new", "feature/ws-dirty", "--base", "main", "--no-clipboard"],
+    );
+    assert!(!status.success());
+    assert!(out.contains("Workspace Mode new requires committed .wtk-workspace.toml changes"));
+
+    run_git(&workspace, ["add", ".wtk-workspace.toml"]);
+    let (out, status) = run_wtk_err(
+        &bin,
+        &workspace,
+        ["new", "feature/ws-staged", "--base", "main", "--no-clipboard"],
+    );
+    assert!(!status.success());
+    assert!(out.contains("Workspace Mode new requires committed .wtk-workspace.toml changes"));
+}
+
+#[cfg(unix)]
+#[test]
 fn workspace_mode_new_rolls_back_refs_and_dirty_worktrees_when_init_fails() {
     let bin = build_wtk();
     let base = temp_dir();
