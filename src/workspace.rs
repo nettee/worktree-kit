@@ -274,7 +274,12 @@ pub fn new(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
         write_ref(&entry.ref_path, path)?;
     }
     for (entry, path) in &plan {
-        crate::worktree::init_worktree(session, &entry.repo.main_root, path, None)?;
+        if let Err(error) =
+            crate::worktree::init_worktree(session, &entry.repo.main_root, path, None)
+        {
+            rollback_all(&session.git, session.out, rollback)?;
+            return Err(error);
+        }
     }
     writeln!(
         session.out,
@@ -848,12 +853,18 @@ fn rollback_all(git: &Git, out: &mut dyn Write, actions: Vec<RollbackAction>) ->
                     &[
                         "worktree".into(),
                         "remove".into(),
+                        "--force".into(),
                         path.display().to_string(),
                     ],
                 )?;
                 git.run(
                     &repo,
-                    ["worktree", "remove", path.to_str().unwrap_or_default()],
+                    [
+                        "worktree",
+                        "remove",
+                        "--force",
+                        path.to_str().unwrap_or_default(),
+                    ],
                 )
                 .map(|_| ())
             }

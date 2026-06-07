@@ -476,6 +476,84 @@ fn workspace_mode_new_copies_ignored_env_and_runs_pnpm_install() {
 
 #[cfg(unix)]
 #[test]
+fn workspace_mode_new_rolls_back_refs_and_dirty_worktrees_when_init_fails() {
+    let bin = build_wtk();
+    let base = temp_dir();
+    let workspace = init_repo_at(&base.join("workspace"), "main");
+    let repo_a = init_repo_at(&base.join("A"), "main");
+    let repo_b = init_repo_at(&base.join("B"), "main");
+
+    run_wtk(&bin, &workspace, ["workspace", "init"]);
+    run_wtk(
+        &bin,
+        &workspace,
+        ["workspace", "add", repo_a.to_str().unwrap()],
+    );
+    run_wtk(
+        &bin,
+        &workspace,
+        ["workspace", "add", repo_b.to_str().unwrap()],
+    );
+
+    commit_files(
+        &repo_a,
+        &[
+            (".gitignore", ".env\n"),
+            ("pnpm-lock.yaml", "lockfileVersion: '9.0'\n"),
+        ],
+        "prepare repo a",
+    );
+    commit_files(
+        &repo_b,
+        &[
+            (".gitignore", ".env\n"),
+            ("pnpm-lock.yaml", "lockfileVersion: '9.0'\n"),
+        ],
+        "prepare repo b",
+    );
+    std::fs::write(repo_a.join(".env"), "A=value\n").unwrap();
+    std::fs::write(repo_b.join(".env"), "B=value\n").unwrap();
+
+    let fake_bin = temp_dir().join("fake-bin");
+    std::fs::create_dir_all(&fake_bin).unwrap();
+    let log_path = fake_bin.join("pnpm.log");
+    write_failing_fake_pnpm(&fake_bin, &log_path, "B-wt-feature-ws-fail");
+    let path = prepend_path(&fake_bin);
+
+    let (out, status) = run_wtk_err_with_env(
+        &bin,
+        &workspace,
+        ["new", "feature/ws-fail", "--base", "main", "--no-clipboard"],
+        &[("PATH", path)],
+    );
+    assert!(!status.success());
+    assert!(out.contains("pnpm install failed"));
+
+    let repo_a_canonical = std::fs::canonicalize(&repo_a).unwrap();
+    let repo_b_canonical = std::fs::canonicalize(&repo_b).unwrap();
+    let linked_a = linked_worktree_path(&repo_a_canonical, "feature/ws-fail");
+    let linked_b = linked_worktree_path(&repo_b_canonical, "feature/ws-fail");
+
+    assert!(!linked_a.exists());
+    assert!(!linked_b.exists());
+    assert_eq!(
+        std::fs::read_link(workspace.join("refs/A")).unwrap(),
+        repo_a_canonical
+    );
+    assert_eq!(
+        std::fs::read_link(workspace.join("refs/B")).unwrap(),
+        repo_b_canonical
+    );
+    assert!(!run_git(&repo_a, ["branch", "--list", "feature/ws-fail"]).contains("feature/ws-fail"));
+    assert!(!run_git(&repo_b, ["branch", "--list", "feature/ws-fail"]).contains("feature/ws-fail"));
+
+    let log = std::fs::read_to_string(log_path).unwrap();
+    assert!(log.contains(&format!("PWD:{}", linked_a.display())));
+    assert!(log.contains(&format!("PWD:{}", linked_b.display())));
+}
+
+#[cfg(unix)]
+#[test]
 fn workspace_mode_bring_in_rolls_back_when_later_remove_fails() {
     let bin = build_wtk();
     let base = temp_dir();
@@ -1695,6 +1773,23 @@ fn run_wtk_with_env<const N: usize>(
     combined
 }
 
+fn run_wtk_err_with_env<const N: usize>(
+    bin: &Path,
+    dir: &Path,
+    args: [&str; N],
+    envs: &[(&str, std::ffi::OsString)],
+) -> (String, std::process::ExitStatus) {
+    let output = Command::new(bin)
+        .args(args)
+        .current_dir(dir)
+        .envs(envs.iter().map(|(key, value)| (*key, value)))
+        .output()
+        .unwrap();
+    let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
+    combined.push_str(&String::from_utf8_lossy(&output.stderr));
+    (combined, output.status)
+}
+
 fn run_wtk_err<const N: usize>(
     bin: &Path,
     dir: &Path,
@@ -1869,6 +1964,35 @@ fn write_slow_fake_pnpm(bin_dir: &Path, log_path: &Path) {
             "#!/bin/sh\nsleep 2\nprintf 'ARGS:%s\\n' \"$*\" >> \"{}\"\nprintf 'PWD:%s\\n' \"$PWD\" >> \"{}\"\n",
             log_path.display(),
             log_path.display()
+        );
+        let script_path = bin_dir.join("pnpm");
+        std::fs::write(&script_path, script).unwrap();
+        let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
+        #[cfg(unix)]
+        {
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&script_path, perms).unwrap();
+        }
+    }
+}
+
+fn write_failing_fake_pnpm(bin_dir: &Path, log_path: &Path, fail_path_fragment: &str) {
+    #[cfg(windows)]
+    {
+        let script = format!(
+            "@echo off\r\necho ARGS:%*>>\"{log}\"\r\necho PWD:%CD%>>\"{log}\"\r\necho %CD% | findstr /C:\"{fragment}\" >nul && exit /b 1\r\n",
+            log = log_path.display(),
+            fragment = fail_path_fragment
+        );
+        std::fs::write(bin_dir.join("pnpm.cmd"), script).unwrap();
+    }
+
+    #[cfg(not(windows))]
+    {
+        let script = format!(
+            "#!/bin/sh\nprintf 'ARGS:%s\\n' \"$*\" >> \"{log}\"\nprintf 'PWD:%s\\n' \"$PWD\" >> \"{log}\"\ncase \"$PWD\" in\n  *\"{fragment}\") exit 1 ;;\nesac\n",
+            log = log_path.display(),
+            fragment = fail_path_fragment
         );
         let script_path = bin_dir.join("pnpm");
         std::fs::write(&script_path, script).unwrap();
