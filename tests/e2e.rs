@@ -402,6 +402,149 @@ fn workspace_mode_send_out_rolls_back_when_later_base_switch_fails() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn workspace_mode_new_copies_ignored_env_and_runs_pnpm_install() {
+    let bin = build_wtk();
+    let base = temp_dir();
+    let workspace = init_repo_at(&base.join("workspace"), "main");
+    let repo_a = init_repo_at(&base.join("A"), "main");
+    let repo_b = init_repo_at(&base.join("B"), "main");
+
+    run_wtk(&bin, &workspace, ["workspace", "init"]);
+    run_wtk(
+        &bin,
+        &workspace,
+        ["workspace", "add", repo_a.to_str().unwrap()],
+    );
+    run_wtk(
+        &bin,
+        &workspace,
+        ["workspace", "add", repo_b.to_str().unwrap()],
+    );
+
+    commit_files(
+        &repo_a,
+        &[
+            (".gitignore", ".env\n"),
+            ("pnpm-lock.yaml", "lockfileVersion: '9.0'\n"),
+        ],
+        "prepare repo a",
+    );
+    commit_files(
+        &repo_b,
+        &[
+            (".gitignore", ".env\n"),
+            ("pnpm-lock.yaml", "lockfileVersion: '9.0'\n"),
+        ],
+        "prepare repo b",
+    );
+    std::fs::write(repo_a.join(".env"), "A=value\n").unwrap();
+    std::fs::write(repo_b.join(".env"), "B=value\n").unwrap();
+
+    let fake_bin = temp_dir().join("fake-bin");
+    std::fs::create_dir_all(&fake_bin).unwrap();
+    let log_path = fake_bin.join("pnpm.log");
+    write_fake_pnpm(&fake_bin, &log_path);
+    let path = prepend_path(&fake_bin);
+
+    let out = run_wtk_with_env(
+        &bin,
+        &workspace,
+        ["new", "feature/ws-init", "--base", "main", "--no-clipboard"],
+        &[("PATH", path)],
+    );
+
+    let repo_a_canonical = std::fs::canonicalize(&repo_a).unwrap();
+    let repo_b_canonical = std::fs::canonicalize(&repo_b).unwrap();
+    let linked_a = linked_worktree_path(&repo_a_canonical, "feature/ws-init");
+    let linked_b = linked_worktree_path(&repo_b_canonical, "feature/ws-init");
+
+    assert_eq!(
+        std::fs::read_to_string(linked_a.join(".env")).unwrap(),
+        "A=value\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(linked_b.join(".env")).unwrap(),
+        "B=value\n"
+    );
+    assert!(out.contains("copied ignored .env: .env"));
+    assert!(out.contains("running pnpm install in"));
+    wait_for_file_contains(&log_path, &format!("PWD:{}", linked_a.display()));
+    wait_for_file_contains(&log_path, &format!("PWD:{}", linked_b.display()));
+}
+
+#[cfg(unix)]
+#[test]
+fn workspace_mode_bring_in_rolls_back_when_later_remove_fails() {
+    let bin = build_wtk();
+    let base = temp_dir();
+    let workspace = init_repo_at(&base.join("workspace"), "main");
+    let repo_a = init_repo_at(&base.join("A"), "main");
+    let repo_b = init_repo_at(&base.join("B"), "main");
+
+    run_wtk(&bin, &workspace, ["workspace", "init"]);
+    run_wtk(
+        &bin,
+        &workspace,
+        ["workspace", "add", repo_a.to_str().unwrap()],
+    );
+    run_wtk(
+        &bin,
+        &workspace,
+        ["workspace", "add", repo_b.to_str().unwrap()],
+    );
+
+    run_git(&repo_a, ["switch", "-c", "feature/send"]);
+    run_git(&repo_b, ["switch", "-c", "feature/send"]);
+    run_wtk(
+        &bin,
+        &workspace,
+        ["send-out", "--base", "main", "--no-clipboard"],
+    );
+
+    let repo_a_canonical = std::fs::canonicalize(&repo_a).unwrap();
+    let repo_b_canonical = std::fs::canonicalize(&repo_b).unwrap();
+    let linked_a = linked_worktree_path(&repo_a_canonical, "feature/send");
+    let linked_b = linked_worktree_path(&repo_b_canonical, "feature/send");
+    run_git(
+        &repo_b,
+        [
+            "worktree",
+            "lock",
+            linked_b.to_str().unwrap(),
+            "--reason",
+            "test",
+        ],
+    );
+
+    let (out, status) = run_wtk_err(
+        &bin,
+        &workspace,
+        ["bring-in", "feature/send", "--no-clipboard"],
+    );
+    assert!(!status.success());
+    assert!(out.contains("locked"));
+    assert_eq!(
+        run_git(&repo_a, ["branch", "--show-current"]).trim(),
+        "main"
+    );
+    assert_eq!(
+        run_git(&repo_b, ["branch", "--show-current"]).trim(),
+        "main"
+    );
+    assert!(linked_a.exists());
+    assert!(linked_b.exists());
+    assert_eq!(
+        std::fs::read_link(workspace.join("refs/A")).unwrap(),
+        linked_a
+    );
+    assert_eq!(
+        std::fs::read_link(workspace.join("refs/B")).unwrap(),
+        linked_b
+    );
+}
+
 #[cfg(not(windows))]
 #[test]
 fn upgrade_replaces_release_binary_from_release_asset() {

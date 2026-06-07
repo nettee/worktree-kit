@@ -76,10 +76,27 @@ struct WorkspaceStatusRef {
 }
 
 enum RollbackAction {
-    RestoreRef { path: PathBuf, target: PathBuf },
-    RemoveWorktree { repo: PathBuf, path: PathBuf },
-    DeleteBranch { repo: PathBuf, branch: String },
-    SwitchMain { repo: PathBuf, branch: String },
+    RestoreRef {
+        path: PathBuf,
+        target: PathBuf,
+    },
+    RemoveWorktree {
+        repo: PathBuf,
+        path: PathBuf,
+    },
+    AddWorktree {
+        repo: PathBuf,
+        path: PathBuf,
+        branch: String,
+    },
+    DeleteBranch {
+        repo: PathBuf,
+        branch: String,
+    },
+    SwitchMain {
+        repo: PathBuf,
+        branch: String,
+    },
 }
 
 pub fn resolve_mode(git: &Git, cwd: &Path) -> AppResult<Mode> {
@@ -256,6 +273,9 @@ pub fn new(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
         });
         write_ref(&entry.ref_path, path)?;
     }
+    for (entry, path) in &plan {
+        crate::worktree::init_worktree(session, &entry.repo.main_root, path, None)?;
+    }
     writeln!(
         session.out,
         "created workspace worktrees for {}",
@@ -405,6 +425,13 @@ pub fn bring_in(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
     let mut plan = Vec::new();
     for entry in refs {
         require_clean(&session.git, &entry.repo.main_root)?;
+        let main_branch = current_branch(&session.git, &entry.repo.main_root)?;
+        if main_branch.is_empty() {
+            return Err(Error::message(format!(
+                "bring-in requires a named branch in {}",
+                entry.name
+            )));
+        }
         let worktree = if same_path(&entry.target, &entry.repo.main_root) {
             entry
                 .repo
@@ -426,25 +453,45 @@ pub fn bring_in(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
             ))
         })?;
         require_clean(&session.git, &worktree.path)?;
-        plan.push((entry, worktree));
+        plan.push((entry, worktree, main_branch));
     }
-    for (entry, worktree) in &plan {
+    let mut rollback = Vec::new();
+    for (entry, worktree, main_branch) in &plan {
+        rollback.push(RollbackAction::RestoreRef {
+            path: entry.ref_path.clone(),
+            target: entry.target.clone(),
+        });
         let remove_args = vec![
             "worktree".to_string(),
             "remove".to_string(),
             worktree.path.display().to_string(),
         ];
         output::git(session.out, &entry.repo.main_root, &remove_args)?;
-        session.git.run(
+        if let Err(error) = session.git.run(
             &entry.repo.main_root,
             remove_args.iter().map(String::as_str),
-        )?;
+        ) {
+            rollback_all(&session.git, session.out, rollback)?;
+            return Err(error);
+        }
+        rollback.push(RollbackAction::AddWorktree {
+            repo: entry.repo.main_root.clone(),
+            path: worktree.path.clone(),
+            branch: worktree.branch.clone(),
+        });
         let switch_args = vec!["switch".to_string(), opts.branch.clone()];
         output::git(session.out, &entry.repo.main_root, &switch_args)?;
-        session.git.run(
+        if let Err(error) = session.git.run(
             &entry.repo.main_root,
             switch_args.iter().map(String::as_str),
-        )?;
+        ) {
+            rollback_all(&session.git, session.out, rollback)?;
+            return Err(error);
+        }
+        rollback.push(RollbackAction::SwitchMain {
+            repo: entry.repo.main_root.clone(),
+            branch: main_branch.clone(),
+        });
         write_ref(&entry.ref_path, &entry.repo.main_root)?;
     }
     writeln!(session.out, "brought workspace branches in")?;
@@ -807,6 +854,28 @@ fn rollback_all(git: &Git, out: &mut dyn Write, actions: Vec<RollbackAction>) ->
                 git.run(
                     &repo,
                     ["worktree", "remove", path.to_str().unwrap_or_default()],
+                )
+                .map(|_| ())
+            }
+            RollbackAction::AddWorktree { repo, path, branch } => {
+                output::git(
+                    out,
+                    &repo,
+                    &[
+                        "worktree".into(),
+                        "add".into(),
+                        path.display().to_string(),
+                        branch.clone(),
+                    ],
+                )?;
+                git.run(
+                    &repo,
+                    [
+                        "worktree",
+                        "add",
+                        path.to_str().unwrap_or_default(),
+                        &branch,
+                    ],
                 )
                 .map(|_| ())
             }
