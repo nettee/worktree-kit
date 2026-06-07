@@ -295,6 +295,7 @@ pub fn remove(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
             rollback_all(&session.git, session.out, rollback)?;
             return Err(error);
         }
+        rollback.pop();
         if opts.delete_branch && !worktree.branch.is_empty() {
             let branch_args = vec![
                 "branch".to_string(),
@@ -306,7 +307,6 @@ pub fn remove(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
                 &entry.repo.main_root,
                 branch_args.iter().map(String::as_str),
             ) {
-                rollback_all(&session.git, session.out, rollback)?;
                 return Err(error);
             }
         }
@@ -354,10 +354,13 @@ pub fn send_out(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
     for (entry, branch, base, path) in &plan {
         let switch_args = vec!["switch".to_string(), base.clone()];
         output::git(session.out, &entry.repo.main_root, &switch_args)?;
-        session.git.run(
+        if let Err(error) = session.git.run(
             &entry.repo.main_root,
             switch_args.iter().map(String::as_str),
-        )?;
+        ) {
+            rollback_all(&session.git, session.out, rollback)?;
+            return Err(error);
+        }
         rollback.push(RollbackAction::SwitchMain {
             repo: entry.repo.main_root.clone(),
             branch: branch.clone(),

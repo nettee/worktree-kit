@@ -286,6 +286,122 @@ fn workspace_mode_add_status_new_remove_send_out_and_bring_in() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn workspace_mode_remove_delete_branch_failure_keeps_refs_on_main_worktrees() {
+    let bin = build_wtk();
+    let base = temp_dir();
+    let workspace = init_repo_at(&base.join("workspace"), "main");
+    let repo_a = init_repo_at(&base.join("A"), "main");
+    let repo_b = init_repo_at(&base.join("B"), "main");
+
+    run_wtk(&bin, &workspace, ["workspace", "init"]);
+    run_wtk(
+        &bin,
+        &workspace,
+        ["workspace", "add", repo_a.to_str().unwrap()],
+    );
+    run_wtk(
+        &bin,
+        &workspace,
+        ["workspace", "add", repo_b.to_str().unwrap()],
+    );
+
+    let repo_a_canonical = std::fs::canonicalize(&repo_a).unwrap();
+    let repo_b_canonical = std::fs::canonicalize(&repo_b).unwrap();
+
+    run_wtk(
+        &bin,
+        &workspace,
+        ["new", "feature/ws", "--base", "main", "--no-clipboard"],
+    );
+    let linked_a = linked_worktree_path(&repo_a_canonical, "feature/ws");
+    let linked_b = linked_worktree_path(&repo_b_canonical, "feature/ws");
+    commit_files(&linked_a, &[("only-on-branch.txt", "A\n")], "branch only");
+
+    let (out, status) = run_wtk_err(
+        &bin,
+        &workspace,
+        ["remove", "feature/ws", "--delete-branch", "--no-clipboard"],
+    );
+    assert!(!status.success());
+    assert!(out.contains("not fully merged"));
+    assert!(!linked_a.exists());
+    assert!(linked_b.exists());
+    assert_eq!(
+        std::fs::read_link(workspace.join("refs/A")).unwrap(),
+        repo_a_canonical
+    );
+    assert_eq!(
+        std::fs::read_link(workspace.join("refs/B")).unwrap(),
+        linked_b
+    );
+
+    let status_yaml: Value = serde_yaml::from_str(&run_wtk(&bin, &workspace, ["status"])).unwrap();
+    let refs = status_yaml["refs"].as_sequence().unwrap();
+    assert!(refs.iter().any(|entry| {
+        entry["name"].as_str() == Some("A")
+            && entry["is_main"].as_bool() == Some(true)
+            && entry["current_target"].as_str() == repo_a_canonical.to_str()
+    }));
+}
+
+#[cfg(unix)]
+#[test]
+fn workspace_mode_send_out_rolls_back_when_later_base_switch_fails() {
+    let bin = build_wtk();
+    let base = temp_dir();
+    let workspace = init_repo_at(&base.join("workspace"), "main");
+    let repo_a = init_repo_at(&base.join("A"), "main");
+    let repo_b = init_repo_at(&base.join("B"), "main");
+
+    run_wtk(&bin, &workspace, ["workspace", "init"]);
+    run_wtk(
+        &bin,
+        &workspace,
+        ["workspace", "add", repo_a.to_str().unwrap()],
+    );
+    run_wtk(
+        &bin,
+        &workspace,
+        ["workspace", "add", repo_b.to_str().unwrap()],
+    );
+
+    let repo_a_canonical = std::fs::canonicalize(&repo_a).unwrap();
+    let repo_b_canonical = std::fs::canonicalize(&repo_b).unwrap();
+    run_git(&repo_a, ["branch", "release"]);
+    run_git(&repo_a, ["switch", "-c", "feature/send"]);
+    run_git(&repo_b, ["switch", "-c", "feature/send"]);
+
+    let sent_a = linked_worktree_path(&repo_a_canonical, "feature/send");
+    let sent_b = linked_worktree_path(&repo_b_canonical, "feature/send");
+    let (out, status) = run_wtk_err(
+        &bin,
+        &workspace,
+        ["send-out", "--base", "release", "--no-clipboard"],
+    );
+    assert!(!status.success());
+    assert!(out.contains("invalid reference"));
+    assert_eq!(
+        run_git(&repo_a, ["branch", "--show-current"]).trim(),
+        "feature/send"
+    );
+    assert_eq!(
+        run_git(&repo_b, ["branch", "--show-current"]).trim(),
+        "feature/send"
+    );
+    assert!(!sent_a.exists());
+    assert!(!sent_b.exists());
+    assert_eq!(
+        std::fs::read_link(workspace.join("refs/A")).unwrap(),
+        repo_a_canonical
+    );
+    assert_eq!(
+        std::fs::read_link(workspace.join("refs/B")).unwrap(),
+        repo_b_canonical
+    );
+}
+
 #[cfg(not(windows))]
 #[test]
 fn upgrade_replaces_release_binary_from_release_asset() {
