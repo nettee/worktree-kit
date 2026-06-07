@@ -1,7 +1,7 @@
 ---
 id: 20260607-parent-directory-linked-worktrees
 name: Parent Directory Linked Worktrees
-status: researched
+status: planned
 created: '2026-06-07'
 ---
 
@@ -28,17 +28,21 @@ created: '2026-06-07'
 - Switching the workspace changes which coordinated repository worktrees are surfaced through the workspace.
 - The goal is to avoid mixed-source edits caused by creating or switching a worktree in one repository while related repositories still point at unrelated branches or worktrees.
 - Workspace metadata should live in `.wtk/config.toml` and include the current mode plus workspace refs.
-- `wtk` should not restrict arbitrary repository contents in the Workspace Parent beyond the configuration and ref invariants it needs to operate.
+- `wtk` should not restrict arbitrary repository contents in the Workspace beyond the configuration and ref invariants it needs to operate.
 - Workspace Mode configuration should record the stable repository path for each ref.
 - For a workspace ref, the ref name, fixed ref path, and configured repository directory name must remain consistent. For example, ref name `A`, ref path `refs/A`, and repository directory `/path/to/A` match; mismatches are errors.
 - Ref targets are worktree paths, not stable repository paths.
 - Repository paths in `.wtk/config.toml` and Workspace Ref targets must be absolute paths.
-- The workspace worktree/branch name must be creatable in every linked repository before the workspace switch/create operation can continue.
+- The workspace worktree/branch name must be creatable in every linked repository before a Workspace Mode worktree operation can continue.
 - If any repository cannot create the required branch/worktree because of a collision or another required-step failure, `wtk` must fail and roll back every repository already changed by that operation.
 - Workspace names, branch names, and derived worktree paths must all follow the existing sibling layout rules used by Repository Mode.
 - Workspace create/switch operations must run a full preflight before making changes to avoid dirty partial state.
 - Workspace setup uses `wtk workspace init` to initialize Workspace Mode config and `wtk workspace add <repository-path>` to add refs from repository paths, converting input paths to absolute paths.
+- `wtk workspace add <repository-path>` initializes the new `refs/<name>` target to that repository's main worktree path.
+- Adding a new Workspace Ref is allowed only when every existing Workspace Ref points to its repository's main worktree.
 - Existing worktree operations keep their command names. In Workspace Mode, `new`, `remove`, `send-out`, and `bring-in` dispatch the corresponding operation into each configured ref repository instead of only the current repository.
+- `wtk status` in Workspace Mode should output an initial aggregate workspace status, but any inconsistency in config, refs, repository identity, or expected worktree state must fail fast.
+- Workspace rollback should only undo resources created or modified by the current `wtk` operation; it must not delete branches or worktrees that existed before the operation began.
 - Name the current default single-repository behavior Repository Mode.
 - Name the new coordinated multi-repository behavior Workspace Mode.
 
@@ -88,7 +92,19 @@ created: '2026-06-07'
 - Treat `.wtk/config.toml` as the source of truth for linked repository identity and the Workspace repository's current ref state as the source of truth for currently surfaced worktrees.
 - Store mode and stable repository paths in `.wtk/config.toml`.
 - Keep Repository Mode as the default mode; use Workspace Mode only when `.wtk/config.toml` explicitly selects it.
-- In Workspace Mode, configuration records repository refs rather than explicit repository paths.
+- In Workspace Mode, configuration records stable repository paths per ref; refs point at currently surfaced worktree paths.
+
+Configuration shape:
+
+```toml
+mode = "workspace"
+
+[workspace.refs.A]
+repository = "/absolute/path/to/A"
+
+[workspace.refs.B]
+repository = "/absolute/path/to/B"
+```
 
 ### Design Decisions
 
@@ -103,6 +119,9 @@ created: '2026-06-07'
 - Decision: Run full preflight before any Workspace create/switch mutation, covering config mode, ref/repository naming consistency, absolute paths, Git repository validity, target branch/worktree availability, and clean-state requirements. Source: `README.md:108-110`, user design decision, 2026-06-07.
 - Decision: Add `wtk workspace init` for creating Workspace Mode config and `wtk workspace add <repository-path>` for adding configured refs from repository paths normalized to absolute paths. Source: user design decision, 2026-06-07.
 - Decision: Do not introduce a separate `workspace switch` verb for core worktree movement; existing worktree commands should inspect the current mode and run Repository Mode or Workspace Mode behavior. Source: `README.md:3-12`, user design decision, 2026-06-07.
+- Decision: `workspace add` initializes the new ref to the repository's main worktree, and it is blocked unless all existing refs also point to their main worktrees. Source: user design decision, 2026-06-07.
+- Decision: `wtk status` in Workspace Mode should provide a first-pass aggregate status view, but inconsistent workspace state exits non-zero instead of reporting a successful status payload with embedded invalid entries. Source: user design decision, 2026-06-07.
+- Decision: Rollback scope is limited to resources created or changed by the current operation. Pre-existing branches/worktrees must be preserved, and rollback failures must be reported as failures. Source: user design decision, 2026-06-07.
 
 ### System Procedure
 
@@ -115,7 +134,7 @@ Workspace create/switch preflight:
 5. Derive the target branch and sibling-layout worktree path from the workspace name for every repository.
 6. Verify every repository can create or switch to the target branch/worktree without collisions or dirty-state violations.
 7. Mutate only after all repositories pass preflight.
-8. If execution fails after mutation begins, roll back created worktrees, created branches, and changed Workspace Refs.
+8. If execution fails after mutation begins, roll back only worktrees, branches, and Workspace Refs created or modified by this operation.
 
 Workspace command routing:
 
@@ -124,13 +143,150 @@ Workspace command routing:
 3. In Workspace Mode, load configured refs and run the requested worktree operation against every ref repository.
 4. Update `refs/<name>` only after the corresponding repository operation succeeds, and roll back all changed refs if any repository operation fails.
 
+Workspace add procedure:
+
+1. Require Workspace Mode.
+2. Require every existing Workspace Ref to point to its configured repository's main worktree.
+3. Convert the input repository path to an absolute path and resolve it as a Git repository.
+4. Derive the ref name from the repository directory basename.
+5. Add `[workspace.refs.<name>]` with the stable repository path.
+6. Create `refs/<name>` pointing to the repository's main worktree path.
+
+Workspace status procedure:
+
+1. Require Workspace Mode config to parse successfully.
+2. Validate every configured ref path and target before emitting success output.
+3. For each ref, include the ref name, configured repository path, ref path, current target, inferred branch/worktree state, and expected sibling-layout path when applicable.
+4. Exit non-zero with a clear diagnostic on any mismatch or missing required state.
+
+### System Structure
+
+```mermaid
+flowchart TD
+  CLI["CLI command parser"] --> Mode["Mode resolver"]
+  Mode --> Repo["Repository Mode service"]
+  Mode --> Workspace["Workspace Mode service"]
+  Workspace --> Config[".wtk/config.toml"]
+  Workspace --> Refs["refs/<name> symlinks"]
+  Workspace --> Git["Per-repository Git worktree operations"]
+  Git --> Paths["Sibling Layout path derivation"]
+```
+
+### Interfaces / APIs
+
+- `wtk workspace init`
+  - Initializes `.wtk/config.toml` with `mode = "workspace"`.
+  - Fails if existing config would be overwritten without an explicit future force mechanism.
+- `wtk workspace add <repository-path>`
+  - Converts `<repository-path>` to an absolute path.
+  - Adds `[workspace.refs.<basename>] repository = "<absolute path>"`.
+  - Creates `refs/<basename>` pointing to the repository's main worktree.
+  - Fails unless all existing refs point to their repositories' main worktrees.
+- Existing commands in Workspace Mode:
+  - `wtk new <branch>` creates the same branch/worktree across all configured refs.
+  - `wtk remove <branch-or-worktree>` removes the coordinated workspace worktrees across all configured refs after preflight.
+  - `wtk send-out` sends the coordinated current branch out across all configured refs.
+  - `wtk bring-in <branch>` brings the coordinated branch back across all configured refs.
+  - `wtk status` emits aggregate Workspace Mode status after validation succeeds.
+
+### Change Scope
+
+- Impact Areas:
+  - Mode resolution: detect Repository Mode vs Workspace Mode from `.wtk/config.toml`.
+  - Configuration: parse and write TOML workspace config.
+  - Workspace refs: create, validate, and update absolute symlink targets under `refs/<name>`.
+  - Command routing: dispatch existing worktree commands to single-repo or multi-repo behavior based on mode.
+  - Transaction safety: add preflight and rollback tracking for Workspace Mode operations.
+  - Status output: add mode visibility and first-pass aggregate Workspace Mode status.
+  - Documentation and tests: document the new mode and add E2E coverage for setup, fan-out, validation failure, and rollback.
+
+- Planned File Changes:
+  - `src/cli.rs` - parse `workspace init` / `workspace add` and route existing commands through mode resolution.
+  - `src/worktree.rs` - preserve Repository Mode behavior and expose reusable per-repository operation helpers for Workspace Mode.
+  - `src/gitexec.rs` - reuse repo/worktree resolution for configured repositories and Workspace Ref target validation.
+  - `src/paths.rs` - reuse sibling layout derivation for Workspace Mode expected paths.
+  - `src/workspace.rs` or equivalent - implement config parsing/writing, ref validation, preflight, transaction tracking, rollback, and aggregate status.
+  - `tests/e2e.rs` - add Workspace Mode setup, status, all-repo new/remove/send-out/bring-in, preflight failure, and rollback tests.
+  - `README.md` - document Repository Mode, Workspace Mode, `.wtk/config.toml`, `workspace init`, and `workspace add`.
+  - `CONTEXT.md` - keep terminology aligned as implementation decisions settle.
+
+### Edge Cases
+
+- Missing `.wtk/config.toml` keeps the CLI in Repository Mode.
+- Malformed `.wtk/config.toml`, unknown mode, relative repository path, or relative ref target fails fast.
+- Configured ref `A` whose repository basename is not `A` fails fast.
+- Configured ref without `refs/A`, or `refs/A` pointing outside repository `A`'s Git worktree set, fails fast.
+- `workspace add` is blocked when any existing ref points away from its repository main worktree.
+- Workspace `new` is blocked when any linked repository already has the target branch or derived sibling worktree path in an incompatible state.
+- Workspace operations preserve pre-existing branches/worktrees during rollback and only undo resources changed by the current operation.
+- Rollback failure is itself a command failure and must describe both the original failure and rollback failure state.
+
+### Verification Strategy
+
+- Unit tests for config parsing/writing, absolute path validation, ref-name validation, and sibling-layout expected path derivation. Source: `src/paths.rs:3-44`
+- Unit tests or focused integration tests for transaction logs to ensure rollback only touches resources created or modified by the current operation. Source: `README.md:108-110`
+- E2E tests for `workspace init`, `workspace add`, and initial `refs/<name>` targets pointing at main worktrees.
+- E2E tests for Workspace Mode `new` creating same-named branches/worktrees across A/B/C and updating refs after all preflight passes.
+- E2E tests for preflight failures with branch collisions, worktree path collisions, invalid refs, relative targets, and dirty worktrees.
+- E2E tests for rollback when a later repository operation fails after an earlier repository was changed.
+- E2E tests for Workspace Mode `status` success output and fail-fast behavior on inconsistent refs. Source: `tests/e2e.rs:108-144`
+
 ## Plan
 
-<!-- Optional implementation step breakdown, created during Plan and updated during Implement. -->
+### Step 1: Mode And Workspace Config Foundation
+
+Type: AFK
+Goal: Add the smallest durable Workspace Mode foundation without changing existing Repository Mode behavior.
+Scope: Implement `.wtk/config.toml` parsing/writing, mode resolution, `wtk workspace init`, and `wtk workspace add <repository-path>` with absolute path normalization, ref-name validation, and initial `refs/<name>` creation pointing at the repository main worktree.
+Depends on: None
+Acceptance Criteria: Existing Repository Mode tests still pass; `workspace add` fails unless existing refs all point at their repositories' main worktrees.
+
+### Step 2: Workspace Status
+
+Type: AFK
+Goal: Make `wtk status` mode-aware and expose a first-pass aggregate Workspace Mode status.
+Scope: Route `status` through mode resolution, validate configured refs before success output, include mode/config/ref/repository/worktree fields, and fail fast on malformed config, missing refs, relative targets, wrong repository identity, or inconsistent worktree targets.
+Depends on: Step 1
+
+### Step 3: Workspace New
+
+Type: AFK
+Goal: Fan out `wtk new <branch>` across every configured Workspace Ref with all-or-nothing behavior.
+Scope: Preflight every linked repository, derive sibling-layout target worktree paths from the branch name, create branches/worktrees only after preflight passes, update refs after successful per-repo creation, and roll back resources created by this operation on failure.
+Depends on: Step 1
+Acceptance Criteria: Branch/worktree collisions in any repository prevent mutation; execution failure after partial mutation restores changed refs and removes only operation-created resources.
+
+### Step 4: Workspace Remove
+
+Type: AFK
+Goal: Fan out coordinated removal across Workspace Mode refs while preserving pre-existing resources.
+Scope: Define and implement Workspace Mode `remove` behavior against the configured repositories, with full preflight, ref restoration, and rollback boundaries matching the Design.
+Depends on: Step 3
+
+### Step 5: Workspace Send-Out And Bring-In
+
+Type: AFK
+Goal: Extend coordinated branch movement workflows to Workspace Mode.
+Scope: Implement Workspace Mode `send-out` and `bring-in` by applying the Repository Mode semantics to every configured ref repository with full preflight and rollback tracking.
+Depends on: Step 3
+
+### Step 6: Documentation And Regression Coverage
+
+Type: AFK
+Goal: Make the new mode understandable and protect the compatibility boundary.
+Scope: Update README and focused tests for Repository Mode compatibility, Workspace Mode setup, status, all-repo operations, preflight failures, and rollback failures.
+Depends on: Steps 1-5
 
 ## Notes
 
-<!-- Optional sections — add what's relevant. -->
+### Progress
+
+- [ ] Step 1: Mode And Workspace Config Foundation
+- [ ] Step 2: Workspace Status
+- [ ] Step 3: Workspace New
+- [ ] Step 4: Workspace Remove
+- [ ] Step 5: Workspace Send-Out And Bring-In
+- [ ] Step 6: Documentation And Regression Coverage
 
 ### Implementation
 

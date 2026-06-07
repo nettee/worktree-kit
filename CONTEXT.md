@@ -42,6 +42,6 @@ Dev: "I'm working on a feature that touches API, web, and SDK."
 
 Domain expert: "Create Repository Worktrees for each repo using the existing Sibling Layout, then record their repositories as Workspace Refs in a Workspace."
 
-Dev: "When I switch the Workspace Parent, do the repos switch branches?"
+Dev: "When I move the Workspace to another feature branch, do the repos switch branches?"
 
 Domain expert: "No. A Workspace Switch changes which derived Repository Worktrees the Workspace surfaces. The Repository Worktrees keep their own Git state."
