@@ -1,3 +1,4 @@
+use serde_yaml::Value;
 #[cfg(unix)]
 use std::os::unix::fs as unix_fs;
 #[cfg(unix)]
@@ -100,7 +101,46 @@ fn completion_suggests_new_command() {
     let repo = init_repo("main");
     let completed = completion_lines(&bin, &repo, ["__complete"]);
     assert!(completed.iter().any(|line| line == "new"));
+    assert!(completed.iter().any(|line| line == "status"));
     assert!(completed.iter().any(|line| line == "upgrade"));
+}
+
+#[test]
+fn status_prints_yaml_repo_context() {
+    let bin = build_wtk();
+    let repo = init_repo("main");
+    run_git(&repo, ["branch", "feature/status"]);
+    run_wtk(
+        &bin,
+        &repo,
+        ["checkout", "feature/status", "--no-clipboard"],
+    );
+    let linked = linked_worktree_path(&repo, "feature/status");
+    let repo_canonical = std::fs::canonicalize(&repo).unwrap();
+    let linked_canonical = std::fs::canonicalize(&linked).unwrap();
+
+    let output = run_wtk(&bin, &linked, ["status"]);
+    let yaml: Value = serde_yaml::from_str(&output).unwrap();
+
+    assert_eq!(yaml["current_is_main"].as_bool(), Some(false));
+    assert_eq!(yaml["cwd"].as_str(), linked_canonical.to_str());
+    assert_eq!(yaml["current_root"].as_str(), linked_canonical.to_str());
+    assert_eq!(yaml["main_root"].as_str(), repo_canonical.to_str());
+
+    let worktrees = yaml["worktrees"].as_sequence().unwrap();
+    assert_eq!(worktrees.len(), 2);
+    assert!(worktrees.iter().any(|entry| {
+        entry["path"].as_str() == repo_canonical.to_str()
+            && entry["branch"].as_str() == Some("main")
+            && entry["is_main"].as_bool() == Some(true)
+            && entry["is_current"].as_bool() == Some(false)
+    }));
+    assert!(worktrees.iter().any(|entry| {
+        entry["path"].as_str() == linked_canonical.to_str()
+            && entry["branch"].as_str() == Some("feature/status")
+            && entry["is_main"].as_bool() == Some(false)
+            && entry["is_current"].as_bool() == Some(true)
+    }));
 }
 
 #[cfg(not(windows))]

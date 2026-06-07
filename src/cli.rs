@@ -12,6 +12,7 @@ const TOP_LEVEL_COMMANDS: &[&str] = &[
     "new",
     "create",
     "checkout",
+    "status",
     "init-worktree",
     "remove",
     "send-out",
@@ -25,6 +26,7 @@ const SHELLS: &[&str] = &["bash", "zsh", "fish", "powershell"];
 enum Parsed {
     Create(Options),
     Checkout(Options),
+    Status,
     InitWorktree {
         source_root: String,
         worktree_path: String,
@@ -118,6 +120,7 @@ where
                 worktree::checkout(session, options)
             })
         }
+        Parsed::Status => execute_worktree(stdout, stderr, true, worktree::status),
         Parsed::InitWorktree {
             source_root,
             worktree_path,
@@ -204,6 +207,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
         "new" => parse_new(rest),
         "create" => parse_create(rest),
         "checkout" => parse_checkout(rest),
+        "status" => parse_status(rest),
         "init-worktree" => parse_init_worktree(rest),
         "remove" => parse_remove(rest),
         "send-out" => parse_send_out(rest),
@@ -467,6 +471,23 @@ fn parse_upgrade(args: &[String]) -> Result<Parsed, UsageError> {
     ))
 }
 
+fn parse_status(args: &[String]) -> Result<Parsed, UsageError> {
+    let usage = command_help("status");
+    if args.len() == 1 {
+        return Ok(Parsed::Status);
+    }
+    if args.len() == 2 && matches!(args[1].as_str(), "--help" | "-h") {
+        return Ok(Parsed::HelpText(usage));
+    }
+    if args[1].starts_with('-') {
+        return Err(UsageError::new(format!("unknown flag: {}", args[1]), usage));
+    }
+    Err(UsageError::new(
+        format!("unexpected argument: {}", args[1]),
+        usage,
+    ))
+}
+
 fn parse_completion(args: &[String]) -> Result<Parsed, UsageError> {
     let usage = command_help("completion");
     if args.len() == 2 && matches!(args[1].as_str(), "--help" | "-h") {
@@ -517,6 +538,7 @@ fn root_help() -> &'static str {
         "  new         Create a new branch in a linked worktree\n",
         "  create      Alias for `new`\n",
         "  checkout    Check out an existing branch or ref in a linked worktree\n",
+        "  status      Print repository worktree status as YAML\n",
         "  remove      Remove a linked worktree\n",
         "  send-out    Move the current main-worktree branch to a linked worktree\n",
         "  bring-in    Move a linked worktree branch back into the main worktree\n",
@@ -552,6 +574,11 @@ fn command_help(command: &str) -> &'static str {
             "Flags:\n",
             "      --path <path>\n",
             "      --no-clipboard\n",
+        ),
+        "status" => concat!(
+            "Usage: wtk status [flags]\n\n",
+            "Flags:\n",
+            "  -h, --help\n",
         ),
         "init-worktree" => concat!(
             "Usage: wtk init-worktree <source-root> <worktree-path> [flags]\n\n",
@@ -754,6 +781,12 @@ mod tests {
     fn parses_upgrade_subcommand() {
         let parsed = parse_args(&["wtk".to_string(), "upgrade".to_string()]).unwrap();
         assert!(matches!(parsed, Parsed::Upgrade));
+    }
+
+    #[test]
+    fn parses_status_subcommand() {
+        let parsed = parse_args(&["wtk".to_string(), "status".to_string()]).unwrap();
+        assert!(matches!(parsed, Parsed::Status));
     }
 
     #[test]
