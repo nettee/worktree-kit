@@ -2,6 +2,7 @@ use crate::VERSION;
 use crate::clipboard::{DisabledClipboard, SystemClipboard};
 use crate::gitexec::Git;
 use crate::upgrade;
+use crate::workspace::{self, Mode};
 use crate::worktree::{self, Options, Session};
 use crate::{AppResult, Error};
 use std::ffi::OsString;
@@ -18,6 +19,7 @@ const TOP_LEVEL_COMMANDS: &[&str] = &[
     "remove",
     "send-out",
     "bring-in",
+    "workspace",
     "upgrade",
     "completion",
     "help",
@@ -37,6 +39,10 @@ enum Parsed {
     Remove(Options),
     SendOut(Options),
     BringIn(Options),
+    WorkspaceInit,
+    WorkspaceAdd {
+        repository_path: String,
+    },
     Upgrade,
     Completion(String),
     HiddenComplete(Vec<String>),
@@ -114,15 +120,33 @@ where
         }
         Parsed::Create(options) => {
             execute_worktree(stdout, stderr, options.no_clipboard, |session| {
-                worktree::create(session, options)
+                match workspace::resolve_mode(&session.git, &session.cwd)? {
+                    Mode::Repository => worktree::create(session, options),
+                    Mode::Workspace => workspace::new(session, options),
+                }
             })
         }
         Parsed::Checkout(options) => {
             execute_worktree(stdout, stderr, options.no_clipboard, |session| {
-                worktree::checkout(session, options)
+                match workspace::resolve_mode(&session.git, &session.cwd)? {
+                    Mode::Repository => worktree::checkout(session, options),
+                    Mode::Workspace => Err(Error::message(
+                        "checkout is not supported in Workspace Mode; use new, remove, send-out, or bring-in",
+                    )),
+                }
             })
         }
-        Parsed::Status => execute_worktree(stdout, stderr, true, worktree::status),
+        Parsed::Status => {
+            execute_worktree(
+                stdout,
+                stderr,
+                true,
+                |session| match workspace::resolve_mode(&session.git, &session.cwd)? {
+                    Mode::Repository => worktree::status(session),
+                    Mode::Workspace => workspace::status(session),
+                },
+            )
+        }
         Parsed::List => execute_worktree(stdout, stderr, true, worktree::list),
         Parsed::InitWorktree {
             source_root,
@@ -138,17 +162,32 @@ where
         }),
         Parsed::Remove(options) => {
             execute_worktree(stdout, stderr, options.no_clipboard, |session| {
-                worktree::remove(session, options)
+                match workspace::resolve_mode(&session.git, &session.cwd)? {
+                    Mode::Repository => worktree::remove(session, options),
+                    Mode::Workspace => workspace::remove(session, options),
+                }
             })
         }
         Parsed::SendOut(options) => {
             execute_worktree(stdout, stderr, options.no_clipboard, |session| {
-                worktree::send_out(session, options)
+                match workspace::resolve_mode(&session.git, &session.cwd)? {
+                    Mode::Repository => worktree::send_out(session, options),
+                    Mode::Workspace => workspace::send_out(session, options),
+                }
             })
         }
         Parsed::BringIn(options) => {
             execute_worktree(stdout, stderr, options.no_clipboard, |session| {
-                worktree::bring_in(session, options)
+                match workspace::resolve_mode(&session.git, &session.cwd)? {
+                    Mode::Repository => worktree::bring_in(session, options),
+                    Mode::Workspace => workspace::bring_in(session, options),
+                }
+            })
+        }
+        Parsed::WorkspaceInit => execute_worktree(stdout, stderr, true, workspace::init),
+        Parsed::WorkspaceAdd { repository_path } => {
+            execute_worktree(stdout, stderr, true, |session| {
+                workspace::add(session, Path::new(&repository_path))
             })
         }
         Parsed::Upgrade => match upgrade::run(stdout) {
@@ -216,12 +255,59 @@ fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
         "remove" => parse_remove(rest),
         "send-out" => parse_send_out(rest),
         "bring-in" => parse_bring_in(rest),
+        "workspace" => parse_workspace(rest),
         "upgrade" => parse_upgrade(rest),
         "completion" => parse_completion(rest),
         "__complete" => Ok(Parsed::HiddenComplete(rest[1..].to_vec())),
         other => Err(UsageError::new(
             format!("unknown command: {other}"),
             root_help(),
+        )),
+    }
+}
+
+fn parse_workspace(args: &[String]) -> Result<Parsed, UsageError> {
+    let usage = command_help("workspace");
+    if args.len() == 1 {
+        return Err(UsageError::new(
+            "missing required subcommand: init or add",
+            usage,
+        ));
+    }
+    match args[1].as_str() {
+        "init" => {
+            if args.len() == 2 {
+                Ok(Parsed::WorkspaceInit)
+            } else if args.len() == 3 && matches!(args[2].as_str(), "--help" | "-h") {
+                Ok(Parsed::HelpText(usage))
+            } else {
+                Err(UsageError::new(
+                    "unexpected argument for workspace init",
+                    usage,
+                ))
+            }
+        }
+        "add" => {
+            if args.len() == 3 {
+                Ok(Parsed::WorkspaceAdd {
+                    repository_path: args[2].clone(),
+                })
+            } else if args.len() == 2 {
+                Err(UsageError::new(
+                    "missing required argument: repository-path",
+                    usage,
+                ))
+            } else {
+                Err(UsageError::new(
+                    "too many arguments: expected 1 repository-path",
+                    usage,
+                ))
+            }
+        }
+        "--help" | "-h" => Ok(Parsed::HelpText(usage)),
+        other => Err(UsageError::new(
+            format!("unknown workspace subcommand: {other}"),
+            usage,
         )),
     }
 }
@@ -564,6 +650,7 @@ fn root_help() -> &'static str {
         "  remove      Remove a linked worktree\n",
         "  send-out    Move the current main-worktree branch to a linked worktree\n",
         "  bring-in    Move a linked worktree branch back into the main worktree\n",
+        "  workspace   Initialize and manage Workspace Mode refs\n",
         "  upgrade     Upgrade wtk from the latest GitHub release\n",
         "  completion  Generate shell completion script\n",
         "  help        Show help\n\n",
@@ -602,11 +689,7 @@ fn command_help(command: &str) -> &'static str {
             "Flags:\n",
             "  -h, --help\n",
         ),
-        "list" => concat!(
-            "Usage: wtk list [flags]\n\n",
-            "Flags:\n",
-            "  -h, --help\n",
-        ),
+        "list" => concat!("Usage: wtk list [flags]\n\n", "Flags:\n", "  -h, --help\n",),
         "init-worktree" => concat!(
             "Usage: wtk init-worktree <source-root> <worktree-path> [flags]\n\n",
             "Advanced command:\n",
@@ -631,6 +714,14 @@ fn command_help(command: &str) -> &'static str {
             "Usage: wtk bring-in <branch> [flags]\n\n",
             "Flags:\n",
             "      --no-clipboard\n",
+        ),
+        "workspace" => concat!(
+            "Usage: wtk workspace <init|add> [args]\n\n",
+            "Subcommands:\n",
+            "  init                         Initialize Workspace Mode config\n",
+            "  add <repository-path>        Add a Workspace Ref for a repository\n\n",
+            "Flags:\n",
+            "  -h, --help\n",
         ),
         "upgrade" => concat!(
             "Usage: wtk upgrade [flags]\n\n",

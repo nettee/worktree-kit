@@ -4,6 +4,7 @@ pub mod gitexec;
 pub mod output;
 pub mod paths;
 pub mod upgrade;
+pub mod workspace;
 pub mod worktree;
 
 pub const IS_RELEASE_BUILD: bool = option_env!("WTK_VERSION").is_some();

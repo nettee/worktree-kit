@@ -9,10 +9,13 @@
 - `wtk remove` removes a linked worktree.
 - `wtk send-out` moves the current main-worktree branch to a linked worktree.
 - `wtk bring-in` moves a linked worktree branch back into the main worktree.
+- `wtk workspace init` and `wtk workspace add` configure Workspace Mode for coordinated multi-repository worktrees.
 
 `wtk create` remains available as a compatibility alias for `wtk new`.
 
-Default linked worktree paths are sibling directories named `<repo>-wt-<branch-slug>`.
+Repository Mode is the default single-repository behavior. Default linked worktree paths use the Sibling Layout: sibling directories named `<repo>-wt-<branch-slug>`.
+
+Workspace Mode coordinates multiple Linked Repositories from a lightweight Workspace repository. It stores mode and stable repository paths in `.wtk/config.toml`; Workspace Refs live at `refs/<name>` and point to the currently surfaced Repository Worktree path for each Linked Repository. Repository paths and ref targets are absolute paths.
 
 ## Install
 
@@ -71,8 +74,31 @@ wtk list
 wtk remove ../repo-wt-feature-foo
 wtk send-out
 wtk bring-in feature/foo
+wtk workspace init
+wtk workspace add /absolute/path/to/repo
 wtk upgrade
 ```
+
+## Workspace Mode
+
+Initialize a Workspace repository and add Linked Repositories:
+
+```bash
+wtk workspace init
+wtk workspace add /absolute/path/to/A
+wtk workspace add /absolute/path/to/B
+```
+
+The generated config shape is:
+
+```toml
+mode = "workspace"
+
+[workspace.refs.A]
+repository = "/absolute/path/to/A"
+```
+
+In Workspace Mode, `wtk status` emits aggregate Workspace status. `wtk new`, `wtk remove`, `wtk send-out`, and `wtk bring-in` fan out across every configured Workspace Ref. Workspace operations preflight linked repositories before mutation and fail fast on malformed config, relative paths, invalid refs, dirty worktrees, branch collisions, or target path collisions.
 
 Every command prints the underlying `git` commands it runs. Successful commands copy the useful path or branch payload to the clipboard. Use `--no-clipboard` in CI or headless environments.
 

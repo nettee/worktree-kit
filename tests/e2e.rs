@@ -162,6 +162,130 @@ fn list_prints_yaml_worktree_listing() {
     }));
 }
 
+#[cfg(unix)]
+#[test]
+fn workspace_mode_add_status_new_remove_send_out_and_bring_in() {
+    let bin = build_wtk();
+    let base = temp_dir();
+    let workspace = init_repo_at(&base.join("workspace"), "main");
+    let repo_a = init_repo_at(&base.join("A"), "main");
+    let repo_b = init_repo_at(&base.join("B"), "main");
+
+    run_wtk(&bin, &workspace, ["workspace", "init"]);
+    run_wtk(
+        &bin,
+        &workspace,
+        ["workspace", "add", repo_a.to_str().unwrap()],
+    );
+    run_wtk(
+        &bin,
+        &workspace,
+        ["workspace", "add", repo_b.to_str().unwrap()],
+    );
+    let repo_a_canonical = std::fs::canonicalize(&repo_a).unwrap();
+    let repo_b_canonical = std::fs::canonicalize(&repo_b).unwrap();
+
+    assert_eq!(
+        std::fs::read_link(workspace.join("refs/A")).unwrap(),
+        repo_a_canonical
+    );
+    assert_eq!(
+        std::fs::read_link(workspace.join("refs/B")).unwrap(),
+        repo_b_canonical
+    );
+
+    let output = run_wtk(&bin, &workspace, ["status"]);
+    let yaml: Value = serde_yaml::from_str(&output).unwrap();
+    assert_eq!(yaml["mode"].as_str(), Some("workspace"));
+    assert_eq!(yaml["refs"].as_sequence().unwrap().len(), 2);
+    assert!(yaml["refs"].as_sequence().unwrap().iter().all(|entry| {
+        entry["is_main"].as_bool() == Some(true)
+            && entry["current_target"].as_str() == entry["repository"].as_str()
+    }));
+
+    run_wtk(
+        &bin,
+        &workspace,
+        ["new", "feature/ws", "--base", "main", "--no-clipboard"],
+    );
+    let linked_a = linked_worktree_path(&repo_a_canonical, "feature/ws");
+    let linked_b = linked_worktree_path(&repo_b_canonical, "feature/ws");
+    assert!(linked_a.exists());
+    assert!(linked_b.exists());
+    assert_eq!(
+        std::fs::read_link(workspace.join("refs/A")).unwrap(),
+        linked_a
+    );
+    assert_eq!(
+        std::fs::read_link(workspace.join("refs/B")).unwrap(),
+        linked_b
+    );
+
+    run_wtk(
+        &bin,
+        &workspace,
+        ["remove", "feature/ws", "--delete-branch", "--no-clipboard"],
+    );
+    assert!(!linked_a.exists());
+    assert!(!linked_b.exists());
+    assert_eq!(
+        std::fs::read_link(workspace.join("refs/A")).unwrap(),
+        repo_a_canonical
+    );
+    assert_eq!(
+        std::fs::read_link(workspace.join("refs/B")).unwrap(),
+        repo_b_canonical
+    );
+
+    run_git(&repo_a, ["switch", "-c", "feature/send"]);
+    run_git(&repo_b, ["switch", "-c", "feature/send"]);
+    run_wtk(
+        &bin,
+        &workspace,
+        ["send-out", "--base", "main", "--no-clipboard"],
+    );
+    let sent_a = linked_worktree_path(&repo_a_canonical, "feature/send");
+    let sent_b = linked_worktree_path(&repo_b_canonical, "feature/send");
+    assert_eq!(
+        run_git(&repo_a, ["branch", "--show-current"]).trim(),
+        "main"
+    );
+    assert_eq!(
+        run_git(&repo_b, ["branch", "--show-current"]).trim(),
+        "main"
+    );
+    assert_eq!(
+        std::fs::read_link(workspace.join("refs/A")).unwrap(),
+        sent_a
+    );
+    assert_eq!(
+        std::fs::read_link(workspace.join("refs/B")).unwrap(),
+        sent_b
+    );
+
+    run_wtk(
+        &bin,
+        &workspace,
+        ["bring-in", "feature/send", "--no-clipboard"],
+    );
+    assert_eq!(
+        run_git(&repo_a, ["branch", "--show-current"]).trim(),
+        "feature/send"
+    );
+    assert_eq!(
+        run_git(&repo_b, ["branch", "--show-current"]).trim(),
+        "feature/send"
+    );
+    assert_eq!(
+        std::fs::read_link(workspace.join("refs/A")).unwrap(),
+        repo_a_canonical
+    );
+    assert_eq!(
+        std::fs::read_link(workspace.join("refs/B")).unwrap(),
+        repo_b_canonical
+    );
+}
+
 #[cfg(not(windows))]
 #[test]
 fn upgrade_replaces_release_binary_from_release_asset() {
@@ -1229,6 +1353,10 @@ fn build_release_wtk(version: &str) -> PathBuf {
 
 fn init_repo(branch: &str) -> PathBuf {
     let dir = temp_dir().join("repo");
+    init_repo_at(&dir, branch)
+}
+
+fn init_repo_at(dir: &Path, branch: &str) -> PathBuf {
     std::fs::create_dir(&dir).unwrap();
     run_git(&dir, ["init", "-b", branch]);
     run_git(&dir, ["config", "user.email", "test@example.com"]);
@@ -1236,7 +1364,7 @@ fn init_repo(branch: &str) -> PathBuf {
     std::fs::write(dir.join("README.md"), "test\n").unwrap();
     run_git(&dir, ["add", "."]);
     run_git(&dir, ["commit", "-m", "init"]);
-    dir
+    dir.to_path_buf()
 }
 
 fn linked_worktree_path(repo: &Path, branch: &str) -> PathBuf {

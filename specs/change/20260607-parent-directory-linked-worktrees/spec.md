@@ -1,7 +1,7 @@
 ---
 id: 20260607-parent-directory-linked-worktrees
 name: Parent Directory Linked Worktrees
-status: planned
+status: implemented
 created: '2026-06-07'
 ---
 
@@ -281,17 +281,21 @@ Depends on: Steps 1-5
 
 ### Progress
 
-- [ ] Step 1: Mode And Workspace Config Foundation
-- [ ] Step 2: Workspace Status
-- [ ] Step 3: Workspace New
-- [ ] Step 4: Workspace Remove
-- [ ] Step 5: Workspace Send-Out And Bring-In
-- [ ] Step 6: Documentation And Regression Coverage
+- [x] Step 1: Mode And Workspace Config Foundation
+- [x] Step 2: Workspace Status
+- [x] Step 3: Workspace New
+- [x] Step 4: Workspace Remove
+- [x] Step 5: Workspace Send-Out And Bring-In
+- [x] Step 6: Documentation And Regression Coverage
 
 ### Implementation
 
-<!-- Files created/modified, decisions made during coding, deviations from design -->
+- Added `src/workspace.rs` for Workspace Mode config, ref symlinks, aggregate status, fan-out operations, preflight checks, and rollback actions.
+- Routed `new`, `create`, `status`, `remove`, `send-out`, and `bring-in` through mode resolution while preserving Repository Mode behavior.
+- Added `wtk workspace init` and `wtk workspace add <repository-path>`.
+- Documented Repository Mode, Workspace Mode, config shape, and Workspace command behavior in `README.md`.
+- Added a focused E2E tracer covering workspace init/add/status/new/remove/send-out/bring-in.
 
 ### Verification
 
-<!-- How the feature was verified: tests written, manual testing steps, results -->
+- `cargo fmt && cargo test` passed.
