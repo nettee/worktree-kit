@@ -535,6 +535,76 @@ fn workspace_mode_new_rolls_back_refs_and_dirty_worktrees_when_init_fails() {
     assert!(log.contains(&format!("PWD:{}", linked_b.display())));
 }
 
+#[cfg(unix)]
+#[test]
+fn workspace_mode_remove_rolls_back_workspace_env_files_when_branch_delete_fails() {
+    let bin = build_wtk();
+    let base = temp_dir();
+    let workspace = init_repo_at(&base.join("workspace"), "main");
+    let repo_a = init_repo_at(&base.join("A"), "main");
+    let repo_b = init_repo_at(&base.join("B"), "main");
+
+    run_wtk(&bin, &workspace, ["workspace", "init"]);
+    run_wtk(
+        &bin,
+        &workspace,
+        ["workspace", "add", repo_a.to_str().unwrap()],
+    );
+    run_wtk(
+        &bin,
+        &workspace,
+        ["workspace", "add", repo_b.to_str().unwrap()],
+    );
+    commit_workspace_manifest(&workspace, "record workspace manifest");
+    commit_files(&workspace, &[(".gitignore", ".env\n")], "ignore workspace env");
+    std::fs::write(workspace.join(".env"), "WORKSPACE=value\n").unwrap();
+
+    let out = run_wtk(
+        &bin,
+        &workspace,
+        ["new", "feature/ws-env-rollback", "--base", "main", "--no-clipboard"],
+    );
+    let workspace_linked = linked_worktree_path(&workspace, "feature/ws-env-rollback");
+    let linked_a = linked_worktree_path(&repo_a, "feature/ws-env-rollback");
+    let linked_b = linked_worktree_path(&repo_b, "feature/ws-env-rollback");
+    assert!(out.contains(workspace_linked.to_str().unwrap()));
+    std::fs::write(workspace_linked.join(".env"), "WORKSPACE=value\n").unwrap();
+    assert_eq!(
+        std::fs::read_to_string(workspace_linked.join(".env")).unwrap(),
+        "WORKSPACE=value\n"
+    );
+
+    commit_files(
+        &workspace_linked,
+        &[("workspace.txt", "unmerged\n")],
+        "make workspace branch unmerged",
+    );
+
+    let (out, status) = run_wtk_err(
+        &bin,
+        &workspace,
+        [
+            "remove",
+            "feature/ws-env-rollback",
+            "--delete-branch",
+            "--no-clipboard",
+        ],
+    );
+    assert!(!status.success());
+    assert!(out.contains("not fully merged"));
+
+    assert!(workspace_linked.exists());
+    assert!(linked_a.exists());
+    assert!(linked_b.exists());
+    wait_for_path(&workspace_linked.join(".env"));
+    assert_eq!(
+        std::fs::read_to_string(workspace_linked.join(".env")).unwrap(),
+        "WORKSPACE=value\n"
+    );
+    assert!(run_git(&workspace, ["branch", "--list", "feature/ws-env-rollback"])
+        .contains("feature/ws-env-rollback"));
+}
+
 #[cfg(not(windows))]
 #[test]
 fn upgrade_replaces_release_binary_from_release_asset() {

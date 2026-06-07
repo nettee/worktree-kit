@@ -394,6 +394,7 @@ pub fn remove(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
         .iter()
         .map(|linked| worktree::snapshot_dot_env_files_from_root(&linked.path))
         .collect::<AppResult<Vec<_>>>()?;
+    let target_env_files = worktree::snapshot_dot_env_files_from_root(&target.path)?;
 
     let mut rollback = Vec::new();
     for linked in &linked_targets {
@@ -427,7 +428,7 @@ pub fn remove(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
         repo: ctx.repo.main_root.clone(),
         path: target.path.clone(),
         branch: target.branch.clone(),
-        env_files: Vec::new(),
+        env_files: target_env_files,
     });
 
     if opts.delete_branch {
