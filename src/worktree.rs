@@ -96,6 +96,11 @@ enum SnapshotFileKind {
     },
 }
 
+pub struct SendOutWorktreeInit {
+    ignored_env_files: Vec<SnapshotFile>,
+    ignored_active_spec: Option<SnapshotFile>,
+}
+
 pub fn create(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
     let repo = repo(session)?;
     if opts.branch.is_empty() {
@@ -809,6 +814,37 @@ fn snapshot_ignored_send_out_active_spec(
     snapshot_ignored_exact_file(session, main_root, IGNORED_SEND_OUT_ACTIVE_SPEC_PATH)
 }
 
+pub fn snapshot_send_out_worktree_init(
+    session: &Session<'_>,
+    main_root: &Path,
+) -> AppResult<SendOutWorktreeInit> {
+    Ok(SendOutWorktreeInit {
+        ignored_env_files: snapshot_ignored_env_files(session, main_root)?,
+        ignored_active_spec: snapshot_ignored_send_out_active_spec(session, main_root)?,
+    })
+}
+
+pub fn apply_send_out_worktree_init(
+    session: &mut Session<'_>,
+    worktree_path: &Path,
+    init: &SendOutWorktreeInit,
+) -> AppResult<()> {
+    print_copied_ignored_env_files(
+        session,
+        copy_snapshot_files(&init.ignored_env_files, worktree_path)
+            .map_err(|error| Error::message(format!("ignored .env copy failed: {error}")))?,
+    )?;
+    if let Some(active_spec) = &init.ignored_active_spec {
+        print_copied_ignored_files(
+            session,
+            "copied ignored file",
+            copy_snapshot_files(std::slice::from_ref(active_spec), worktree_path)
+                .map_err(|error| Error::message(format!("ignored file copy failed: {error}")))?,
+        )?;
+    }
+    Ok(())
+}
+
 fn snapshot_ignored_exact_file(
     session: &Session<'_>,
     main_root: &Path,
@@ -1194,7 +1230,7 @@ fn open_async_init_log(log_path: &Path) -> AppResult<File> {
     })
 }
 
-fn maybe_run_pnpm_install(
+pub fn maybe_run_pnpm_install(
     session: &mut Session<'_>,
     worktree_path: &Path,
     partial_success_prefix: &str,

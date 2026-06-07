@@ -373,10 +373,12 @@ pub fn send_out(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
         }
         let path = default_path(&entry.repo.main_root, &branch);
         ensure_creatable(&path)?;
-        plan.push((entry, branch, base, path));
+        let init =
+            crate::worktree::snapshot_send_out_worktree_init(session, &entry.repo.main_root)?;
+        plan.push((entry, branch, base, path, init));
     }
     let mut rollback = Vec::new();
-    for (entry, branch, base, path) in &plan {
+    for (entry, branch, base, path, _) in &plan {
         let switch_args = vec!["switch".to_string(), base.clone()];
         output::git(session.out, &entry.repo.main_root, &switch_args)?;
         if let Err(error) = session.git.run(
@@ -409,12 +411,25 @@ pub fn send_out(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
             path: path.clone(),
         });
     }
-    for (entry, _, _, path) in &plan {
+    for (entry, _, _, path, _) in &plan {
         rollback.push(RollbackAction::RestoreRef {
             path: entry.ref_path.clone(),
             target: entry.target.clone(),
         });
-        write_ref(&entry.ref_path, path)?;
+        if let Err(error) = write_ref(&entry.ref_path, path) {
+            rollback_all(&session.git, session.out, rollback)?;
+            return Err(error);
+        }
+    }
+    for (_, _, _, path, init) in &plan {
+        if let Err(error) = crate::worktree::apply_send_out_worktree_init(session, path, init)
+            .and_then(|_| {
+                crate::worktree::maybe_run_pnpm_install(session, path, "linked worktree created")
+            })
+        {
+            rollback_all(&session.git, session.out, rollback)?;
+            return Err(error);
+        }
     }
     writeln!(session.out, "sent workspace branches out")?;
     Ok(())
