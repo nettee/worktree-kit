@@ -204,7 +204,7 @@ Depends on: Step 3
 ### Progress
 
 - [x] Step 1: Bootstrap Command Skeleton
-- [ ] Step 2: Workspace Bootstrap Core
+- [x] Step 2: Workspace Bootstrap Core
 - [ ] Step 3: AGENTS Template And Gitignore
 - [ ] Step 4: Documentation And Verification
 
@@ -212,8 +212,12 @@ Depends on: Step 3
 
 - Added `wtk workspace bootstrap <repo-path>...` parsing, help text, and dispatch.
 - Added a Workspace bootstrap skeleton entrypoint that requires at least one Linked Repository path and rejects non-empty Workspace roots before mutation.
+- Added the Workspace bootstrap core flow: preflight Linked Repository paths, require Linked Repository main worktrees on `main`, reject duplicate Workspace Ref names before mutation, run plain `git init`, write the Workspace manifest, create generated refs, stage `.wtk-workspace.toml`, and create the initial Workspace commit.
+- Extracted shared Workspace file initialization for `workspace init` and `workspace bootstrap`.
 
 ### Verification
 
 - `cargo test --lib cli::tests`
 - `pytest e2e/test_cli_errors.py e2e/test_workspace_mode.py -k 'bootstrap or cli_usage'`
+- `cargo test --lib workspace`
+- `pytest e2e/test_workspace_mode.py -k bootstrap`

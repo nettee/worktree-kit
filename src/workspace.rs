@@ -142,14 +142,7 @@ pub fn init(session: &mut Session<'_>) -> AppResult<()> {
             manifest_path.display()
         )));
     }
-    write_config(
-        &manifest_path,
-        &WorkspaceConfig {
-            mode: "workspace".to_string(),
-            workspace: WorkspaceSection::default(),
-        },
-    )?;
-    fs::create_dir_all(repo.main_root.join("refs"))?;
+    initialize_workspace_files(&repo.main_root, WorkspaceSection::default())?;
     output::success(
         session.out,
         &format!("initialized Workspace Mode at {}", repo.main_root.display()),
@@ -248,10 +241,31 @@ pub fn bootstrap(session: &mut Session<'_>, repository_paths: &[PathBuf]) -> App
         ));
     }
 
+    let refs = bootstrap_refs(&session.git, repository_paths)?;
+
+    session.git.run(&session.cwd, ["init"])?;
+    let repo = resolve(&session.git, &session.cwd)?;
+    require_main_worktree(&repo, "workspace bootstrap")?;
+    let workspace_branch = current_branch(&session.git, &repo.main_root)?;
+    if workspace_branch != "main" {
+        return Err(Error::message(format!(
+            "workspace bootstrap requires the Workspace main worktree branch to be main, found {workspace_branch}"
+        )));
+    }
+
+    initialize_workspace_files(&repo.main_root, WorkspaceSection { refs })?;
+    let ctx = load_workspace_at_root(&session.git, &repo.main_root)?;
+    write_workspace_refs(&session.git, &ctx)?;
+    session.git.run(&repo.main_root, ["add", MANIFEST_FILE])?;
+    session
+        .git
+        .run(&repo.main_root, ["commit", "-m", "Initialize workspace"])?;
+
     output::success(
         session.out,
         &format!(
-            "workspace bootstrap skeleton validated for {} repos; no changes made",
+            "bootstrapped Workspace at {} with {} refs",
+            repo.main_root.display(),
             repository_paths.len()
         ),
     )?;
@@ -667,6 +681,65 @@ fn write_config(path: &Path, config: &WorkspaceConfig) -> AppResult<()> {
         Error::message(format!("failed to serialize workspace manifest: {error}"))
     })?;
     fs::write(path, text)?;
+    Ok(())
+}
+
+fn initialize_workspace_files(root: &Path, workspace: WorkspaceSection) -> AppResult<()> {
+    write_config(
+        &root.join(MANIFEST_FILE),
+        &WorkspaceConfig {
+            mode: "workspace".to_string(),
+            workspace,
+        },
+    )?;
+    fs::create_dir_all(root.join("refs"))?;
+    Ok(())
+}
+
+fn bootstrap_refs(
+    git: &Git,
+    repository_paths: &[PathBuf],
+) -> AppResult<BTreeMap<String, WorkspaceRefConfig>> {
+    let mut refs = BTreeMap::new();
+    for repository_path in repository_paths {
+        let repository = strict_absolute(repository_path)?;
+        let repo = resolve(git, &repository)?;
+        if !same_path(&repo.main_root, &repository) {
+            return Err(Error::message(format!(
+                "workspace bootstrap requires linked repository paths to resolve to main worktrees: {}",
+                repository.display()
+            )));
+        }
+        let branch = current_branch(git, &repo.main_root)?;
+        if branch != "main" {
+            return Err(Error::message(format!(
+                "workspace bootstrap requires linked repository main worktrees to be on main: found {branch} in {}",
+                repo.main_root.display()
+            )));
+        }
+        let name = repository_basename(&repo.main_root)?;
+        if refs
+            .insert(
+                name.clone(),
+                WorkspaceRefConfig {
+                    repository: repo.main_root.clone(),
+                },
+            )
+            .is_some()
+        {
+            return Err(Error::message(format!(
+                "workspace bootstrap received duplicate Workspace Ref name: {name}"
+            )));
+        }
+    }
+    Ok(refs)
+}
+
+fn write_workspace_refs(git: &Git, ctx: &WorkspaceContext) -> AppResult<()> {
+    for (ref_name, ref_config) in &ctx.config.workspace.refs {
+        let target = resolve(git, &ref_config.repository)?.main_root;
+        write_ref(&ctx.root.join("refs").join(ref_name), &target)?;
+    }
     Ok(())
 }
 
