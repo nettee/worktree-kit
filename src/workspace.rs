@@ -14,6 +14,10 @@ use std::os::unix::fs as unix_fs;
 use std::os::windows::fs as windows_fs;
 
 const MANIFEST_FILE: &str = ".wtk-workspace.toml";
+const GITIGNORE_FILE: &str = ".gitignore";
+const AGENTS_FILE: &str = "AGENTS.md";
+const WORKSPACE_GITIGNORE: &str = "refs/\n";
+const WORKSPACE_AGENTS_TEMPLATE: &str = include_str!("templates/workspace/AGENTS.md");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -88,8 +92,14 @@ struct WorkspaceStatusRef {
 
 #[derive(Debug, Clone)]
 enum RollbackAction {
-    RemoveWorktree { repo: PathBuf, path: PathBuf },
-    DeleteBranch { repo: PathBuf, branch: String },
+    RemoveWorktree {
+        repo: PathBuf,
+        path: PathBuf,
+    },
+    DeleteBranch {
+        repo: PathBuf,
+        branch: String,
+    },
     CreateBranch {
         repo: PathBuf,
         branch: String,
@@ -101,7 +111,10 @@ enum RollbackAction {
         branch: String,
         env_files: Vec<worktree::SnapshotFile>,
     },
-    WriteRef { path: PathBuf, target: PathBuf },
+    WriteRef {
+        path: PathBuf,
+        target: PathBuf,
+    },
 }
 
 pub fn resolve_mode(git: &Git, cwd: &Path) -> AppResult<Mode> {
@@ -110,11 +123,13 @@ pub fn resolve_mode(git: &Git, cwd: &Path) -> AppResult<Mode> {
             let config = read_config(&path)?;
             match config.mode.as_str() {
                 "workspace" => Mode::Workspace,
-                other => return Err(Error::message(format!(
-                    "invalid workspace manifest mode {:?} in {}",
-                    other,
-                    path.display()
-                ))),
+                other => {
+                    return Err(Error::message(format!(
+                        "invalid workspace manifest mode {:?} in {}",
+                        other,
+                        path.display()
+                    )));
+                }
             }
         }
         None => Mode::Repository,
@@ -131,14 +146,7 @@ pub fn init(session: &mut Session<'_>) -> AppResult<()> {
             manifest_path.display()
         )));
     }
-    write_config(
-        &manifest_path,
-        &WorkspaceConfig {
-            mode: "workspace".to_string(),
-            workspace: WorkspaceSection::default(),
-        },
-    )?;
-    fs::create_dir_all(repo.main_root.join("refs"))?;
+    initialize_workspace_files(&repo.main_root, WorkspaceSection::default())?;
     output::success(
         session.out,
         &format!("initialized Workspace Mode at {}", repo.main_root.display()),
@@ -167,7 +175,9 @@ pub fn add(session: &mut Session<'_>, repository_path: &Path) -> AppResult<()> {
     }
     let name = repository_basename(&repo.main_root)?;
     if ctx.config.workspace.refs.contains_key(&name) {
-        return Err(Error::message(format!("workspace ref already exists: {name}")));
+        return Err(Error::message(format!(
+            "workspace ref already exists: {name}"
+        )));
     }
     ctx.config.workspace.refs.insert(
         name.clone(),
@@ -217,6 +227,54 @@ pub fn add(session: &mut Session<'_>, repository_path: &Path) -> AppResult<()> {
     output::success(
         session.out,
         &format!("added Workspace Ref {name} -> {}", repo.main_root.display()),
+    )?;
+    Ok(())
+}
+
+pub fn bootstrap(session: &mut Session<'_>, repository_paths: &[PathBuf]) -> AppResult<()> {
+    if repository_paths.is_empty() {
+        return Err(Error::message(
+            "workspace bootstrap requires at least one repository path",
+        ));
+    }
+
+    let mut entries = fs::read_dir(&session.cwd)?;
+    if entries.next().transpose()?.is_some() {
+        return Err(Error::message(
+            "workspace bootstrap requires an empty directory before initialization",
+        ));
+    }
+
+    let refs = bootstrap_refs(&session.git, repository_paths)?;
+
+    session.git.run(&session.cwd, ["init", "-b", "main"])?;
+    let repo = resolve(&session.git, &session.cwd)?;
+    require_main_worktree(&repo, "workspace bootstrap")?;
+    let workspace_branch = current_branch(&session.git, &repo.main_root)?;
+    if workspace_branch != "main" {
+        return Err(Error::message(format!(
+            "workspace bootstrap requires the Workspace main worktree branch to be main, found {workspace_branch}"
+        )));
+    }
+
+    initialize_workspace_files(&repo.main_root, WorkspaceSection { refs })?;
+    write_workspace_bootstrap_files(&repo.main_root)?;
+    let ctx = load_workspace_at_root(&session.git, &repo.main_root)?;
+    write_workspace_refs(&session.git, &ctx)?;
+    session
+        .git
+        .run(&repo.main_root, ["add", MANIFEST_FILE, GITIGNORE_FILE, AGENTS_FILE])?;
+    session
+        .git
+        .run(&repo.main_root, ["commit", "-m", "Initialize workspace"])?;
+
+    output::success(
+        session.out,
+        &format!(
+            "bootstrapped Workspace at {} with {} refs",
+            repo.main_root.display(),
+            repository_paths.len()
+        ),
     )?;
     Ok(())
 }
@@ -388,7 +446,9 @@ pub fn remove(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
 
     let linked_targets = refs
         .iter()
-        .map(|entry| required_worktree_at_expected_target(&entry.name, &entry.repo, &entry.expected_target))
+        .map(|entry| {
+            required_worktree_at_expected_target(&entry.name, &entry.repo, &entry.expected_target)
+        })
         .collect::<AppResult<Vec<_>>>()?;
     let linked_env_snapshots = linked_targets
         .iter()
@@ -401,9 +461,14 @@ pub fn remove(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
         require_clean(&session.git, &linked.path, false)?;
     }
 
-    for ((entry, linked), env_files) in refs.iter().zip(&linked_targets).zip(&linked_env_snapshots) {
-        if let Err(error) = remove_worktree(&session.git, session.out, &entry.repo.main_root, &linked.path)
-        {
+    for ((entry, linked), env_files) in refs.iter().zip(&linked_targets).zip(&linked_env_snapshots)
+    {
+        if let Err(error) = remove_worktree(
+            &session.git,
+            session.out,
+            &entry.repo.main_root,
+            &linked.path,
+        ) {
             rollback_all(&session.git, session.out, rollback)?;
             return Err(error);
         }
@@ -414,7 +479,9 @@ pub fn remove(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
             env_files: env_files.clone(),
         });
     }
-    if let Err(error) = remove_worktree(&session.git, session.out, &ctx.repo.main_root, &target.path) {
+    if let Err(error) =
+        remove_worktree(&session.git, session.out, &ctx.repo.main_root, &target.path)
+    {
         rollback_all(&session.git, session.out, rollback)?;
         return Err(error);
     }
@@ -433,7 +500,8 @@ pub fn remove(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
 
     if opts.delete_branch {
         for (entry, linked) in refs.iter().zip(&linked_targets) {
-            if let Err(error) = delete_branch(&session.git, session.out, &entry.repo.main_root, &branch)
+            if let Err(error) =
+                delete_branch(&session.git, session.out, &entry.repo.main_root, &branch)
             {
                 rollback_all(&session.git, session.out, rollback)?;
                 return Err(error);
@@ -470,7 +538,10 @@ fn load_workspace(git: &Git, cwd: &Path) -> AppResult<WorkspaceContext> {
     load_workspace_at_root(
         git,
         manifest_path.parent().ok_or_else(|| {
-            Error::message(format!("invalid manifest path: {}", manifest_path.display()))
+            Error::message(format!(
+                "invalid manifest path: {}",
+                manifest_path.display()
+            ))
         })?,
     )
 }
@@ -523,8 +594,10 @@ fn load_workspace_refs(
                 repository.display()
             )));
         }
-        let expected_target = expected_target_for_branch(&repo, workspace_branch, &workspace_main_branch);
-        let expected_worktree = required_worktree_at_expected_target(name, &repo, &expected_target)?;
+        let expected_target =
+            expected_target_for_branch(&repo, workspace_branch, &workspace_main_branch);
+        let expected_worktree =
+            required_worktree_at_expected_target(name, &repo, &expected_target)?;
         if expected_worktree.branch != workspace_branch {
             return Err(Error::message(format!(
                 "Workspace Ref {name} target branch mismatch: expected {workspace_branch}, found {}",
@@ -573,7 +646,9 @@ fn find_workspace_manifest(git: &Git, cwd: &Path) -> AppResult<Option<PathBuf>> 
     } else {
         start
             .parent()
-            .ok_or_else(|| Error::message(format!("invalid current directory: {}", start.display())))?
+            .ok_or_else(|| {
+                Error::message(format!("invalid current directory: {}", start.display()))
+            })?
             .to_path_buf()
     };
     let repo_root = repo.current_root;
@@ -609,9 +684,75 @@ fn read_config(path: &Path) -> AppResult<WorkspaceConfig> {
 }
 
 fn write_config(path: &Path, config: &WorkspaceConfig) -> AppResult<()> {
-    let text = toml::to_string_pretty(config)
-        .map_err(|error| Error::message(format!("failed to serialize workspace manifest: {error}")))?;
+    let text = toml::to_string_pretty(config).map_err(|error| {
+        Error::message(format!("failed to serialize workspace manifest: {error}"))
+    })?;
     fs::write(path, text)?;
+    Ok(())
+}
+
+fn initialize_workspace_files(root: &Path, workspace: WorkspaceSection) -> AppResult<()> {
+    write_config(
+        &root.join(MANIFEST_FILE),
+        &WorkspaceConfig {
+            mode: "workspace".to_string(),
+            workspace,
+        },
+    )?;
+    fs::create_dir_all(root.join("refs"))?;
+    Ok(())
+}
+
+fn write_workspace_bootstrap_files(root: &Path) -> AppResult<()> {
+    fs::write(root.join(GITIGNORE_FILE), WORKSPACE_GITIGNORE)?;
+    fs::write(root.join(AGENTS_FILE), WORKSPACE_AGENTS_TEMPLATE)?;
+    Ok(())
+}
+
+fn bootstrap_refs(
+    git: &Git,
+    repository_paths: &[PathBuf],
+) -> AppResult<BTreeMap<String, WorkspaceRefConfig>> {
+    let mut refs = BTreeMap::new();
+    for repository_path in repository_paths {
+        let repository = strict_absolute(repository_path)?;
+        let repo = resolve(git, &repository)?;
+        if !same_path(&repo.main_root, &repository) {
+            return Err(Error::message(format!(
+                "workspace bootstrap requires linked repository paths to resolve to main worktrees: {}",
+                repository.display()
+            )));
+        }
+        let branch = current_branch(git, &repo.main_root)?;
+        if branch != "main" {
+            return Err(Error::message(format!(
+                "workspace bootstrap requires linked repository main worktrees to be on main: found {branch} in {}",
+                repo.main_root.display()
+            )));
+        }
+        let name = repository_basename(&repo.main_root)?;
+        if refs
+            .insert(
+                name.clone(),
+                WorkspaceRefConfig {
+                    repository: repo.main_root.clone(),
+                },
+            )
+            .is_some()
+        {
+            return Err(Error::message(format!(
+                "workspace bootstrap received duplicate Workspace Ref name: {name}"
+            )));
+        }
+    }
+    Ok(refs)
+}
+
+fn write_workspace_refs(git: &Git, ctx: &WorkspaceContext) -> AppResult<()> {
+    for (ref_name, ref_config) in &ctx.config.workspace.refs {
+        let target = resolve(git, &ref_config.repository)?.main_root;
+        write_ref(&ctx.root.join("refs").join(ref_name), &target)?;
+    }
     Ok(())
 }
 
@@ -675,14 +816,21 @@ fn repository_basename(path: &Path) -> AppResult<String> {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .filter(|name| !name.is_empty())
-        .ok_or_else(|| Error::message(format!("repository path has no basename: {}", path.display())))
+        .ok_or_else(|| {
+            Error::message(format!(
+                "repository path has no basename: {}",
+                path.display()
+            ))
+        })
 }
 
 fn require_main_worktree(repo: &RepoContext, action: &str) -> AppResult<()> {
     if repo.current_is_main {
         Ok(())
     } else {
-        Err(Error::message(format!("{action} must be run from the Workspace main worktree")))
+        Err(Error::message(format!(
+            "{action} must be run from the Workspace main worktree"
+        )))
     }
 }
 
@@ -729,9 +877,9 @@ fn ensure_creatable(path: &Path) -> AppResult<()> {
             path.display()
         )));
     }
-    let parent = path
-        .parent()
-        .ok_or_else(|| Error::message(format!("target parent is unavailable: {}", path.display())))?;
+    let parent = path.parent().ok_or_else(|| {
+        Error::message(format!("target parent is unavailable: {}", path.display()))
+    })?;
     let metadata = fs::metadata(parent).map_err(|error| {
         Error::message(format!(
             "target parent is unavailable: {}: {}",
@@ -749,15 +897,19 @@ fn ensure_creatable(path: &Path) -> AppResult<()> {
 }
 
 fn require_clean(git: &Git, dir: &Path, ignore_workspace_refs: bool) -> AppResult<()> {
-    let status = git.run(dir, ["status", "--porcelain=v1", "--untracked-files=normal"])?;
+    let status = git.run(
+        dir,
+        ["status", "--porcelain=v1", "--untracked-files=normal"],
+    )?;
     let visible = status
         .stdout
         .lines()
         .filter(|line| {
-            !ignore_workspace_refs || !matches!(
-                line.get(3..),
-                Some(path) if path == "refs/" || path.starts_with("refs/")
-            )
+            !ignore_workspace_refs
+                || !matches!(
+                    line.get(3..),
+                    Some(path) if path == "refs/" || path.starts_with("refs/")
+                )
         })
         .collect::<Vec<_>>();
     if visible.is_empty() {
@@ -816,7 +968,11 @@ fn require_manifest_committed(git: &Git, workspace_root: &Path) -> AppResult<()>
 }
 
 fn current_branch(git: &Git, repo: &Path) -> AppResult<String> {
-    Ok(git.run(repo, ["branch", "--show-current"])?.stdout.trim().to_string())
+    Ok(git
+        .run(repo, ["branch", "--show-current"])?
+        .stdout
+        .trim()
+        .to_string())
 }
 
 fn expected_target_for_branch(
@@ -997,6 +1153,9 @@ fn rollback_all(
     if failures.is_empty() {
         Ok(())
     } else {
-        Err(Error::message(format!("rollback failed: {}", failures.join("; "))))
+        Err(Error::message(format!(
+            "rollback failed: {}",
+            failures.join("; ")
+        )))
     }
 }

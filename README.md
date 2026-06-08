@@ -9,7 +9,7 @@
 - `wtk remove` removes a linked worktree.
 - `wtk send-out` moves the current main-worktree branch to a linked worktree.
 - `wtk bring-in` moves a linked worktree branch back into the main worktree.
-- `wtk workspace init` and `wtk workspace add` configure Workspace Mode for coordinated multi-repository worktrees.
+- `wtk workspace bootstrap` creates a new Workspace repository for coordinated multi-repository worktrees.
 
 `wtk create` remains available as a compatibility alias for `wtk new`.
 
@@ -75,14 +75,23 @@ wtk list
 wtk remove ../repo-wt-feature-foo
 wtk send-out
 wtk bring-in feature/foo
-wtk workspace init
-wtk workspace add /absolute/path/to/repo
+wtk workspace bootstrap /absolute/path/to/A /absolute/path/to/B
 wtk upgrade
 ```
 
 ## Workspace Mode
 
-Initialize a Workspace repository and add Linked Repositories:
+Bootstrap a new Workspace from an empty directory:
+
+```bash
+mkdir my-workspace
+cd my-workspace
+wtk workspace bootstrap /absolute/path/to/A /absolute/path/to/B
+```
+
+`wtk workspace bootstrap` runs `git init`, writes `.wtk-workspace.toml`, creates generated `refs/<name>` entries, writes `.gitignore` with `refs/`, initializes `AGENTS.md`, and creates the initial Workspace commit. It requires at least one Linked Repository path, an empty current directory, and Linked Repository main worktrees on `main`. It fails before mutation when preflight checks such as duplicate Workspace Ref names or invalid repository paths fail.
+
+Lower-level commands remain available when you already have a Git repository and want to manage Workspace membership manually:
 
 ```bash
 wtk workspace init
@@ -101,7 +110,7 @@ repository = "/absolute/path/to/A"
 
 In Workspace Mode, `wtk status` emits aggregate Workspace status for the current Workspace Worktree and validates generated refs without repairing them. `wtk new` creates a coordinated Workspace Worktree plus matching Linked Repository Worktrees for the same branch. `wtk remove` removes the coordinated set. Workspace operations fail fast on malformed manifest state, relative paths, missing or incorrect refs, branch mismatches, dirty worktrees, branch collisions, or target path collisions.
 
-`wtk workspace init` and `wtk workspace add` must be run from the Workspace main worktree. `wtk checkout`, `wtk send-out`, and `wtk bring-in` are repository-mode-only commands and are rejected in Workspace Mode.
+`wtk workspace bootstrap` must be run from the empty directory that will become the Workspace root. `wtk workspace init` and `wtk workspace add` must be run from the Workspace main worktree. `wtk checkout`, `wtk send-out`, and `wtk bring-in` are repository-mode-only commands and are rejected in Workspace Mode.
 
 Every command prints the underlying `git` commands it runs. Successful commands copy the useful path or branch payload to the clipboard. Use `--no-clipboard` in CI or headless environments.
 

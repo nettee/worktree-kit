@@ -43,6 +43,9 @@ enum Parsed {
     WorkspaceAdd {
         repository_path: String,
     },
+    WorkspaceBootstrap {
+        repository_paths: Vec<String>,
+    },
     Upgrade,
     Completion(String),
     HiddenComplete(Vec<String>),
@@ -194,6 +197,17 @@ where
                 workspace::add(session, Path::new(&repository_path))
             })
         }
+        Parsed::WorkspaceBootstrap { repository_paths } => {
+            execute_worktree(stdout, stderr, true, |session| {
+                workspace::bootstrap(
+                    session,
+                    &repository_paths
+                        .iter()
+                        .map(PathBuf::from)
+                        .collect::<Vec<_>>(),
+                )
+            })
+        }
         Parsed::Upgrade => match upgrade::run(stdout) {
             Ok(()) => Ok(()),
             Err(error) => {
@@ -274,7 +288,7 @@ fn parse_workspace(args: &[String]) -> Result<Parsed, UsageError> {
     let usage = command_help("workspace");
     if args.len() == 1 {
         return Err(UsageError::new(
-            "missing required subcommand: init or add",
+            "missing required subcommand: init, add, or bootstrap",
             usage,
         ));
     }
@@ -306,6 +320,18 @@ fn parse_workspace(args: &[String]) -> Result<Parsed, UsageError> {
                     "too many arguments: expected 1 repository-path",
                     usage,
                 ))
+            }
+        }
+        "bootstrap" => {
+            if args.len() == 2 {
+                Err(UsageError::new(
+                    "missing required argument: repository-path",
+                    usage,
+                ))
+            } else {
+                Ok(Parsed::WorkspaceBootstrap {
+                    repository_paths: args[2..].to_vec(),
+                })
             }
         }
         "--help" | "-h" => Ok(Parsed::HelpText(usage)),
@@ -654,7 +680,7 @@ fn root_help() -> &'static str {
         "  remove      Remove a linked worktree\n",
         "  send-out    Move the current main-worktree branch to a linked worktree\n",
         "  bring-in    Move a linked worktree branch back into the main worktree\n",
-        "  workspace   Initialize and manage Workspace Mode membership\n",
+        "  workspace   Initialize and manage Workspace Mode and bootstrapping\n",
         "  upgrade     Upgrade wtk from the latest GitHub release\n",
         "  completion  Generate shell completion script\n",
         "  help        Show help\n\n",
@@ -720,10 +746,11 @@ fn command_help(command: &str) -> &'static str {
             "      --no-clipboard\n",
         ),
         "workspace" => concat!(
-            "Usage: wtk workspace <init|add> [args]\n\n",
+            "Usage: wtk workspace <init|add|bootstrap> [args]\n\n",
             "Subcommands:\n",
             "  init                         Initialize Workspace Mode manifest\n",
             "  add <repository-path>        Add a Linked Repository to the manifest\n\n",
+            "  bootstrap <repo-path>...     Bootstrap an empty Workspace skeleton\n\n",
             "Flags:\n",
             "  -h, --help\n",
         ),
@@ -885,7 +912,9 @@ fn powershell_completion_script() -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{Options, Parsed, TOP_LEVEL_COMMANDS, dynamic_candidates, parse_args};
+    use super::{
+        Options, Parsed, TOP_LEVEL_COMMANDS, command_help, dynamic_candidates, parse_args,
+    };
 
     #[test]
     fn parses_version_flag() {
@@ -999,5 +1028,30 @@ mod tests {
             parsed,
             Parsed::SendOut(Options { path, base, .. }) if path == "../feature" && base == "main"
         ));
+    }
+
+    #[test]
+    fn parses_workspace_bootstrap_repo_paths() {
+        let parsed = parse_args(&[
+            "wtk".to_string(),
+            "workspace".to_string(),
+            "bootstrap".to_string(),
+            "../api".to_string(),
+            "../web".to_string(),
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            parsed,
+            Parsed::WorkspaceBootstrap { repository_paths }
+            if repository_paths == vec!["../api".to_string(), "../web".to_string()]
+        ));
+    }
+
+    #[test]
+    fn workspace_help_mentions_bootstrap() {
+        let help = command_help("workspace");
+        assert!(help.contains("<init|add|bootstrap>"));
+        assert!(help.contains("bootstrap <repo-path>..."));
     }
 }

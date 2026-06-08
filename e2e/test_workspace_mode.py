@@ -83,6 +83,105 @@ def test_workspace_mode_rejects_repo_only_commands(run_wtk, workspace_factory, r
         assert "not supported in Workspace Mode" in result.output
 
 
+def test_workspace_bootstrap_rejects_non_empty_directory(run_wtk, tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("not empty\n", encoding="utf-8")
+
+    result = run_wtk("workspace", "bootstrap", "../A", cwd=workspace, check=False)
+
+    result.assert_failure()
+    assert "workspace bootstrap requires an empty directory" in result.output
+
+
+def test_workspace_bootstrap_creates_manifest_refs_and_initial_commit(run_wtk, tmp_path, repo_factory) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    member_a = repo_factory.init_repo("A")
+    member_b = repo_factory.init_repo("B")
+    git_config_global = tmp_path / "gitconfig"
+    git_config_global.write_text("[init]\n\tdefaultBranch = master\n", encoding="utf-8")
+
+    run_wtk(
+        "workspace",
+        "bootstrap",
+        str(member_a),
+        str(member_b),
+        cwd=workspace,
+        env={
+            "GIT_AUTHOR_NAME": "Test User",
+            "GIT_AUTHOR_EMAIL": "test@example.com",
+            "GIT_COMMITTER_NAME": "Test User",
+            "GIT_COMMITTER_EMAIL": "test@example.com",
+            "GIT_CONFIG_GLOBAL": str(git_config_global),
+        },
+    )
+
+    manifest_text = (workspace / ".wtk-workspace.toml").read_text(encoding="utf-8")
+    gitignore_text = (workspace / ".gitignore").read_text(encoding="utf-8")
+    agents_text = (workspace / "AGENTS.md").read_text(encoding="utf-8")
+    assert run_git(workspace, "branch", "--show-current").stdout.strip() == "main"
+    assert 'mode = "workspace"' in manifest_text
+    assert gitignore_text == "refs/\n"
+    assert "Workspace Guidance" in agents_text
+    assert "Workspace Manifest" in agents_text
+    assert (workspace / "refs" / "A").resolve() == member_a.resolve()
+    assert (workspace / "refs" / "B").resolve() == member_b.resolve()
+    assert run_git(workspace, "cat-file", "-e", "HEAD:.wtk-workspace.toml").returncode == 0
+    assert run_git(workspace, "cat-file", "-e", "HEAD:.gitignore").returncode == 0
+    assert run_git(workspace, "cat-file", "-e", "HEAD:AGENTS.md").returncode == 0
+    head_files = set(run_git(workspace, "ls-tree", "--name-only", "HEAD").stdout.splitlines())
+    assert {".wtk-workspace.toml", ".gitignore", "AGENTS.md"} <= head_files
+
+    out = run_wtk("new", "feature/ws", "--base", "main", "--no-clipboard", cwd=workspace).output
+    workspace_linked = linked_worktree_path(workspace, "feature/ws")
+    linked_a = linked_worktree_path(member_a, "feature/ws")
+    linked_b = linked_worktree_path(member_b, "feature/ws")
+    assert str(workspace_linked) in out
+    assert workspace_linked.exists()
+    assert linked_a.exists()
+    assert linked_b.exists()
+    assert (workspace_linked / "refs" / "A").resolve() == linked_a.resolve()
+    assert (workspace_linked / "refs" / "B").resolve() == linked_b.resolve()
+
+
+def test_workspace_bootstrap_rejects_duplicate_ref_names_before_git_init(run_wtk, tmp_path, repo_factory) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    member = repo_factory.init_repo("A")
+
+    result = run_wtk("workspace", "bootstrap", str(member), str(member), cwd=workspace, check=False)
+
+    result.assert_failure()
+    assert "duplicate Workspace Ref name: A" in result.output
+    assert not (workspace / ".git").exists()
+
+
+def test_workspace_bootstrap_rejects_non_repository_before_git_init(run_wtk, tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    not_repo = tmp_path / "not-repo"
+    not_repo.mkdir()
+
+    result = run_wtk("workspace", "bootstrap", str(not_repo), cwd=workspace, check=False)
+
+    result.assert_failure()
+    assert "git rev-parse --show-toplevel" in result.output
+    assert not (workspace / ".git").exists()
+
+
+def test_workspace_bootstrap_rejects_non_main_linked_repository_before_git_init(run_wtk, tmp_path, repo_factory) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    member = repo_factory.init_repo("A", branch="develop")
+
+    result = run_wtk("workspace", "bootstrap", str(member), cwd=workspace, check=False)
+
+    result.assert_failure()
+    assert "linked repository main worktrees to be on main" in result.output
+    assert not (workspace / ".git").exists()
+
+
 def test_workspace_mode_new_requires_clean_manifest_history(run_wtk, workspace_factory, repo_factory) -> None:
     workspace, members = workspace_factory.create()
 

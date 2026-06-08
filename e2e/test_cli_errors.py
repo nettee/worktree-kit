@@ -20,6 +20,8 @@ def test_cli_usage_and_flag_errors(run_wtk, repo_factory) -> None:
         (("create", "feature/a", "feature/b"), "too many arguments: expected 1 branch", "wtk create <branch> [flags]"),
         (("checkout",), "missing required argument: branch", "wtk checkout <branch> [flags]"),
         (("checkout", "feature/a", "feature/b"), "too many arguments: expected 1 branch", "wtk checkout <branch> [flags]"),
+        (("workspace",), "missing required subcommand: init, add, or bootstrap", "wtk workspace <init|add|bootstrap> [args]"),
+        (("workspace", "bootstrap"), "missing required argument: repository-path", "wtk workspace <init|add|bootstrap> [args]"),
         (("remove", "one", "two"), "too many arguments: expected at most 1 path", "wtk remove [path] [flags]"),
         (("send-out", "extra"), "unexpected argument: extra", "wtk send-out [flags]"),
         (("bring-in",), "missing required argument: branch", "wtk bring-in <branch> [flags]"),

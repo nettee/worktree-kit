@@ -852,10 +852,7 @@ pub(crate) fn snapshot_dot_env_files_from_root(root: &Path) -> AppResult<Vec<Sna
     Ok(snapshots)
 }
 
-pub(crate) fn restore_snapshot_files_to_root(
-    files: &[SnapshotFile],
-    root: &Path,
-) -> AppResult<()> {
+pub(crate) fn restore_snapshot_files_to_root(files: &[SnapshotFile], root: &Path) -> AppResult<()> {
     copy_snapshot_files(files, root).map(|_| ())
 }
 
@@ -931,18 +928,24 @@ fn collect_ignored_env_files_from_root(
     Ok(())
 }
 
-fn collect_dot_env_files(root: &Path, current: &Path, snapshots: &mut Vec<SnapshotFile>) -> AppResult<()> {
+fn collect_dot_env_files(
+    root: &Path,
+    current: &Path,
+    snapshots: &mut Vec<SnapshotFile>,
+) -> AppResult<()> {
     let mut entries = fs::read_dir(current)
         .map_err(|error| Error::message(format!("failed to read {}: {error}", current.display())))?
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| Error::message(format!("failed to read {}: {error}", current.display())))?;
+        .map_err(|error| {
+            Error::message(format!("failed to read {}: {error}", current.display()))
+        })?;
     entries.sort_by_key(|entry| entry.path());
 
     for entry in entries {
         let path = entry.path();
-        let file_type = entry
-            .file_type()
-            .map_err(|error| Error::message(format!("failed to inspect {}: {error}", path.display())))?;
+        let file_type = entry.file_type().map_err(|error| {
+            Error::message(format!("failed to inspect {}: {error}", path.display()))
+        })?;
         if file_type.is_dir() {
             collect_dot_env_files(root, &path, snapshots)?;
             continue;
