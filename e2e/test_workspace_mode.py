@@ -99,6 +99,8 @@ def test_workspace_bootstrap_creates_manifest_refs_and_initial_commit(run_wtk, t
     workspace.mkdir()
     member_a = repo_factory.init_repo("A")
     member_b = repo_factory.init_repo("B")
+    git_config_global = tmp_path / "gitconfig"
+    git_config_global.write_text("[init]\n\tdefaultBranch = master\n", encoding="utf-8")
 
     run_wtk(
         "workspace",
@@ -111,12 +113,14 @@ def test_workspace_bootstrap_creates_manifest_refs_and_initial_commit(run_wtk, t
             "GIT_AUTHOR_EMAIL": "test@example.com",
             "GIT_COMMITTER_NAME": "Test User",
             "GIT_COMMITTER_EMAIL": "test@example.com",
+            "GIT_CONFIG_GLOBAL": str(git_config_global),
         },
     )
 
     manifest_text = (workspace / ".wtk-workspace.toml").read_text(encoding="utf-8")
     gitignore_text = (workspace / ".gitignore").read_text(encoding="utf-8")
     agents_text = (workspace / "AGENTS.md").read_text(encoding="utf-8")
+    assert run_git(workspace, "branch", "--show-current").stdout.strip() == "main"
     assert 'mode = "workspace"' in manifest_text
     assert gitignore_text == "refs/\n"
     assert "Workspace Guidance" in agents_text
