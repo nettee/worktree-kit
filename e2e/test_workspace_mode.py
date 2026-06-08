@@ -129,6 +129,17 @@ def test_workspace_bootstrap_creates_manifest_refs_and_initial_commit(run_wtk, t
     head_files = set(run_git(workspace, "ls-tree", "--name-only", "HEAD").stdout.splitlines())
     assert {".wtk-workspace.toml", ".gitignore", "AGENTS.md"} <= head_files
 
+    out = run_wtk("new", "feature/ws", "--base", "main", "--no-clipboard", cwd=workspace).output
+    workspace_linked = linked_worktree_path(workspace, "feature/ws")
+    linked_a = linked_worktree_path(member_a, "feature/ws")
+    linked_b = linked_worktree_path(member_b, "feature/ws")
+    assert str(workspace_linked) in out
+    assert workspace_linked.exists()
+    assert linked_a.exists()
+    assert linked_b.exists()
+    assert (workspace_linked / "refs" / "A").resolve() == linked_a.resolve()
+    assert (workspace_linked / "refs" / "B").resolve() == linked_b.resolve()
+
 
 def test_workspace_bootstrap_rejects_duplicate_ref_names_before_git_init(run_wtk, tmp_path, repo_factory) -> None:
     workspace = tmp_path / "workspace"
@@ -139,6 +150,19 @@ def test_workspace_bootstrap_rejects_duplicate_ref_names_before_git_init(run_wtk
 
     result.assert_failure()
     assert "duplicate Workspace Ref name: A" in result.output
+    assert not (workspace / ".git").exists()
+
+
+def test_workspace_bootstrap_rejects_non_repository_before_git_init(run_wtk, tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    not_repo = tmp_path / "not-repo"
+    not_repo.mkdir()
+
+    result = run_wtk("workspace", "bootstrap", str(not_repo), cwd=workspace, check=False)
+
+    result.assert_failure()
+    assert "git rev-parse --show-toplevel" in result.output
     assert not (workspace / ".git").exists()
 
 
