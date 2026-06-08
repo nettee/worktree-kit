@@ -15,7 +15,7 @@
 
 Repository Mode is the default single-repository behavior. Default linked worktree paths use the Sibling Layout: sibling directories named `<repo>-wt-<branch-slug>`.
 
-Workspace Mode coordinates multiple Linked Repositories from a lightweight Workspace repository. It stores mode and stable repository paths in `.wtk/config.toml`; Workspace Refs live at `refs/<name>` and point to the currently surfaced Repository Worktree path for each Linked Repository. Repository paths and ref targets are absolute paths.
+Workspace Mode coordinates multiple Linked Repositories from a Workspace repository that participates in the same branch/worktree lifecycle as the repositories it manages. It stores stable membership in a tracked `.wtk-workspace.toml` manifest. Each Workspace Worktree owns generated `refs/<name>` entries that point to the currently surfaced Repository Worktree path for each Linked Repository. Repository paths and ref targets are absolute paths.
 
 ## Install
 
@@ -89,7 +89,7 @@ wtk workspace add /absolute/path/to/A
 wtk workspace add /absolute/path/to/B
 ```
 
-The generated config shape is:
+The generated manifest shape is:
 
 ```toml
 mode = "workspace"
@@ -98,13 +98,13 @@ mode = "workspace"
 repository = "/absolute/path/to/A"
 ```
 
-In Workspace Mode, `wtk status` emits aggregate Workspace status. `wtk new`, `wtk remove`, `wtk send-out`, and `wtk bring-in` fan out across every configured Workspace Ref. Workspace operations preflight linked repositories before mutation and fail fast on malformed config, relative paths, invalid refs, dirty worktrees, branch collisions, or target path collisions.
+In Workspace Mode, `wtk status` emits aggregate Workspace status for the current Workspace Worktree and validates generated refs without repairing them. `wtk new` creates a coordinated Workspace Worktree plus matching Linked Repository Worktrees for the same branch. `wtk remove` removes the coordinated set. Workspace operations fail fast on malformed manifest state, relative paths, missing or incorrect refs, branch mismatches, dirty worktrees, branch collisions, or target path collisions.
+
+`wtk workspace init` and `wtk workspace add` must be run from the Workspace main worktree. `wtk checkout`, `wtk send-out`, and `wtk bring-in` are repository-mode-only commands and are rejected in Workspace Mode.
 
 Every command prints the underlying `git` commands it runs. Successful commands copy the useful path or branch payload to the clipboard. Use `--no-clipboard` in CI or headless environments.
 
 Commands that create linked worktrees also copy ignored files named exactly `.env` from the main worktree into the new worktree at the same Git-root-relative paths. Files such as `.env.local`, `.env.example`, and `.envrc` are not copied. When matching ignored `.env` files are copied, `wtk` prints one `copied ignored .env: <path>` line per file; when none are found, it prints nothing for this step.
-
-`wtk send-out` also copies an ignored `specs/change/active` file into the linked worktree and prints `copied ignored file: specs/change/active` when that file is transferred.
 
 If the new worktree looks like a pnpm repo (`pnpm-lock.yaml` or `pnpm-workspace.yaml` at the root), `wtk` then runs `pnpm install` inside the new worktree before reporting success.
 
@@ -135,4 +135,4 @@ wtk completion powershell > wtk.ps1
 
 ## Failure behavior
 
-Dirty worktrees, ambiguous main branch detection, missing Git context, failed Git commands, ignored `.env` copy failures, and clipboard failures are reported directly. If Git succeeds and a later required step fails, `wtk` exits non-zero so the partial failure is visible.
+Dirty worktrees, malformed Workspace manifests, missing generated refs, branch mismatches, ambiguous main branch detection, missing Git context, failed Git commands, ignored `.env` copy failures, and clipboard failures are reported directly. If Git succeeds and a later required step fails, `wtk` exits non-zero so the partial failure is visible.

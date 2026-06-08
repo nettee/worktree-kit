@@ -164,7 +164,7 @@ fn list_prints_yaml_worktree_listing() {
 
 #[cfg(unix)]
 #[test]
-fn workspace_mode_add_status_new_remove_send_out_and_bring_in() {
+fn workspace_mode_init_add_status_new_and_remove() {
     let bin = build_wtk();
     let base = temp_dir();
     let workspace = init_repo_at(&base.join("workspace"), "main");
@@ -182,9 +182,16 @@ fn workspace_mode_add_status_new_remove_send_out_and_bring_in() {
         &workspace,
         ["workspace", "add", repo_b.to_str().unwrap()],
     );
+    commit_workspace_manifest(&workspace, "record workspace manifest");
+
+    let manifest = workspace.join(".wtk-workspace.toml");
+    assert!(manifest.exists());
+    assert!(std::fs::read_to_string(&manifest)
+        .unwrap()
+        .contains("mode = \"workspace\""));
+
     let repo_a_canonical = std::fs::canonicalize(&repo_a).unwrap();
     let repo_b_canonical = std::fs::canonicalize(&repo_b).unwrap();
-
     assert_eq!(
         std::fs::read_link(workspace.join("refs/A")).unwrap(),
         repo_a_canonical
@@ -197,27 +204,33 @@ fn workspace_mode_add_status_new_remove_send_out_and_bring_in() {
     let output = run_wtk(&bin, &workspace, ["status"]);
     let yaml: Value = serde_yaml::from_str(&output).unwrap();
     assert_eq!(yaml["mode"].as_str(), Some("workspace"));
+    assert_eq!(yaml["workspace_branch"].as_str(), Some("main"));
+    assert_eq!(yaml["current_is_main"].as_bool(), Some(true));
     assert_eq!(yaml["refs"].as_sequence().unwrap().len(), 2);
-    assert!(yaml["refs"].as_sequence().unwrap().iter().all(|entry| {
-        entry["is_main"].as_bool() == Some(true)
-            && entry["current_target"].as_str() == entry["repository"].as_str()
-    }));
 
-    run_wtk(
+    let out = run_wtk(
         &bin,
         &workspace,
         ["new", "feature/ws", "--base", "main", "--no-clipboard"],
     );
+    let workspace_linked = linked_worktree_path(&workspace, "feature/ws");
     let linked_a = linked_worktree_path(&repo_a_canonical, "feature/ws");
     let linked_b = linked_worktree_path(&repo_b_canonical, "feature/ws");
+    assert!(out.contains(workspace_linked.to_str().unwrap()));
+    assert!(workspace_linked.exists());
     assert!(linked_a.exists());
     assert!(linked_b.exists());
+
+    let task_status: Value =
+        serde_yaml::from_str(&run_wtk(&bin, &workspace_linked, ["status"])).unwrap();
+    assert_eq!(task_status["workspace_branch"].as_str(), Some("feature/ws"));
+    assert_eq!(task_status["current_is_main"].as_bool(), Some(false));
     assert_eq!(
-        std::fs::read_link(workspace.join("refs/A")).unwrap(),
+        std::fs::read_link(workspace_linked.join("refs/A")).unwrap(),
         linked_a
     );
     assert_eq!(
-        std::fs::read_link(workspace.join("refs/B")).unwrap(),
+        std::fs::read_link(workspace_linked.join("refs/B")).unwrap(),
         linked_b
     );
 
@@ -226,74 +239,21 @@ fn workspace_mode_add_status_new_remove_send_out_and_bring_in() {
         &workspace,
         ["remove", "feature/ws", "--delete-branch", "--no-clipboard"],
     );
+    assert!(!workspace_linked.exists());
     assert!(!linked_a.exists());
     assert!(!linked_b.exists());
-    assert_eq!(
-        std::fs::read_link(workspace.join("refs/A")).unwrap(),
-        repo_a_canonical
-    );
-    assert_eq!(
-        std::fs::read_link(workspace.join("refs/B")).unwrap(),
-        repo_b_canonical
-    );
-
-    run_git(&repo_a, ["switch", "-c", "feature/send"]);
-    run_git(&repo_b, ["switch", "-c", "feature/send"]);
-    run_wtk(
-        &bin,
-        &workspace,
-        ["send-out", "--base", "main", "--no-clipboard"],
-    );
-    let sent_a = linked_worktree_path(&repo_a_canonical, "feature/send");
-    let sent_b = linked_worktree_path(&repo_b_canonical, "feature/send");
-    assert_eq!(
-        run_git(&repo_a, ["branch", "--show-current"]).trim(),
-        "main"
-    );
-    assert_eq!(
-        run_git(&repo_b, ["branch", "--show-current"]).trim(),
-        "main"
-    );
-    assert_eq!(
-        std::fs::read_link(workspace.join("refs/A")).unwrap(),
-        sent_a
-    );
-    assert_eq!(
-        std::fs::read_link(workspace.join("refs/B")).unwrap(),
-        sent_b
-    );
-
-    run_wtk(
-        &bin,
-        &workspace,
-        ["bring-in", "feature/send", "--no-clipboard"],
-    );
-    assert_eq!(
-        run_git(&repo_a, ["branch", "--show-current"]).trim(),
-        "feature/send"
-    );
-    assert_eq!(
-        run_git(&repo_b, ["branch", "--show-current"]).trim(),
-        "feature/send"
-    );
-    assert_eq!(
-        std::fs::read_link(workspace.join("refs/A")).unwrap(),
-        repo_a_canonical
-    );
-    assert_eq!(
-        std::fs::read_link(workspace.join("refs/B")).unwrap(),
-        repo_b_canonical
-    );
+    assert!(!run_git(&workspace, ["branch", "--list", "feature/ws"]).contains("feature/ws"));
+    assert!(!run_git(&repo_a, ["branch", "--list", "feature/ws"]).contains("feature/ws"));
+    assert!(!run_git(&repo_b, ["branch", "--list", "feature/ws"]).contains("feature/ws"));
 }
 
 #[cfg(unix)]
 #[test]
-fn workspace_mode_remove_delete_branch_failure_keeps_refs_on_main_worktrees() {
+fn workspace_mode_status_fails_on_missing_generated_ref() {
     let bin = build_wtk();
     let base = temp_dir();
     let workspace = init_repo_at(&base.join("workspace"), "main");
     let repo_a = init_repo_at(&base.join("A"), "main");
-    let repo_b = init_repo_at(&base.join("B"), "main");
 
     run_wtk(&bin, &workspace, ["workspace", "init"]);
     run_wtk(
@@ -301,54 +261,24 @@ fn workspace_mode_remove_delete_branch_failure_keeps_refs_on_main_worktrees() {
         &workspace,
         ["workspace", "add", repo_a.to_str().unwrap()],
     );
-    run_wtk(
-        &bin,
-        &workspace,
-        ["workspace", "add", repo_b.to_str().unwrap()],
-    );
-
-    let repo_a_canonical = std::fs::canonicalize(&repo_a).unwrap();
-    let repo_b_canonical = std::fs::canonicalize(&repo_b).unwrap();
-
+    commit_workspace_manifest(&workspace, "record workspace manifest");
     run_wtk(
         &bin,
         &workspace,
         ["new", "feature/ws", "--base", "main", "--no-clipboard"],
     );
-    let linked_a = linked_worktree_path(&repo_a_canonical, "feature/ws");
-    let linked_b = linked_worktree_path(&repo_b_canonical, "feature/ws");
-    commit_files(&linked_a, &[("only-on-branch.txt", "A\n")], "branch only");
 
-    let (out, status) = run_wtk_err(
-        &bin,
-        &workspace,
-        ["remove", "feature/ws", "--delete-branch", "--no-clipboard"],
-    );
+    let workspace_linked = linked_worktree_path(&workspace, "feature/ws");
+    std::fs::remove_file(workspace_linked.join("refs/A")).unwrap();
+
+    let (out, status) = run_wtk_err(&bin, &workspace_linked, ["status"]);
     assert!(!status.success());
-    assert!(out.contains("not fully merged"));
-    assert!(!linked_a.exists());
-    assert!(linked_b.exists());
-    assert_eq!(
-        std::fs::read_link(workspace.join("refs/A")).unwrap(),
-        repo_a_canonical
-    );
-    assert_eq!(
-        std::fs::read_link(workspace.join("refs/B")).unwrap(),
-        linked_b
-    );
-
-    let status_yaml: Value = serde_yaml::from_str(&run_wtk(&bin, &workspace, ["status"])).unwrap();
-    let refs = status_yaml["refs"].as_sequence().unwrap();
-    assert!(refs.iter().any(|entry| {
-        entry["name"].as_str() == Some("A")
-            && entry["is_main"].as_bool() == Some(true)
-            && entry["current_target"].as_str() == repo_a_canonical.to_str()
-    }));
+    assert!(out.contains("failed to read Workspace Ref"));
 }
 
 #[cfg(unix)]
 #[test]
-fn workspace_mode_send_out_rolls_back_when_later_base_switch_fails() {
+fn workspace_mode_membership_changes_require_main_worktree() {
     let bin = build_wtk();
     let base = temp_dir();
     let workspace = init_repo_at(&base.join("workspace"), "main");
@@ -361,55 +291,30 @@ fn workspace_mode_send_out_rolls_back_when_later_base_switch_fails() {
         &workspace,
         ["workspace", "add", repo_a.to_str().unwrap()],
     );
+    commit_workspace_manifest(&workspace, "record workspace manifest");
     run_wtk(
         &bin,
         &workspace,
-        ["workspace", "add", repo_b.to_str().unwrap()],
+        ["new", "feature/ws", "--base", "main", "--no-clipboard"],
     );
 
-    let repo_a_canonical = std::fs::canonicalize(&repo_a).unwrap();
-    let repo_b_canonical = std::fs::canonicalize(&repo_b).unwrap();
-    run_git(&repo_a, ["branch", "release"]);
-    run_git(&repo_a, ["switch", "-c", "feature/send"]);
-    run_git(&repo_b, ["switch", "-c", "feature/send"]);
-
-    let sent_a = linked_worktree_path(&repo_a_canonical, "feature/send");
-    let sent_b = linked_worktree_path(&repo_b_canonical, "feature/send");
+    let workspace_linked = linked_worktree_path(&workspace, "feature/ws");
     let (out, status) = run_wtk_err(
         &bin,
-        &workspace,
-        ["send-out", "--base", "release", "--no-clipboard"],
+        &workspace_linked,
+        ["workspace", "add", repo_b.to_str().unwrap()],
     );
     assert!(!status.success());
-    assert!(out.contains("invalid reference"));
-    assert_eq!(
-        run_git(&repo_a, ["branch", "--show-current"]).trim(),
-        "feature/send"
-    );
-    assert_eq!(
-        run_git(&repo_b, ["branch", "--show-current"]).trim(),
-        "feature/send"
-    );
-    assert!(!sent_a.exists());
-    assert!(!sent_b.exists());
-    assert_eq!(
-        std::fs::read_link(workspace.join("refs/A")).unwrap(),
-        repo_a_canonical
-    );
-    assert_eq!(
-        std::fs::read_link(workspace.join("refs/B")).unwrap(),
-        repo_b_canonical
-    );
+    assert!(out.contains("workspace add must be run from the Workspace main worktree"));
 }
 
 #[cfg(unix)]
 #[test]
-fn workspace_mode_send_out_copies_ignored_files_and_runs_pnpm_install() {
+fn workspace_mode_rejects_checkout_send_out_and_bring_in() {
     let bin = build_wtk();
     let base = temp_dir();
     let workspace = init_repo_at(&base.join("workspace"), "main");
     let repo_a = init_repo_at(&base.join("A"), "main");
-    let repo_b = init_repo_at(&base.join("B"), "main");
 
     run_wtk(&bin, &workspace, ["workspace", "init"]);
     run_wtk(
@@ -417,143 +322,26 @@ fn workspace_mode_send_out_copies_ignored_files_and_runs_pnpm_install() {
         &workspace,
         ["workspace", "add", repo_a.to_str().unwrap()],
     );
-    run_wtk(
-        &bin,
-        &workspace,
-        ["workspace", "add", repo_b.to_str().unwrap()],
-    );
+    commit_workspace_manifest(&workspace, "record workspace manifest");
 
-    commit_files(
-        &repo_a,
-        &[
-            (".gitignore", ".env\nspecs/change/active\n"),
-            ("pnpm-lock.yaml", "lockfileVersion: '9.0'\n"),
-        ],
-        "prepare repo a",
-    );
-    commit_files(
-        &repo_b,
-        &[
-            (".gitignore", ".env\nspecs/change/active\n"),
-            ("pnpm-lock.yaml", "lockfileVersion: '9.0'\n"),
-        ],
-        "prepare repo b",
-    );
-    run_git(&repo_a, ["switch", "-c", "feature/send-init"]);
-    run_git(&repo_b, ["switch", "-c", "feature/send-init"]);
-    std::fs::create_dir_all(repo_a.join("specs/change")).unwrap();
-    std::fs::create_dir_all(repo_b.join("specs/change")).unwrap();
-    std::fs::write(repo_a.join(".env"), "A=value\n").unwrap();
-    std::fs::write(repo_b.join(".env"), "B=value\n").unwrap();
-    std::fs::write(repo_a.join("specs/change/active"), "A-active\n").unwrap();
-    std::fs::write(repo_b.join("specs/change/active"), "B-active\n").unwrap();
-
-    let fake_bin = temp_dir().join("fake-bin");
-    std::fs::create_dir_all(&fake_bin).unwrap();
-    let log_path = fake_bin.join("pnpm.log");
-    write_fake_pnpm(&fake_bin, &log_path);
-    let path = prepend_path(&fake_bin);
-
-    let out = run_wtk_with_env(
-        &bin,
-        &workspace,
-        ["send-out", "--base", "main", "--no-clipboard"],
-        &[("PATH", path)],
-    );
-
-    let repo_a_canonical = std::fs::canonicalize(&repo_a).unwrap();
-    let repo_b_canonical = std::fs::canonicalize(&repo_b).unwrap();
-    let linked_a = linked_worktree_path(&repo_a_canonical, "feature/send-init");
-    let linked_b = linked_worktree_path(&repo_b_canonical, "feature/send-init");
-
-    assert_eq!(
-        std::fs::read_to_string(linked_a.join(".env")).unwrap(),
-        "A=value\n"
-    );
-    assert_eq!(
-        std::fs::read_to_string(linked_b.join(".env")).unwrap(),
-        "B=value\n"
-    );
-    assert_eq!(
-        std::fs::read_to_string(linked_a.join("specs/change/active")).unwrap(),
-        "A-active\n"
-    );
-    assert_eq!(
-        std::fs::read_to_string(linked_b.join("specs/change/active")).unwrap(),
-        "B-active\n"
-    );
-    assert!(out.contains("copied ignored .env: .env"));
-    assert!(out.contains("copied ignored file: specs/change/active"));
-    assert!(out.contains("running pnpm install in"));
-    wait_for_file_contains(&log_path, &format!("PWD:{}", linked_a.display()));
-    wait_for_file_contains(&log_path, &format!("PWD:{}", linked_b.display()));
-}
-
-#[cfg(unix)]
-#[test]
-fn workspace_mode_send_out_rolls_back_when_ref_update_fails() {
-    let bin = build_wtk();
-    let base = temp_dir();
-    let workspace = init_repo_at(&base.join("workspace"), "main");
-    let repo_a = init_repo_at(&base.join("A"), "main");
-    let repo_b = init_repo_at(&base.join("B"), "main");
-
-    run_wtk(&bin, &workspace, ["workspace", "init"]);
-    run_wtk(
-        &bin,
-        &workspace,
-        ["workspace", "add", repo_a.to_str().unwrap()],
-    );
-    run_wtk(
-        &bin,
-        &workspace,
-        ["workspace", "add", repo_b.to_str().unwrap()],
-    );
-
-    run_git(&repo_a, ["switch", "-c", "feature/send-fail"]);
-    run_git(&repo_b, ["switch", "-c", "feature/send-fail"]);
-
-    let refs_dir = workspace.join("refs");
-    let mut perms = std::fs::metadata(&refs_dir).unwrap().permissions();
-    perms.set_mode(0o555);
-    std::fs::set_permissions(&refs_dir, perms).unwrap();
-
-    let (out, status) = run_wtk_err(
-        &bin,
-        &workspace,
-        ["send-out", "--base", "main", "--no-clipboard"],
-    );
-
-    let mut reset_perms = std::fs::metadata(&refs_dir).unwrap().permissions();
-    reset_perms.set_mode(0o755);
-    std::fs::set_permissions(&refs_dir, reset_perms).unwrap();
-
-    assert!(!status.success());
-    assert!(out.contains("Permission denied") || out.contains("permission denied"));
-
-    let repo_a_canonical = std::fs::canonicalize(&repo_a).unwrap();
-    let repo_b_canonical = std::fs::canonicalize(&repo_b).unwrap();
-    let linked_a = linked_worktree_path(&repo_a_canonical, "feature/send-fail");
-    let linked_b = linked_worktree_path(&repo_b_canonical, "feature/send-fail");
-
-    assert_eq!(
-        run_git(&repo_a, ["branch", "--show-current"]).trim(),
-        "feature/send-fail"
-    );
-    assert_eq!(
-        run_git(&repo_b, ["branch", "--show-current"]).trim(),
-        "feature/send-fail"
-    );
-    assert!(!linked_a.exists());
-    assert!(!linked_b.exists());
-    assert_eq!(
-        std::fs::read_link(workspace.join("refs/A")).unwrap(),
-        repo_a_canonical
-    );
-    assert_eq!(
-        std::fs::read_link(workspace.join("refs/B")).unwrap(),
-        repo_b_canonical
-    );
+    for args in [
+        vec!["checkout", "main", "--no-clipboard"],
+        vec!["send-out", "--no-clipboard"],
+        vec!["bring-in", "main", "--no-clipboard"],
+    ] {
+        let output = Command::new(&bin)
+            .args(&args)
+            .current_dir(&workspace)
+            .output()
+            .unwrap();
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!output.status.success(), "command unexpectedly succeeded: {args:?}");
+        assert!(combined.contains("not supported in Workspace Mode"));
+    }
 }
 
 #[cfg(unix)]
@@ -576,6 +364,7 @@ fn workspace_mode_new_copies_ignored_env_and_runs_pnpm_install() {
         &workspace,
         ["workspace", "add", repo_b.to_str().unwrap()],
     );
+    commit_workspace_manifest(&workspace, "record workspace manifest");
 
     commit_files(
         &repo_a,
@@ -611,9 +400,11 @@ fn workspace_mode_new_copies_ignored_env_and_runs_pnpm_install() {
 
     let repo_a_canonical = std::fs::canonicalize(&repo_a).unwrap();
     let repo_b_canonical = std::fs::canonicalize(&repo_b).unwrap();
+    let workspace_linked = linked_worktree_path(&workspace, "feature/ws-init");
     let linked_a = linked_worktree_path(&repo_a_canonical, "feature/ws-init");
     let linked_b = linked_worktree_path(&repo_b_canonical, "feature/ws-init");
 
+    assert!(workspace_linked.exists());
     assert_eq!(
         std::fs::read_to_string(linked_a.join(".env")).unwrap(),
         "A=value\n"
@@ -626,6 +417,46 @@ fn workspace_mode_new_copies_ignored_env_and_runs_pnpm_install() {
     assert!(out.contains("running pnpm install in"));
     wait_for_file_contains(&log_path, &format!("PWD:{}", linked_a.display()));
     wait_for_file_contains(&log_path, &format!("PWD:{}", linked_b.display()));
+}
+
+#[cfg(unix)]
+#[test]
+fn workspace_mode_new_rejects_dirty_manifest_changes() {
+    let bin = build_wtk();
+    let base = temp_dir();
+    let workspace = init_repo_at(&base.join("workspace"), "main");
+    let repo_a = init_repo_at(&base.join("A"), "main");
+    let repo_b = init_repo_at(&base.join("B"), "main");
+
+    run_wtk(&bin, &workspace, ["workspace", "init"]);
+    run_wtk(
+        &bin,
+        &workspace,
+        ["workspace", "add", repo_a.to_str().unwrap()],
+    );
+    commit_workspace_manifest(&workspace, "record workspace manifest");
+
+    run_wtk(
+        &bin,
+        &workspace,
+        ["workspace", "add", repo_b.to_str().unwrap()],
+    );
+    let (out, status) = run_wtk_err(
+        &bin,
+        &workspace,
+        ["new", "feature/ws-dirty", "--base", "main", "--no-clipboard"],
+    );
+    assert!(!status.success());
+    assert!(out.contains("Workspace Mode new requires committed .wtk-workspace.toml changes"));
+
+    run_git(&workspace, ["add", ".wtk-workspace.toml"]);
+    let (out, status) = run_wtk_err(
+        &bin,
+        &workspace,
+        ["new", "feature/ws-staged", "--base", "main", "--no-clipboard"],
+    );
+    assert!(!status.success());
+    assert!(out.contains("Workspace Mode new requires committed .wtk-workspace.toml changes"));
 }
 
 #[cfg(unix)]
@@ -648,6 +479,7 @@ fn workspace_mode_new_rolls_back_refs_and_dirty_worktrees_when_init_fails() {
         &workspace,
         ["workspace", "add", repo_b.to_str().unwrap()],
     );
+    commit_workspace_manifest(&workspace, "record workspace manifest");
 
     commit_files(
         &repo_a,
@@ -685,21 +517,18 @@ fn workspace_mode_new_rolls_back_refs_and_dirty_worktrees_when_init_fails() {
 
     let repo_a_canonical = std::fs::canonicalize(&repo_a).unwrap();
     let repo_b_canonical = std::fs::canonicalize(&repo_b).unwrap();
+    let workspace_linked = linked_worktree_path(&workspace, "feature/ws-fail");
     let linked_a = linked_worktree_path(&repo_a_canonical, "feature/ws-fail");
     let linked_b = linked_worktree_path(&repo_b_canonical, "feature/ws-fail");
 
+    assert!(!workspace_linked.exists());
     assert!(!linked_a.exists());
     assert!(!linked_b.exists());
-    assert_eq!(
-        std::fs::read_link(workspace.join("refs/A")).unwrap(),
-        repo_a_canonical
-    );
-    assert_eq!(
-        std::fs::read_link(workspace.join("refs/B")).unwrap(),
-        repo_b_canonical
-    );
+    assert_eq!(std::fs::read_link(workspace.join("refs/A")).unwrap(), repo_a_canonical);
+    assert_eq!(std::fs::read_link(workspace.join("refs/B")).unwrap(), repo_b_canonical);
     assert!(!run_git(&repo_a, ["branch", "--list", "feature/ws-fail"]).contains("feature/ws-fail"));
     assert!(!run_git(&repo_b, ["branch", "--list", "feature/ws-fail"]).contains("feature/ws-fail"));
+    assert!(!run_git(&workspace, ["branch", "--list", "feature/ws-fail"]).contains("feature/ws-fail"));
 
     let log = std::fs::read_to_string(log_path).unwrap();
     assert!(log.contains(&format!("PWD:{}", linked_a.display())));
@@ -708,7 +537,7 @@ fn workspace_mode_new_rolls_back_refs_and_dirty_worktrees_when_init_fails() {
 
 #[cfg(unix)]
 #[test]
-fn workspace_mode_bring_in_rolls_back_when_later_remove_fails() {
+fn workspace_mode_remove_rolls_back_workspace_env_files_when_branch_delete_fails() {
     let bin = build_wtk();
     let base = temp_dir();
     let workspace = init_repo_at(&base.join("workspace"), "main");
@@ -726,127 +555,54 @@ fn workspace_mode_bring_in_rolls_back_when_later_remove_fails() {
         &workspace,
         ["workspace", "add", repo_b.to_str().unwrap()],
     );
+    commit_workspace_manifest(&workspace, "record workspace manifest");
+    commit_files(&workspace, &[(".gitignore", ".env\n")], "ignore workspace env");
+    std::fs::write(workspace.join(".env"), "WORKSPACE=value\n").unwrap();
 
-    run_git(&repo_a, ["switch", "-c", "feature/send"]);
-    run_git(&repo_b, ["switch", "-c", "feature/send"]);
-    run_wtk(
+    let out = run_wtk(
         &bin,
         &workspace,
-        ["send-out", "--base", "main", "--no-clipboard"],
+        ["new", "feature/ws-env-rollback", "--base", "main", "--no-clipboard"],
+    );
+    let workspace_linked = linked_worktree_path(&workspace, "feature/ws-env-rollback");
+    let linked_a = linked_worktree_path(&repo_a, "feature/ws-env-rollback");
+    let linked_b = linked_worktree_path(&repo_b, "feature/ws-env-rollback");
+    assert!(out.contains(workspace_linked.to_str().unwrap()));
+    std::fs::write(workspace_linked.join(".env"), "WORKSPACE=value\n").unwrap();
+    assert_eq!(
+        std::fs::read_to_string(workspace_linked.join(".env")).unwrap(),
+        "WORKSPACE=value\n"
     );
 
-    let repo_a_canonical = std::fs::canonicalize(&repo_a).unwrap();
-    let repo_b_canonical = std::fs::canonicalize(&repo_b).unwrap();
-    let linked_a = linked_worktree_path(&repo_a_canonical, "feature/send");
-    let linked_b = linked_worktree_path(&repo_b_canonical, "feature/send");
-    run_git(
-        &repo_b,
+    commit_files(
+        &workspace_linked,
+        &[("workspace.txt", "unmerged\n")],
+        "make workspace branch unmerged",
+    );
+
+    let (out, status) = run_wtk_err(
+        &bin,
+        &workspace,
         [
-            "worktree",
-            "lock",
-            linked_b.to_str().unwrap(),
-            "--reason",
-            "test",
+            "remove",
+            "feature/ws-env-rollback",
+            "--delete-branch",
+            "--no-clipboard",
         ],
     );
-
-    let (out, status) = run_wtk_err(
-        &bin,
-        &workspace,
-        ["bring-in", "feature/send", "--no-clipboard"],
-    );
     assert!(!status.success());
-    assert!(out.contains("locked"));
-    assert_eq!(
-        run_git(&repo_a, ["branch", "--show-current"]).trim(),
-        "main"
-    );
-    assert_eq!(
-        run_git(&repo_b, ["branch", "--show-current"]).trim(),
-        "main"
-    );
+    assert!(out.contains("not fully merged"));
+
+    assert!(workspace_linked.exists());
     assert!(linked_a.exists());
     assert!(linked_b.exists());
+    wait_for_path(&workspace_linked.join(".env"));
     assert_eq!(
-        std::fs::read_link(workspace.join("refs/A")).unwrap(),
-        linked_a
+        std::fs::read_to_string(workspace_linked.join(".env")).unwrap(),
+        "WORKSPACE=value\n"
     );
-    assert_eq!(
-        std::fs::read_link(workspace.join("refs/B")).unwrap(),
-        linked_b
-    );
-}
-
-#[cfg(unix)]
-#[test]
-fn workspace_mode_bring_in_rolls_back_when_ref_update_fails() {
-    let bin = build_wtk();
-    let base = temp_dir();
-    let workspace = init_repo_at(&base.join("workspace"), "main");
-    let repo_a = init_repo_at(&base.join("A"), "main");
-    let repo_b = init_repo_at(&base.join("B"), "main");
-
-    run_wtk(&bin, &workspace, ["workspace", "init"]);
-    run_wtk(
-        &bin,
-        &workspace,
-        ["workspace", "add", repo_a.to_str().unwrap()],
-    );
-    run_wtk(
-        &bin,
-        &workspace,
-        ["workspace", "add", repo_b.to_str().unwrap()],
-    );
-
-    run_git(&repo_a, ["switch", "-c", "feature/bring-in-fail"]);
-    run_git(&repo_b, ["switch", "-c", "feature/bring-in-fail"]);
-    run_wtk(
-        &bin,
-        &workspace,
-        ["send-out", "--base", "main", "--no-clipboard"],
-    );
-
-    let refs_dir = workspace.join("refs");
-    let mut perms = std::fs::metadata(&refs_dir).unwrap().permissions();
-    perms.set_mode(0o555);
-    std::fs::set_permissions(&refs_dir, perms).unwrap();
-
-    let (out, status) = run_wtk_err(
-        &bin,
-        &workspace,
-        ["bring-in", "feature/bring-in-fail", "--no-clipboard"],
-    );
-
-    let mut reset_perms = std::fs::metadata(&refs_dir).unwrap().permissions();
-    reset_perms.set_mode(0o755);
-    std::fs::set_permissions(&refs_dir, reset_perms).unwrap();
-
-    assert!(!status.success());
-    assert!(out.contains("Permission denied") || out.contains("permission denied"));
-
-    let repo_a_canonical = std::fs::canonicalize(&repo_a).unwrap();
-    let repo_b_canonical = std::fs::canonicalize(&repo_b).unwrap();
-    let linked_a = linked_worktree_path(&repo_a_canonical, "feature/bring-in-fail");
-    let linked_b = linked_worktree_path(&repo_b_canonical, "feature/bring-in-fail");
-
-    assert_eq!(
-        run_git(&repo_a, ["branch", "--show-current"]).trim(),
-        "main"
-    );
-    assert_eq!(
-        run_git(&repo_b, ["branch", "--show-current"]).trim(),
-        "main"
-    );
-    assert!(linked_a.exists());
-    assert!(linked_b.exists());
-    assert_eq!(
-        std::fs::read_link(workspace.join("refs/A")).unwrap(),
-        linked_a
-    );
-    assert_eq!(
-        std::fs::read_link(workspace.join("refs/B")).unwrap(),
-        linked_b
-    );
+    assert!(run_git(&workspace, ["branch", "--list", "feature/ws-env-rollback"])
+        .contains("feature/ws-env-rollback"));
 }
 
 #[cfg(not(windows))]
@@ -1948,6 +1704,11 @@ fn commit_files(repo: &Path, files: &[(&str, &str)], message: &str) {
     }
     run_git(&repo, ["add", "."]);
     run_git(&repo, ["commit", "-m", message]);
+}
+
+fn commit_workspace_manifest(repo: &Path, message: &str) {
+    run_git(repo, ["add", ".wtk-workspace.toml"]);
+    run_git(repo, ["commit", "-m", message]);
 }
 
 fn run_git<const N: usize>(dir: &Path, args: [&str; N]) -> String {

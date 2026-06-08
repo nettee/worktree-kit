@@ -16,16 +16,24 @@ _Avoid_: Sibling mode
 The explicit `wtk` mode that operates through a Workspace to coordinate multiple Linked Repositories.
 _Avoid_: Parent-directory mode
 
+**Workspace Manifest**:
+A tracked `.wtk-workspace.toml` file at the Workspace repository root. Its presence marks the repository as a Workspace and records stable Linked Repository identity, not current worktree state.
+_Avoid_: Workspace state file, runtime config
+
 **Sibling Layout**:
 The existing default layout where a repository's linked worktrees live next to the main worktree using names like `<repo>-wt-<branch-slug>`.
 _Avoid_: Flat mode
 
 **Workspace**:
-A lightweight Git repository that aggregates multiple Linked Repositories through symlinks. It stores workspace metadata in `.wtk/config.toml` and may contain Workspace Refs plus any other repository content the user chooses.
+A Git repository whose own branches and worktrees represent coordinated states across multiple Linked Repositories. Each Workspace Worktree reflects the corresponding branch and Repository Worktree selection for every Linked Repository it manages.
 _Avoid_: Workspace Parent, parent-directory worktree, meta worktree
 
+**Workspace Worktree**:
+A real Git worktree belonging to a Workspace repository. It represents one coordinated workspace state and contains generated Workspace Refs for the Linked Repositories surfaced in that state.
+_Avoid_: Workspace folder, control directory
+
 **Workspace Ref**:
-A configured reference in a Workspace. For ref `A`, the ref path is `refs/A`, the absolute ref target is the currently surfaced worktree path, and `.wtk/config.toml` records the stable absolute repository path for repository `A`.
+A generated reference inside a Workspace Worktree. For ref `A`, the ref path is `refs/A` and the absolute ref target is the Repository Worktree currently surfaced for Linked Repository `A`.
 _Avoid_: Workspace link, repo alias, checkout shortcut
 
 **Workspace Switch**:
@@ -44,4 +52,4 @@ Domain expert: "Create Repository Worktrees for each repo using the existing Sib
 
 Dev: "When I move the Workspace to another feature branch, do the repos switch branches?"
 
-Domain expert: "No. A Workspace Switch changes which derived Repository Worktrees the Workspace surfaces. The Repository Worktrees keep their own Git state."
+Domain expert: "The Workspace moves to a Workspace Worktree for that branch, and its Workspace Refs surface the matching Repository Worktrees for each Linked Repository."
