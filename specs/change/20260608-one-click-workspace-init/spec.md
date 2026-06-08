@@ -203,7 +203,17 @@ Depends on: Step 3
 
 ### Progress
 
-- [ ] Step 1: Bootstrap Command Skeleton
+- [x] Step 1: Bootstrap Command Skeleton
 - [ ] Step 2: Workspace Bootstrap Core
 - [ ] Step 3: AGENTS Template And Gitignore
 - [ ] Step 4: Documentation And Verification
+
+### Implementation
+
+- Added `wtk workspace bootstrap <repo-path>...` parsing, help text, and dispatch.
+- Added a Workspace bootstrap skeleton entrypoint that requires at least one Linked Repository path and rejects non-empty Workspace roots before mutation.
+
+### Verification
+
+- `cargo test --lib cli::tests`
+- `pytest e2e/test_cli_errors.py e2e/test_workspace_mode.py -k 'bootstrap or cli_usage'`

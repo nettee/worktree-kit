@@ -83,6 +83,17 @@ def test_workspace_mode_rejects_repo_only_commands(run_wtk, workspace_factory, r
         assert "not supported in Workspace Mode" in result.output
 
 
+def test_workspace_bootstrap_rejects_non_empty_directory(run_wtk, tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("not empty\n", encoding="utf-8")
+
+    result = run_wtk("workspace", "bootstrap", "../A", cwd=workspace, check=False)
+
+    result.assert_failure()
+    assert "workspace bootstrap requires an empty directory" in result.output
+
+
 def test_workspace_mode_new_requires_clean_manifest_history(run_wtk, workspace_factory, repo_factory) -> None:
     workspace, members = workspace_factory.create()
 
