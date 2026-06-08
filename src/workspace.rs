@@ -14,6 +14,10 @@ use std::os::unix::fs as unix_fs;
 use std::os::windows::fs as windows_fs;
 
 const MANIFEST_FILE: &str = ".wtk-workspace.toml";
+const GITIGNORE_FILE: &str = ".gitignore";
+const AGENTS_FILE: &str = "AGENTS.md";
+const WORKSPACE_GITIGNORE: &str = "refs/\n";
+const WORKSPACE_AGENTS_TEMPLATE: &str = include_str!("templates/workspace/AGENTS.md");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -254,9 +258,12 @@ pub fn bootstrap(session: &mut Session<'_>, repository_paths: &[PathBuf]) -> App
     }
 
     initialize_workspace_files(&repo.main_root, WorkspaceSection { refs })?;
+    write_workspace_bootstrap_files(&repo.main_root)?;
     let ctx = load_workspace_at_root(&session.git, &repo.main_root)?;
     write_workspace_refs(&session.git, &ctx)?;
-    session.git.run(&repo.main_root, ["add", MANIFEST_FILE])?;
+    session
+        .git
+        .run(&repo.main_root, ["add", MANIFEST_FILE, GITIGNORE_FILE, AGENTS_FILE])?;
     session
         .git
         .run(&repo.main_root, ["commit", "-m", "Initialize workspace"])?;
@@ -693,6 +700,12 @@ fn initialize_workspace_files(root: &Path, workspace: WorkspaceSection) -> AppRe
         },
     )?;
     fs::create_dir_all(root.join("refs"))?;
+    Ok(())
+}
+
+fn write_workspace_bootstrap_files(root: &Path) -> AppResult<()> {
+    fs::write(root.join(GITIGNORE_FILE), WORKSPACE_GITIGNORE)?;
+    fs::write(root.join(AGENTS_FILE), WORKSPACE_AGENTS_TEMPLATE)?;
     Ok(())
 }
 

@@ -115,10 +115,19 @@ def test_workspace_bootstrap_creates_manifest_refs_and_initial_commit(run_wtk, t
     )
 
     manifest_text = (workspace / ".wtk-workspace.toml").read_text(encoding="utf-8")
+    gitignore_text = (workspace / ".gitignore").read_text(encoding="utf-8")
+    agents_text = (workspace / "AGENTS.md").read_text(encoding="utf-8")
     assert 'mode = "workspace"' in manifest_text
+    assert gitignore_text == "refs/\n"
+    assert "Workspace Guidance" in agents_text
+    assert "Workspace Manifest" in agents_text
     assert (workspace / "refs" / "A").resolve() == member_a.resolve()
     assert (workspace / "refs" / "B").resolve() == member_b.resolve()
     assert run_git(workspace, "cat-file", "-e", "HEAD:.wtk-workspace.toml").returncode == 0
+    assert run_git(workspace, "cat-file", "-e", "HEAD:.gitignore").returncode == 0
+    assert run_git(workspace, "cat-file", "-e", "HEAD:AGENTS.md").returncode == 0
+    head_files = set(run_git(workspace, "ls-tree", "--name-only", "HEAD").stdout.splitlines())
+    assert {".wtk-workspace.toml", ".gitignore", "AGENTS.md"} <= head_files
 
 
 def test_workspace_bootstrap_rejects_duplicate_ref_names_before_git_init(run_wtk, tmp_path, repo_factory) -> None:
