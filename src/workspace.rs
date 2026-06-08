@@ -247,7 +247,7 @@ pub fn bootstrap(session: &mut Session<'_>, repository_paths: &[PathBuf]) -> App
 
     let refs = bootstrap_refs(&session.git, repository_paths)?;
 
-    session.git.run(&session.cwd, ["init"])?;
+    session.git.run(&session.cwd, ["init", "-b", "main"])?;
     let repo = resolve(&session.git, &session.cwd)?;
     require_main_worktree(&repo, "workspace bootstrap")?;
     let workspace_branch = current_branch(&session.git, &repo.main_root)?;
