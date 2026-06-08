@@ -59,6 +59,7 @@ Run the full test suite:
 
 ```bash
 cargo test
+uv run --project e2e pytest e2e tests/test_release.py
 sh scripts/test-install.sh
 sh scripts/test-install-local.sh
 ```

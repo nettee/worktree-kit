@@ -14,6 +14,22 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Enable corepack
+        run: corepack enable
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -34,6 +50,9 @@ jobs:
           cargo llvm-cov clean --workspace
           WTK_BUILD_TARGET_DIR="$PWD/target/llvm-cov-target" cargo llvm-cov --release --no-report --locked --workspace
           cargo llvm-cov report --release --lcov --output-path lcov.info
+
+      - name: Run Python end-to-end tests
+        run: uv run --project e2e pytest e2e tests/test_release.py
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4

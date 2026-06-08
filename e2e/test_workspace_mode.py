@@ -1,0 +1,133 @@
+from __future__ import annotations
+
+from conftest import linked_worktree_path, parse_yaml, run_git
+
+
+def test_workspace_mode_init_add_status_new_and_remove(run_wtk, workspace_factory, repo_factory) -> None:
+    workspace, members = workspace_factory.create()
+
+    run_wtk("workspace", "init", cwd=workspace)
+    run_wtk("workspace", "add", str(members["A"]), cwd=workspace)
+    run_wtk("workspace", "add", str(members["B"]), cwd=workspace)
+    repo_factory.commit_workspace_manifest(workspace)
+
+    manifest_text = (workspace / ".wtk-workspace.toml").read_text(encoding="utf-8")
+    assert 'mode = "workspace"' in manifest_text
+    assert (workspace / "refs" / "A").resolve() == members["A"].resolve()
+    assert (workspace / "refs" / "B").resolve() == members["B"].resolve()
+
+    status = parse_yaml(run_wtk("status", cwd=workspace).stdout)
+    assert status["mode"] == "workspace"
+    assert status["workspace_branch"] == "main"
+    assert status["current_is_main"] is True
+    assert len(status["refs"]) == 2
+
+    out = run_wtk("new", "feature/ws", "--base", "main", "--no-clipboard", cwd=workspace).output
+    workspace_linked = linked_worktree_path(workspace, "feature/ws")
+    linked_a = linked_worktree_path(members["A"], "feature/ws")
+    linked_b = linked_worktree_path(members["B"], "feature/ws")
+    assert str(workspace_linked) in out
+    assert workspace_linked.exists()
+    assert linked_a.exists()
+    assert linked_b.exists()
+
+    linked_status = parse_yaml(run_wtk("status", cwd=workspace_linked).stdout)
+    assert linked_status["workspace_branch"] == "feature/ws"
+    assert linked_status["current_is_main"] is False
+    assert (workspace_linked / "refs" / "A").resolve() == linked_a.resolve()
+    assert (workspace_linked / "refs" / "B").resolve() == linked_b.resolve()
+
+    run_wtk("remove", "feature/ws", "--delete-branch", "--no-clipboard", cwd=workspace)
+    assert not workspace_linked.exists()
+    assert not linked_a.exists()
+    assert not linked_b.exists()
+    assert "feature/ws" not in run_git(workspace, "branch", "--list", "feature/ws").stdout
+    assert "feature/ws" not in run_git(members["A"], "branch", "--list", "feature/ws").stdout
+    assert "feature/ws" not in run_git(members["B"], "branch", "--list", "feature/ws").stdout
+
+
+def test_workspace_mode_status_and_membership_failures(run_wtk, workspace_factory, repo_factory) -> None:
+    workspace, members = workspace_factory.create(member_names=("A", "B"))
+
+    run_wtk("workspace", "init", cwd=workspace)
+    run_wtk("workspace", "add", str(members["A"]), cwd=workspace)
+    repo_factory.commit_workspace_manifest(workspace)
+    run_wtk("new", "feature/ws", "--base", "main", "--no-clipboard", cwd=workspace)
+
+    workspace_linked = linked_worktree_path(workspace, "feature/ws")
+    (workspace_linked / "refs" / "A").unlink()
+
+    missing = run_wtk("status", cwd=workspace_linked, check=False)
+    missing.assert_failure()
+    assert "failed to read Workspace Ref" in missing.output
+
+    not_main = run_wtk("workspace", "add", str(members["B"]), cwd=workspace_linked, check=False)
+    not_main.assert_failure()
+    assert "workspace add must be run from the Workspace main worktree" in not_main.output
+
+
+def test_workspace_mode_rejects_repo_only_commands(run_wtk, workspace_factory, repo_factory) -> None:
+    workspace, members = workspace_factory.create(member_names=("A",))
+
+    run_wtk("workspace", "init", cwd=workspace)
+    run_wtk("workspace", "add", str(members["A"]), cwd=workspace)
+    repo_factory.commit_workspace_manifest(workspace)
+
+    for args in [
+        ("checkout", "main", "--no-clipboard"),
+        ("send-out", "--no-clipboard"),
+        ("bring-in", "main", "--no-clipboard"),
+    ]:
+        result = run_wtk(*args, cwd=workspace, check=False)
+        result.assert_failure()
+        assert "not supported in Workspace Mode" in result.output
+
+
+def test_workspace_mode_new_requires_clean_manifest_history(run_wtk, workspace_factory, repo_factory) -> None:
+    workspace, members = workspace_factory.create()
+
+    run_wtk("workspace", "init", cwd=workspace)
+    run_wtk("workspace", "add", str(members["A"]), cwd=workspace)
+    repo_factory.commit_workspace_manifest(workspace)
+    run_wtk("workspace", "add", str(members["B"]), cwd=workspace)
+
+    dirty = run_wtk("new", "feature/ws-dirty", "--base", "main", "--no-clipboard", cwd=workspace, check=False)
+    dirty.assert_failure()
+    assert "requires committed .wtk-workspace.toml changes" in dirty.output
+
+    run_git(workspace, "add", ".wtk-workspace.toml")
+    staged = run_wtk("new", "feature/ws-staged", "--base", "main", "--no-clipboard", cwd=workspace, check=False)
+    staged.assert_failure()
+    assert "requires committed .wtk-workspace.toml changes" in staged.output
+
+
+def test_workspace_mode_new_rolls_back_when_real_pnpm_install_fails(run_wtk, workspace_factory, repo_factory) -> None:
+    workspace, members = workspace_factory.create()
+
+    run_wtk("workspace", "init", cwd=workspace)
+    run_wtk("workspace", "add", str(members["A"]), cwd=workspace)
+    run_wtk("workspace", "add", str(members["B"]), cwd=workspace)
+    repo_factory.commit_workspace_manifest(workspace)
+
+    repo_factory.commit_files(members["A"], {".gitignore": ".env\n"}, "ignore env")
+    repo_factory.commit_files(members["B"], {".gitignore": ".env\n"}, "ignore env")
+    (members["A"] / ".env").write_text("A=value\n", encoding="utf-8")
+    (members["B"] / ".env").write_text("B=value\n", encoding="utf-8")
+    repo_factory.add_real_pnpm_project(members["A"], marker_name=".pnpm-ok.txt")
+    repo_factory.add_real_pnpm_project(members["B"], fail_postinstall=True, marker_name=".pnpm-fail.txt")
+
+    result = run_wtk("new", "feature/ws-fail", "--base", "main", "--no-clipboard", cwd=workspace, check=False)
+    result.assert_failure()
+    assert "pnpm install failed" in result.output
+
+    workspace_linked = linked_worktree_path(workspace, "feature/ws-fail")
+    linked_a = linked_worktree_path(members["A"], "feature/ws-fail")
+    linked_b = linked_worktree_path(members["B"], "feature/ws-fail")
+    assert not workspace_linked.exists()
+    assert not linked_a.exists()
+    assert not linked_b.exists()
+    assert (workspace / "refs" / "A").resolve() == members["A"].resolve()
+    assert (workspace / "refs" / "B").resolve() == members["B"].resolve()
+    assert "feature/ws-fail" not in run_git(workspace, "branch", "--list", "feature/ws-fail").stdout
+    assert "feature/ws-fail" not in run_git(members["A"], "branch", "--list", "feature/ws-fail").stdout
+    assert "feature/ws-fail" not in run_git(members["B"], "branch", "--list", "feature/ws-fail").stdout
