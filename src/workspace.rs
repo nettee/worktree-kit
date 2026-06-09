@@ -399,6 +399,12 @@ fn workspace_ref_detail(
     let mut diagnostics = Vec::new();
     let (repo, expected_target) =
         match require_absolute(&config.repository, "repository path").and_then(|repository| {
+            let basename = repository_basename(&repository)?;
+            if basename != *name {
+                return Err(Error::message(format!(
+                    "workspace ref {name} must match repository basename {basename}"
+                )));
+            }
             let repo = resolve(git, &repository)?;
             Ok((repository, repo))
         }) {
