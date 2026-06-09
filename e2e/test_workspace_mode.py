@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from conftest import linked_worktree_path, parse_yaml, run_git
 
 
@@ -64,6 +66,128 @@ def test_workspace_mode_status_and_membership_failures(run_wtk, workspace_factor
     not_main = run_wtk("workspace", "add", str(members["B"]), cwd=workspace_linked, check=False)
     not_main.assert_failure()
     assert "workspace add must be run from the Workspace main worktree" in not_main.output
+
+
+def test_workspace_mode_list_shows_workspace_rows_and_ref_health(run_wtk, workspace_factory, repo_factory) -> None:
+    workspace, members = workspace_factory.create(member_names=("A", "B"))
+
+    run_wtk("workspace", "init", cwd=workspace)
+    run_wtk("workspace", "add", str(members["A"]), cwd=workspace)
+    run_wtk("workspace", "add", str(members["B"]), cwd=workspace)
+    repo_factory.commit_workspace_manifest(workspace)
+    run_wtk("new", "feature/list", "--base", "main", "--no-clipboard", cwd=workspace)
+    workspace_linked = linked_worktree_path(workspace, "feature/list")
+
+    listing = run_wtk("list", cwd=workspace).stdout
+    assert "worktree" in listing.splitlines()[0]
+    assert "workspace" in listing
+    assert "workspace-wt-feature-list" in listing
+    assert "refs 2/2 ok" in listing
+    assert str(workspace.resolve()) not in listing
+    assert str(workspace_linked.resolve()) not in listing
+
+    (workspace_linked / "refs" / "A").unlink()
+    broken = run_wtk("list", cwd=workspace).stdout
+    assert "workspace-wt-feature-list" in broken
+    assert "refs 1/2 broken" in broken
+
+    machine = json.loads(run_wtk("list", "--json", cwd=workspace).stdout)
+    assert machine["mode"] == "workspace"
+    assert all(not row["dirty"] for row in machine["worktrees"])
+    linked_row = next(row for row in machine["worktrees"] if row["display_name"] == "workspace-wt-feature-list")
+    assert linked_row["workspace_refs"]["total"] == 2
+    assert linked_row["workspace_refs"]["broken"] == 1
+    assert any(not detail["ok"] and detail["name"] == "A" for detail in linked_row["workspace_refs"]["details"])
+
+
+def test_workspace_mode_list_marks_branch_mismatched_ref_targets_broken(
+    run_wtk, workspace_factory, repo_factory
+) -> None:
+    workspace, members = workspace_factory.create(member_names=("A",))
+
+    run_wtk("workspace", "init", cwd=workspace)
+    run_wtk("workspace", "add", str(members["A"]), cwd=workspace)
+    repo_factory.commit_workspace_manifest(workspace)
+    run_wtk("new", "feature/list", "--base", "main", "--no-clipboard", cwd=workspace)
+
+    linked_a = linked_worktree_path(members["A"], "feature/list")
+    run_git(linked_a, "checkout", "-b", "other")
+
+    machine = json.loads(run_wtk("list", "--json", cwd=workspace).stdout)
+    linked_row = next(row for row in machine["worktrees"] if row["display_name"] == "workspace-wt-feature-list")
+    detail = next(detail for detail in linked_row["workspace_refs"]["details"] if detail["name"] == "A")
+
+    assert linked_row["workspace_refs"]["broken"] == 1
+    assert detail["ok"] is False
+    assert any("branch mismatch" in diagnostic for diagnostic in detail["diagnostics"])
+
+
+def test_workspace_mode_list_marks_invalid_manifest_repository_paths_broken(
+    run_wtk, workspace_factory, repo_factory
+) -> None:
+    workspace, members = workspace_factory.create(member_names=("A", "B"))
+
+    run_wtk("workspace", "init", cwd=workspace)
+    run_wtk("workspace", "add", str(members["A"]), cwd=workspace)
+    run_wtk("workspace", "add", str(members["B"]), cwd=workspace)
+    repo_factory.commit_workspace_manifest(workspace)
+    run_wtk("new", "feature/list", "--base", "main", "--no-clipboard", cwd=workspace)
+
+    manifest_path = workspace / ".wtk-workspace.toml"
+    manifest_text = manifest_path.read_text(encoding="utf-8")
+    manifest_text = manifest_text.replace(
+        f'repository = "{members["A"]}"',
+        'repository = "../A"',
+    )
+    manifest_text = manifest_text.replace(
+        f'repository = "{members["B"]}"',
+        f'repository = "{linked_worktree_path(members["B"], "feature/list")}"',
+    )
+    manifest_path.write_text(manifest_text, encoding="utf-8")
+
+    machine = json.loads(run_wtk("list", "--json", cwd=workspace).stdout)
+    linked_row = next(row for row in machine["worktrees"] if row["display_name"] == "workspace-wt-feature-list")
+    detail_a = next(detail for detail in linked_row["workspace_refs"]["details"] if detail["name"] == "A")
+    detail_b = next(detail for detail in linked_row["workspace_refs"]["details"] if detail["name"] == "B")
+
+    assert linked_row["workspace_refs"]["broken"] == 2
+    assert detail_a["ok"] is False
+    assert any("repository path must be absolute" in diagnostic for diagnostic in detail_a["diagnostics"])
+    assert detail_b["ok"] is False
+    assert any(
+        "configured repository does not resolve to its main worktree" in diagnostic
+        or "must match repository basename" in diagnostic
+        for diagnostic in detail_b["diagnostics"]
+    )
+
+
+def test_workspace_mode_list_marks_mismatched_ref_names_broken(
+    run_wtk, workspace_factory, repo_factory
+) -> None:
+    workspace, members = workspace_factory.create(member_names=("A",))
+
+    run_wtk("workspace", "init", cwd=workspace)
+    run_wtk("workspace", "add", str(members["A"]), cwd=workspace)
+    repo_factory.commit_workspace_manifest(workspace)
+    run_wtk("new", "feature/list", "--base", "main", "--no-clipboard", cwd=workspace)
+
+    manifest_path = workspace / ".wtk-workspace.toml"
+    manifest_text = manifest_path.read_text(encoding="utf-8")
+    manifest_text = manifest_text.replace('[workspace.refs.A]', '[workspace.refs.renamed]')
+    manifest_path.write_text(manifest_text, encoding="utf-8")
+
+    machine = json.loads(run_wtk("list", "--json", cwd=workspace).stdout)
+    linked_row = next(row for row in machine["worktrees"] if row["display_name"] == "workspace-wt-feature-list")
+    detail = next(
+        detail for detail in linked_row["workspace_refs"]["details"] if detail["name"] == "renamed"
+    )
+
+    assert linked_row["workspace_refs"]["broken"] == 1
+    assert detail["ok"] is False
+    assert any(
+        "workspace ref renamed must match repository basename A" in diagnostic
+        for diagnostic in detail["diagnostics"]
+    )
 
 
 def test_workspace_mode_rejects_repo_only_commands(run_wtk, workspace_factory, repo_factory) -> None:

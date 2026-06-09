@@ -5,7 +5,7 @@
 - `wtk new` creates a new branch in a linked worktree.
 - `wtk checkout` checks out an existing branch or ref in a linked worktree.
 - `wtk status` prints current repository/worktree status in YAML format.
-- `wtk list` prints visible worktrees in YAML format.
+- `wtk list` prints visible worktrees in a compact table.
 - `wtk remove` removes a linked worktree.
 - `wtk send-out` moves the current main-worktree branch to a linked worktree.
 - `wtk bring-in` moves a linked worktree branch back into the main worktree.
@@ -72,12 +72,17 @@ wtk new feature/from-current --from-current
 wtk checkout feature/existing
 wtk status
 wtk list
+wtk list --json
 wtk remove ../repo-wt-feature-foo
 wtk send-out
 wtk bring-in feature/foo
 wtk workspace bootstrap /absolute/path/to/A /absolute/path/to/B
 wtk upgrade
 ```
+
+`wtk list` is optimized for scanning. The default output is a compact table with the worktree directory name, branch, relative HEAD commit time, state labels, and short HEAD. It does not print absolute paths by default. Rows are sorted by the current HEAD commit's committer time, newest first; dirty state is shown as a label but does not affect sorting.
+
+Use `wtk list --json` for machine-readable output. JSON includes absolute paths, full HEADs, timestamps, labels, diagnostics, and Workspace Ref details.
 
 ## Workspace Mode
 
@@ -108,7 +113,7 @@ mode = "workspace"
 repository = "/absolute/path/to/A"
 ```
 
-In Workspace Mode, `wtk status` emits aggregate Workspace status for the current Workspace Worktree and validates generated refs without repairing them. `wtk new` creates a coordinated Workspace Worktree plus matching Linked Repository Worktrees for the same branch. `wtk remove` removes the coordinated set. Workspace operations fail fast on malformed manifest state, relative paths, missing or incorrect refs, branch mismatches, dirty worktrees, branch collisions, or target path collisions.
+In Workspace Mode, `wtk status` emits aggregate Workspace status for the current Workspace Worktree and validates generated refs without repairing them. `wtk list` shows one row per Workspace Worktree and summarizes generated Workspace Ref health, such as `refs 2/2 ok` or `refs 1/2 broken`. `wtk new` creates a coordinated Workspace Worktree plus matching Linked Repository Worktrees for the same branch. `wtk remove` removes the coordinated set. Workspace operations fail fast on malformed manifest state, relative paths, missing or incorrect refs, branch mismatches, dirty worktrees, branch collisions, or target path collisions.
 
 `wtk workspace bootstrap` must be run from the empty directory that will become the Workspace root. `wtk workspace init` and `wtk workspace add` must be run from the Workspace main worktree. `wtk checkout`, `wtk send-out`, and `wtk bring-in` are repository-mode-only commands and are rejected in Workspace Mode.
 

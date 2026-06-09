@@ -1,5 +1,6 @@
 use crate::clipboard::ClipboardProvider;
 use crate::gitexec::{Git, RepoContext, absolute_path, is_git_exit, resolve, same_path};
+use crate::list::{self, ListOptions};
 use crate::output;
 use crate::paths::default_path;
 use crate::{AppResult, Error};
@@ -38,6 +39,7 @@ pub struct Session<'a> {
     pub out: &'a mut dyn Write,
     pub clipboard: &'a mut dyn ClipboardProvider,
     pub git: Git,
+    pub style_enabled: bool,
 }
 
 impl<'a> Session<'a> {
@@ -45,12 +47,14 @@ impl<'a> Session<'a> {
         cwd: PathBuf,
         out: &'a mut dyn Write,
         clipboard: &'a mut dyn ClipboardProvider,
+        style_enabled: bool,
     ) -> Session<'a> {
         Session {
             cwd,
             out,
             clipboard,
             git: Git,
+            style_enabled,
         }
     }
 }
@@ -62,21 +66,6 @@ struct StatusOutput {
     main_root: PathBuf,
     git_common_dir: PathBuf,
     current_is_main: bool,
-}
-
-#[derive(Serialize)]
-struct ListOutput {
-    worktrees: Vec<ListWorktree>,
-}
-
-#[derive(Serialize)]
-struct ListWorktree {
-    path: PathBuf,
-    branch: String,
-    bare: bool,
-    head: String,
-    is_main: bool,
-    is_current: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -194,27 +183,15 @@ pub fn status(session: &mut Session<'_>) -> AppResult<()> {
     Ok(())
 }
 
-pub fn list(session: &mut Session<'_>) -> AppResult<()> {
+pub fn list(session: &mut Session<'_>, options: ListOptions) -> AppResult<()> {
     let repo = repo(session)?;
-    let payload = ListOutput {
-        worktrees: repo
-            .worktrees
-            .iter()
-            .map(|worktree| ListWorktree {
-                path: worktree.path.clone(),
-                branch: worktree.branch.clone(),
-                bare: worktree.bare,
-                head: worktree.head.clone(),
-                is_main: same_path(&worktree.path, &repo.main_root),
-                is_current: same_path(&worktree.path, &repo.current_root),
-            })
-            .collect(),
-    };
-
-    serde_yaml::to_writer(&mut *session.out, &payload)
-        .map_err(|error| Error::message(format!("failed to serialize list as YAML: {error}")))?;
-    writeln!(session.out)?;
-    Ok(())
+    let payload = list::repository_output(&session.git, &repo);
+    list::render(
+        session.out,
+        &payload,
+        options,
+        output::Style::new(session.style_enabled && !options.json),
+    )
 }
 
 pub fn init_worktree(
@@ -1454,7 +1431,7 @@ mod tests {
     fn finish_reports_clipboard_partial_failure() {
         let mut out = io::sink();
         let mut clipboard = FailingClipboard;
-        let mut session = super::Session::new(PathBuf::from("."), &mut out, &mut clipboard);
+        let mut session = super::Session::new(PathBuf::from("."), &mut out, &mut clipboard, false);
         let error = finish(
             &mut session,
             false,

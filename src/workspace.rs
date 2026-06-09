@@ -1,4 +1,5 @@
 use crate::gitexec::{Git, RepoContext, Worktree, is_git_exit, resolve, same_path};
+use crate::list::{self, ListOptions, ListOutput, WorkspaceRefDetail, WorkspaceRefSummary};
 use crate::output;
 use crate::paths::default_path;
 use crate::worktree::{self, Options, Session};
@@ -261,9 +262,10 @@ pub fn bootstrap(session: &mut Session<'_>, repository_paths: &[PathBuf]) -> App
     write_workspace_bootstrap_files(&repo.main_root)?;
     let ctx = load_workspace_at_root(&session.git, &repo.main_root)?;
     write_workspace_refs(&session.git, &ctx)?;
-    session
-        .git
-        .run(&repo.main_root, ["add", MANIFEST_FILE, GITIGNORE_FILE, AGENTS_FILE])?;
+    session.git.run(
+        &repo.main_root,
+        ["add", MANIFEST_FILE, GITIGNORE_FILE, AGENTS_FILE],
+    )?;
     session
         .git
         .run(&repo.main_root, ["commit", "-m", "Initialize workspace"])?;
@@ -314,6 +316,155 @@ pub fn status(session: &mut Session<'_>) -> AppResult<()> {
         .map_err(|error| Error::message(format!("failed to serialize status as YAML: {error}")))?;
     writeln!(session.out)?;
     Ok(())
+}
+
+pub fn list(session: &mut Session<'_>, options: ListOptions) -> AppResult<()> {
+    let ctx = load_workspace(&session.git, &session.cwd)?;
+    let payload = workspace_list_output(&session.git, &ctx)?;
+    list::render(
+        session.out,
+        &payload,
+        options,
+        output::Style::new(session.style_enabled && !options.json),
+    )
+}
+
+fn workspace_list_output(git: &Git, ctx: &WorkspaceContext) -> AppResult<ListOutput> {
+    let workspace_main_branch = current_branch(git, &ctx.repo.main_root)?;
+    let mut rows = ctx
+        .repo
+        .worktrees
+        .iter()
+        .map(|worktree| {
+            let mut row = list::repository_row_ignoring_workspace_refs(git, &ctx.repo, worktree);
+            row.kind = "workspace_worktree";
+            row.workspace_refs = Some(workspace_ref_summary(
+                git,
+                ctx,
+                &worktree.path,
+                &worktree.branch,
+                &workspace_main_branch,
+            ));
+            row
+        })
+        .collect::<Vec<_>>();
+    rows = list::sorted_rows(rows);
+    Ok(ListOutput {
+        mode: "workspace",
+        worktrees: rows,
+    })
+}
+
+fn workspace_ref_summary(
+    git: &Git,
+    ctx: &WorkspaceContext,
+    workspace_worktree: &Path,
+    workspace_branch: &str,
+    workspace_main_branch: &str,
+) -> WorkspaceRefSummary {
+    let details = ctx
+        .config
+        .workspace
+        .refs
+        .iter()
+        .map(|(name, config)| {
+            workspace_ref_detail(
+                git,
+                name,
+                config,
+                workspace_worktree,
+                workspace_branch,
+                workspace_main_branch,
+            )
+        })
+        .collect::<Vec<_>>();
+    let ok = details.iter().filter(|detail| detail.ok).count();
+    let total = details.len();
+    WorkspaceRefSummary {
+        total,
+        ok,
+        broken: total.saturating_sub(ok),
+        details,
+    }
+}
+
+fn workspace_ref_detail(
+    git: &Git,
+    name: &str,
+    config: &WorkspaceRefConfig,
+    workspace_worktree: &Path,
+    workspace_branch: &str,
+    workspace_main_branch: &str,
+) -> WorkspaceRefDetail {
+    let mut diagnostics = Vec::new();
+    let (repo, expected_target) =
+        match require_absolute(&config.repository, "repository path").and_then(|repository| {
+            let basename = repository_basename(&repository)?;
+            if basename != *name {
+                return Err(Error::message(format!(
+                    "workspace ref {name} must match repository basename {basename}"
+                )));
+            }
+            let repo = resolve(git, &repository)?;
+            Ok((repository, repo))
+        }) {
+            Ok((repository, repo)) => {
+                if !same_path(&repo.main_root, &repository) {
+                    diagnostics.push(format!(
+                        "configured repository does not resolve to its main worktree: {}",
+                        repository.display()
+                    ));
+                }
+                let expected_target =
+                    expected_target_for_branch(&repo, workspace_branch, workspace_main_branch);
+                (Some(repo), expected_target)
+            }
+            Err(error) => {
+                diagnostics.push(error.to_string());
+                (None, config.repository.clone())
+            }
+        };
+    let ref_path = workspace_worktree.join("refs").join(name);
+    let current_target = match read_ref(&ref_path) {
+        Ok(target) => Some(target),
+        Err(error) => {
+            diagnostics.push(format!("failed to read Workspace Ref {name}: {error}"));
+            None
+        }
+    };
+
+    if let Some(repo) = &repo {
+        match repo.worktree_by_path(&expected_target) {
+            None => diagnostics.push(format!(
+                "expected Repository Worktree is missing: {}",
+                expected_target.display()
+            )),
+            Some(expected_worktree) if expected_worktree.branch != workspace_branch => {
+                diagnostics.push(format!(
+                    "expected Repository Worktree branch mismatch: expected {workspace_branch}, found {}",
+                    expected_worktree.branch
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+    if let Some(current_target) = &current_target {
+        if !same_path(current_target, &expected_target) {
+            diagnostics.push(format!(
+                "Workspace Ref points to {}, expected {}",
+                current_target.display(),
+                expected_target.display()
+            ));
+        }
+    }
+
+    WorkspaceRefDetail {
+        name: name.to_string(),
+        ok: diagnostics.is_empty(),
+        expected_target,
+        current_target,
+        diagnostics,
+    }
 }
 
 pub fn new(session: &mut Session<'_>, opts: Options) -> AppResult<()> {

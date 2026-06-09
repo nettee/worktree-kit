@@ -1,6 +1,7 @@
 pub mod cli;
 pub mod clipboard;
 pub mod gitexec;
+pub mod list;
 pub mod output;
 pub mod paths;
 pub mod upgrade;
