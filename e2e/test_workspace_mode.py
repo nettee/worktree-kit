@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from conftest import linked_worktree_path, parse_yaml, run_git
 
 
@@ -64,6 +66,37 @@ def test_workspace_mode_status_and_membership_failures(run_wtk, workspace_factor
     not_main = run_wtk("workspace", "add", str(members["B"]), cwd=workspace_linked, check=False)
     not_main.assert_failure()
     assert "workspace add must be run from the Workspace main worktree" in not_main.output
+
+
+def test_workspace_mode_list_shows_workspace_rows_and_ref_health(run_wtk, workspace_factory, repo_factory) -> None:
+    workspace, members = workspace_factory.create(member_names=("A", "B"))
+
+    run_wtk("workspace", "init", cwd=workspace)
+    run_wtk("workspace", "add", str(members["A"]), cwd=workspace)
+    run_wtk("workspace", "add", str(members["B"]), cwd=workspace)
+    repo_factory.commit_workspace_manifest(workspace)
+    run_wtk("new", "feature/list", "--base", "main", "--no-clipboard", cwd=workspace)
+    workspace_linked = linked_worktree_path(workspace, "feature/list")
+
+    listing = run_wtk("list", cwd=workspace).stdout
+    assert "worktree" in listing.splitlines()[0]
+    assert "workspace" in listing
+    assert "workspace-wt-feature-list" in listing
+    assert "refs 2/2 ok" in listing
+    assert str(workspace.resolve()) not in listing
+    assert str(workspace_linked.resolve()) not in listing
+
+    (workspace_linked / "refs" / "A").unlink()
+    broken = run_wtk("list", cwd=workspace).stdout
+    assert "workspace-wt-feature-list" in broken
+    assert "refs 1/2 broken" in broken
+
+    machine = json.loads(run_wtk("list", "--json", cwd=workspace).stdout)
+    assert machine["mode"] == "workspace"
+    linked_row = next(row for row in machine["worktrees"] if row["display_name"] == "workspace-wt-feature-list")
+    assert linked_row["workspace_refs"]["total"] == 2
+    assert linked_row["workspace_refs"]["broken"] == 1
+    assert any(not detail["ok"] and detail["name"] == "A" for detail in linked_row["workspace_refs"]["details"])
 
 
 def test_workspace_mode_rejects_repo_only_commands(run_wtk, workspace_factory, repo_factory) -> None:

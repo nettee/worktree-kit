@@ -1,12 +1,13 @@
 use crate::VERSION;
 use crate::clipboard::{DisabledClipboard, SystemClipboard};
 use crate::gitexec::Git;
+use crate::list::ListOptions;
 use crate::upgrade;
 use crate::workspace::{self, Mode};
 use crate::worktree::{self, Options, Session};
 use crate::{AppResult, Error};
 use std::ffi::OsString;
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 const TOP_LEVEL_COMMANDS: &[&str] = &[
@@ -30,7 +31,7 @@ enum Parsed {
     Create(Options),
     Checkout(Options),
     Status,
-    List,
+    List(ListOptions),
     InitWorktree {
         source_root: String,
         worktree_path: String,
@@ -150,7 +151,17 @@ where
                 },
             )
         }
-        Parsed::List => execute_worktree(stdout, stderr, true, worktree::list),
+        Parsed::List(options) => {
+            execute_worktree(
+                stdout,
+                stderr,
+                true,
+                |session| match workspace::resolve_mode(&session.git, &session.cwd)? {
+                    Mode::Repository => worktree::list(session, options),
+                    Mode::Workspace => workspace::list(session, options),
+                },
+            )
+        }
         Parsed::InitWorktree {
             source_root,
             worktree_path,
@@ -237,11 +248,11 @@ where
 
     let result = if no_clipboard {
         let mut clipboard = DisabledClipboard;
-        let mut session = Session::new(cwd, stdout, &mut clipboard);
+        let mut session = Session::new(cwd, stdout, &mut clipboard, style_enabled());
         callback(&mut session)
     } else {
         let mut clipboard = SystemClipboard;
-        let mut session = Session::new(cwd, stdout, &mut clipboard);
+        let mut session = Session::new(cwd, stdout, &mut clipboard, style_enabled());
         callback(&mut session)
     };
 
@@ -252,6 +263,11 @@ where
             Err(1)
         }
     }
+}
+
+fn style_enabled() -> bool {
+    std::io::stdout().is_terminal()
+        && std::env::var_os("NO_COLOR").is_none_or(|value| value.is_empty())
 }
 
 fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
@@ -610,19 +626,25 @@ fn parse_status(args: &[String]) -> Result<Parsed, UsageError> {
 
 fn parse_list(args: &[String]) -> Result<Parsed, UsageError> {
     let usage = command_help("list");
-    if args.len() == 1 {
-        return Ok(Parsed::List);
+    let mut options = ListOptions::default();
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--json" => options.json = true,
+            "--help" | "-h" => return Ok(Parsed::HelpText(usage)),
+            flag if flag.starts_with('-') => {
+                return Err(UsageError::new(format!("unknown flag: {flag}"), usage));
+            }
+            value => {
+                return Err(UsageError::new(
+                    format!("unexpected argument: {value}"),
+                    usage,
+                ));
+            }
+        }
+        i += 1;
     }
-    if args.len() == 2 && matches!(args[1].as_str(), "--help" | "-h") {
-        return Ok(Parsed::HelpText(usage));
-    }
-    if args[1].starts_with('-') {
-        return Err(UsageError::new(format!("unknown flag: {}", args[1]), usage));
-    }
-    Err(UsageError::new(
-        format!("unexpected argument: {}", args[1]),
-        usage,
-    ))
+    Ok(Parsed::List(options))
 }
 
 fn parse_completion(args: &[String]) -> Result<Parsed, UsageError> {
@@ -676,7 +698,7 @@ fn root_help() -> &'static str {
         "  create      Alias for `new`\n",
         "  checkout    Check out an existing branch or ref in a linked worktree\n",
         "  status      Print current repository/worktree status as YAML\n",
-        "  list        List visible worktrees as YAML\n",
+        "  list        List visible worktrees in a compact table\n",
         "  remove      Remove a linked worktree\n",
         "  send-out    Move the current main-worktree branch to a linked worktree\n",
         "  bring-in    Move a linked worktree branch back into the main worktree\n",
@@ -719,7 +741,12 @@ fn command_help(command: &str) -> &'static str {
             "Flags:\n",
             "  -h, --help\n",
         ),
-        "list" => concat!("Usage: wtk list [flags]\n\n", "Flags:\n", "  -h, --help\n",),
+        "list" => concat!(
+            "Usage: wtk list [flags]\n\n",
+            "Flags:\n",
+            "      --json\n",
+            "  -h, --help\n",
+        ),
         "init-worktree" => concat!(
             "Usage: wtk init-worktree <source-root> <worktree-path> [flags]\n\n",
             "Advanced command:\n",
@@ -943,7 +970,14 @@ mod tests {
     #[test]
     fn parses_list_subcommand() {
         let parsed = parse_args(&["wtk".to_string(), "list".to_string()]).unwrap();
-        assert!(matches!(parsed, Parsed::List));
+        assert!(matches!(parsed, Parsed::List(options) if !options.json));
+    }
+
+    #[test]
+    fn parses_list_json_flag() {
+        let parsed =
+            parse_args(&["wtk".to_string(), "list".to_string(), "--json".to_string()]).unwrap();
+        assert!(matches!(parsed, Parsed::List(options) if options.json));
     }
 
     #[test]

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import time
 
 from conftest import linked_worktree_path, parse_yaml, run_git
@@ -36,27 +38,84 @@ def test_repo_mode_create_remove_send_out_bring_in_and_completion(run_wtk, repo_
         assert "wtk" in run_wtk("completion", shell, cwd=repo).stdout
 
 
-def test_repo_mode_status_and_list_yaml(run_wtk, repo_factory) -> None:
+def test_repo_mode_status_and_list_readable(run_wtk, repo_factory) -> None:
     repo = repo_factory.init_repo("repo")
     run_git(repo, "branch", "feature/status")
     run_wtk("checkout", "feature/status", "--no-clipboard", cwd=repo)
     linked = linked_worktree_path(repo, "feature/status")
+    (linked / "dirty.txt").write_text("dirty\n", encoding="utf-8")
 
     status = parse_yaml(run_wtk("status", cwd=linked).stdout)
     assert status["current_is_main"] is False
     assert status["main_root"] == str(repo.resolve())
     assert status["current_root"] == str(linked.resolve())
 
-    listing = parse_yaml(run_wtk("list", cwd=linked).stdout)
+    listing = run_wtk("list", cwd=linked).stdout
+    lines = [line for line in listing.splitlines() if line.strip()]
+    assert lines[0].split() == ["worktree", "branch", "updated", "state", "head"]
+    assert "worktrees:" not in listing
+    assert str(repo.resolve()) not in listing
+    assert str(linked.resolve()) not in listing
+    assert any(line.startswith("  repo ") and " main " in line for line in lines[1:])
+    assert any(
+        line.startswith("* repo-wt-feature-status ")
+        and " feature/status " in line
+        and " current" in line
+        and " dirty" in line
+        for line in lines[1:]
+    )
+
+
+def test_repo_mode_list_json(run_wtk, repo_factory) -> None:
+    repo = repo_factory.init_repo("repo")
+    run_git(repo, "branch", "feature/json")
+    run_wtk("checkout", "feature/json", "--no-clipboard", cwd=repo)
+    linked = linked_worktree_path(repo, "feature/json")
+
+    output = run_wtk("list", "--json", cwd=linked).stdout
+    assert "\x1b[" not in output
+    listing = json.loads(output)
+    assert listing["mode"] == "repository"
     worktrees = listing["worktrees"]
     assert len(worktrees) == 2
-    assert any(entry["path"] == str(repo.resolve()) and entry["is_main"] is True for entry in worktrees)
+    assert any(
+        entry["path"] == str(repo.resolve())
+        and entry["display_name"] == "repo"
+        and entry["is_main"] is True
+        and len(entry["head"]) == 40
+        for entry in worktrees
+    )
     assert any(
         entry["path"] == str(linked.resolve())
-        and entry["branch"] == "feature/status"
+        and entry["display_name"] == "repo-wt-feature-json"
+        and entry["branch"] == "feature/json"
         and entry["is_current"] is True
         for entry in worktrees
     )
+
+
+def test_repo_mode_list_sorts_by_head_commit_time(run_wtk, repo_factory) -> None:
+    repo = repo_factory.init_repo("repo")
+    run_git(repo, "branch", "feature/newer")
+    run_wtk("checkout", "feature/newer", "--no-clipboard", cwd=repo)
+    linked = linked_worktree_path(repo, "feature/newer")
+    (linked / "newer.txt").write_text("newer\n", encoding="utf-8")
+    run_git(linked, "add", ".")
+    run_git(
+        linked,
+        "commit",
+        "-m",
+        "newer",
+        env={
+            "GIT_AUTHOR_DATE": "2030-01-01T00:00:00Z",
+            "GIT_COMMITTER_DATE": "2030-01-01T00:00:00Z",
+        },
+    )
+
+    listing = run_wtk("list", cwd=repo).stdout
+    rows = [line for line in listing.splitlines()[1:] if line.strip()]
+    assert rows[0].startswith("  repo-wt-feature-newer ")
+    assert rows[1].startswith("* repo ")
 
 
 def test_repo_mode_new_with_explicit_base_from_current_and_dirty_failures(run_wtk, repo_factory) -> None:

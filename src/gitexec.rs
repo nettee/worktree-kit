@@ -8,7 +8,10 @@ pub struct Worktree {
     pub path: PathBuf,
     pub branch: String,
     pub bare: bool,
+    pub detached: bool,
     pub head: String,
+    pub locked: Option<String>,
+    pub prunable: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -202,7 +205,10 @@ pub fn parse_worktree_list(input: &str) -> Vec<Worktree> {
             let mut path = None;
             let mut branch = String::new();
             let mut bare = false;
+            let mut detached = false;
             let mut head = String::new();
+            let mut locked = None;
+            let mut prunable = None;
 
             for line in block.lines() {
                 if let Some(value) = line.strip_prefix("worktree ") {
@@ -213,6 +219,12 @@ pub fn parse_worktree_list(input: &str) -> Vec<Worktree> {
                     head = value.to_string();
                 } else if line == "bare" {
                     bare = true;
+                } else if line == "detached" {
+                    detached = true;
+                } else if let Some(value) = line.strip_prefix("locked") {
+                    locked = Some(value.trim_start().to_string());
+                } else if let Some(value) = line.strip_prefix("prunable") {
+                    prunable = Some(value.trim_start().to_string());
                 }
             }
 
@@ -220,7 +232,10 @@ pub fn parse_worktree_list(input: &str) -> Vec<Worktree> {
                 path,
                 branch,
                 bare,
+                detached,
                 head,
+                locked,
+                prunable,
             })
         })
         .collect()
@@ -268,5 +283,15 @@ mod tests {
         assert_eq!(worktrees[1].path, Path::new("/tmp/repo-wt-feature"));
         assert_eq!(worktrees[1].branch, "feature/foo");
         assert_eq!(worktrees[1].head, "def");
+    }
+
+    #[test]
+    fn parses_worktree_diagnostics() {
+        let input = "worktree /tmp/repo-wt-detached\nHEAD def\ndetached\nlocked because\nprunable missing\n";
+        let worktrees = parse_worktree_list(input);
+        assert_eq!(worktrees.len(), 1);
+        assert!(worktrees[0].detached);
+        assert_eq!(worktrees[0].locked.as_deref(), Some("because"));
+        assert_eq!(worktrees[0].prunable.as_deref(), Some("missing"));
     }
 }
