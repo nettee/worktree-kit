@@ -336,7 +336,7 @@ fn workspace_list_output(git: &Git, ctx: &WorkspaceContext) -> AppResult<ListOut
         .worktrees
         .iter()
         .map(|worktree| {
-            let mut row = list::repository_row(git, &ctx.repo, worktree);
+            let mut row = list::repository_row_ignoring_workspace_refs(git, &ctx.repo, worktree);
             row.kind = "workspace_worktree";
             row.workspace_refs = Some(workspace_ref_summary(
                 git,
@@ -421,11 +421,18 @@ fn workspace_ref_detail(
     };
 
     if let Some(repo) = &repo {
-        if repo.worktree_by_path(&expected_target).is_none() {
-            diagnostics.push(format!(
+        match repo.worktree_by_path(&expected_target) {
+            None => diagnostics.push(format!(
                 "expected Repository Worktree is missing: {}",
                 expected_target.display()
-            ));
+            )),
+            Some(expected_worktree) if expected_worktree.branch != workspace_branch => {
+                diagnostics.push(format!(
+                    "expected Repository Worktree branch mismatch: expected {workspace_branch}, found {}",
+                    expected_worktree.branch
+                ));
+            }
+            Some(_) => {}
         }
     }
     if let Some(current_target) = &current_target {

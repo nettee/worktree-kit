@@ -98,9 +98,26 @@ pub fn sorted_rows(mut rows: Vec<ListRow>) -> Vec<ListRow> {
 }
 
 pub fn repository_row(git: &Git, repo: &RepoContext, worktree: &Worktree) -> ListRow {
+    repository_row_with_options(git, repo, worktree, false)
+}
+
+pub fn repository_row_ignoring_workspace_refs(
+    git: &Git,
+    repo: &RepoContext,
+    worktree: &Worktree,
+) -> ListRow {
+    repository_row_with_options(git, repo, worktree, true)
+}
+
+fn repository_row_with_options(
+    git: &Git,
+    repo: &RepoContext,
+    worktree: &Worktree,
+    ignore_workspace_refs: bool,
+) -> ListRow {
     let mut diagnostics = Vec::new();
     let updated_at = commit_timestamp(git, &worktree.path, &mut diagnostics);
-    let dirty = dirty_state(git, &worktree.path, &mut diagnostics);
+    let dirty = dirty_state(git, &worktree.path, &mut diagnostics, ignore_workspace_refs);
     let is_main = same_path(&worktree.path, &repo.main_root);
     let is_current = same_path(&worktree.path, &repo.current_root);
     let mut labels = labels_for_worktree(worktree, is_main, is_current, dirty);
@@ -206,12 +223,23 @@ fn commit_timestamp(git: &Git, path: &Path, diagnostics: &mut Vec<String>) -> Op
     }
 }
 
-fn dirty_state(git: &Git, path: &Path, diagnostics: &mut Vec<String>) -> bool {
+fn dirty_state(
+    git: &Git,
+    path: &Path,
+    diagnostics: &mut Vec<String>,
+    ignore_workspace_refs: bool,
+) -> bool {
     match git.run(
         path,
         ["status", "--porcelain=v1", "--untracked-files=normal"],
     ) {
-        Ok(output) => !output.stdout.trim().is_empty(),
+        Ok(output) => output.stdout.lines().any(|line| {
+            !ignore_workspace_refs
+                || !matches!(
+                    line.get(3..),
+                    Some(path) if path == "refs/" || path.starts_with("refs/")
+                )
+        }),
         Err(error) => {
             diagnostics.push(format!("failed to read dirty state: {error}"));
             false

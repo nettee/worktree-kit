@@ -93,10 +93,33 @@ def test_workspace_mode_list_shows_workspace_rows_and_ref_health(run_wtk, worksp
 
     machine = json.loads(run_wtk("list", "--json", cwd=workspace).stdout)
     assert machine["mode"] == "workspace"
+    assert all(not row["dirty"] for row in machine["worktrees"])
     linked_row = next(row for row in machine["worktrees"] if row["display_name"] == "workspace-wt-feature-list")
     assert linked_row["workspace_refs"]["total"] == 2
     assert linked_row["workspace_refs"]["broken"] == 1
     assert any(not detail["ok"] and detail["name"] == "A" for detail in linked_row["workspace_refs"]["details"])
+
+
+def test_workspace_mode_list_marks_branch_mismatched_ref_targets_broken(
+    run_wtk, workspace_factory, repo_factory
+) -> None:
+    workspace, members = workspace_factory.create(member_names=("A",))
+
+    run_wtk("workspace", "init", cwd=workspace)
+    run_wtk("workspace", "add", str(members["A"]), cwd=workspace)
+    repo_factory.commit_workspace_manifest(workspace)
+    run_wtk("new", "feature/list", "--base", "main", "--no-clipboard", cwd=workspace)
+
+    linked_a = linked_worktree_path(members["A"], "feature/list")
+    run_git(linked_a, "checkout", "-b", "other")
+
+    machine = json.loads(run_wtk("list", "--json", cwd=workspace).stdout)
+    linked_row = next(row for row in machine["worktrees"] if row["display_name"] == "workspace-wt-feature-list")
+    detail = next(detail for detail in linked_row["workspace_refs"]["details"] if detail["name"] == "A")
+
+    assert linked_row["workspace_refs"]["broken"] == 1
+    assert detail["ok"] is False
+    assert any("branch mismatch" in diagnostic for diagnostic in detail["diagnostics"])
 
 
 def test_workspace_mode_rejects_repo_only_commands(run_wtk, workspace_factory, repo_factory) -> None:
