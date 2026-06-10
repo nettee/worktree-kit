@@ -397,8 +397,8 @@ fn workspace_ref_detail(
     workspace_main_branch: &str,
 ) -> WorkspaceRefDetail {
     let mut diagnostics = Vec::new();
-    let (repo, expected_target) =
-        match require_absolute(&config.repository, "repository path").and_then(|repository| {
+    let (repo, expected_target) = match require_absolute(&config.repository, "repository path")
+        .and_then(|repository| {
             let basename = repository_basename(&repository)?;
             if basename != *name {
                 return Err(Error::message(format!(
@@ -408,22 +408,22 @@ fn workspace_ref_detail(
             let repo = resolve(git, &repository)?;
             Ok((repository, repo))
         }) {
-            Ok((repository, repo)) => {
-                if !same_path(&repo.main_root, &repository) {
-                    diagnostics.push(format!(
-                        "configured repository does not resolve to its main worktree: {}",
-                        repository.display()
-                    ));
-                }
-                let expected_target =
-                    expected_target_for_branch(&repo, workspace_branch, workspace_main_branch);
-                (Some(repo), expected_target)
+        Ok((repository, repo)) => {
+            if !same_path(&repo.main_root, &repository) {
+                diagnostics.push(format!(
+                    "configured repository does not resolve to its main worktree: {}",
+                    repository.display()
+                ));
             }
-            Err(error) => {
-                diagnostics.push(error.to_string());
-                (None, config.repository.clone())
-            }
-        };
+            let expected_target =
+                expected_target_for_branch(&repo, workspace_branch, workspace_main_branch);
+            (Some(repo), expected_target)
+        }
+        Err(error) => {
+            diagnostics.push(error.to_string());
+            (None, config.repository.clone())
+        }
+    };
     let ref_path = workspace_worktree.join("refs").join(name);
     let current_target = match read_ref(&ref_path) {
         Ok(target) => Some(target),
