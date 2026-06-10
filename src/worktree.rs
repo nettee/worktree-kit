@@ -7,7 +7,7 @@ use crate::{AppResult, Error};
 use serde::Serialize;
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
-use std::io::{IsTerminal, Write};
+use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::ffi::OsStringExt;
 #[cfg(unix)]
@@ -1216,10 +1216,6 @@ fn cleanup_ignored_env_snapshot_on_error(
 }
 
 fn async_init_stdio(worktree_path: &Path) -> AppResult<(Stdio, Stdio, Option<PathBuf>)> {
-    if std::io::stdout().is_terminal() && std::io::stderr().is_terminal() {
-        return Ok((Stdio::inherit(), Stdio::inherit(), None));
-    }
-
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
@@ -1340,10 +1336,6 @@ fn start_async_pnpm_install(
 }
 
 fn async_pnpm_install_stdio(worktree_path: &Path) -> AppResult<(Stdio, Stdio, Option<PathBuf>)> {
-    if std::io::stdout().is_terminal() && std::io::stderr().is_terminal() {
-        return Ok((Stdio::inherit(), Stdio::inherit(), None));
-    }
-
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
@@ -1408,8 +1400,8 @@ pub(crate) fn finish(
 #[cfg(test)]
 mod tests {
     use super::{
-        cleanup_ignored_env_snapshot_on_error, finish, open_async_init_log,
-        remove_ignored_env_snapshot_root, should_run_pnpm_install,
+        async_init_stdio, async_pnpm_install_stdio, cleanup_ignored_env_snapshot_on_error, finish,
+        open_async_init_log, remove_ignored_env_snapshot_root, should_run_pnpm_install,
         write_ignored_env_snapshot_marker,
     };
     use crate::clipboard::ClipboardProvider;
@@ -1517,6 +1509,62 @@ mod tests {
 
         drop(log);
         std::fs::remove_file(&log_path).unwrap();
+    }
+
+    #[test]
+    fn async_init_stdio_writes_to_log_file() {
+        let worktree_path = std::env::temp_dir().join(format!(
+            "wtk-async-init-stdio-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let (stdout, stderr, log_path) =
+            async_init_stdio(&worktree_path).expect("async init stdio should open a log file");
+        let log_path = log_path.expect("async init output should be redirected to a log file");
+
+        assert!(log_path.is_file());
+        assert!(
+            log_path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("wtk-init-worktree-")
+        );
+
+        drop(stdout);
+        drop(stderr);
+        std::fs::remove_file(log_path).unwrap();
+    }
+
+    #[test]
+    fn async_pnpm_install_stdio_writes_to_log_file() {
+        let worktree_path = std::env::temp_dir().join(format!(
+            "wtk-async-pnpm-stdio-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let (stdout, stderr, log_path) = async_pnpm_install_stdio(&worktree_path)
+            .expect("async pnpm install stdio should open a log file");
+        let log_path = log_path.expect("async pnpm output should be redirected to a log file");
+
+        assert!(log_path.is_file());
+        assert!(
+            log_path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("wtk-pnpm-install-")
+        );
+
+        drop(stdout);
+        drop(stderr);
+        std::fs::remove_file(log_path).unwrap();
     }
 
     #[test]
