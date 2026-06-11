@@ -574,12 +574,22 @@ pub fn new(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
         }
     }
 
+    let mut async_install_started = false;
     for plan in &linked_plans {
-        if let Err(error) =
-            worktree::start_worktree_async_pnpm_install(session, &plan.path, "worktree initialized")
-        {
-            rollback_all(&session.git, session.out, rollback)?;
-            return Err(error);
+        match worktree::start_worktree_async_pnpm_install(
+            session,
+            &plan.path,
+            "worktree initialized",
+        ) {
+            Ok(worktree::AsyncPnpmInstall::Started) => async_install_started = true,
+            Ok(worktree::AsyncPnpmInstall::Skipped) => {}
+            Err(error) => {
+                if async_install_started {
+                    return Err(error);
+                }
+                rollback_all(&session.git, session.out, rollback)?;
+                return Err(error);
+            }
         }
     }
 

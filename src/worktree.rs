@@ -90,6 +90,11 @@ pub struct SendOutWorktreeInit {
     ignored_active_spec: Option<SnapshotFile>,
 }
 
+pub enum AsyncPnpmInstall {
+    Started,
+    Skipped,
+}
+
 pub fn create(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
     let repo = repo(session)?;
     if opts.branch.is_empty() {
@@ -221,7 +226,7 @@ pub fn init_worktree_with_async_pnpm(
         worktree_path,
         ignored_env_snapshot_root,
     )?;
-    start_worktree_async_pnpm_install(session, worktree_path, "worktree initialized")
+    start_worktree_async_pnpm_install(session, worktree_path, "worktree initialized").map(|_| ())
 }
 
 pub fn prepare_worktree_for_async_pnpm(
@@ -242,7 +247,7 @@ pub fn start_worktree_async_pnpm_install(
     session: &mut Session<'_>,
     worktree_path: &Path,
     partial_success_prefix: &str,
-) -> AppResult<()> {
+) -> AppResult<AsyncPnpmInstall> {
     start_async_pnpm_install(session, worktree_path, partial_success_prefix)
 }
 
@@ -443,6 +448,7 @@ pub fn send_out(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
         &path,
         &format!("main worktree switched to {base} and linked worktree created"),
     )
+    .map(|_| ())
 }
 
 pub fn bring_in(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
@@ -1349,9 +1355,9 @@ fn start_async_pnpm_install(
     session: &mut Session<'_>,
     worktree_path: &Path,
     partial_success_prefix: &str,
-) -> AppResult<()> {
+) -> AppResult<AsyncPnpmInstall> {
     if !should_run_pnpm_install(worktree_path) {
-        return Ok(());
+        return Ok(AsyncPnpmInstall::Skipped);
     }
 
     output::info(
@@ -1379,7 +1385,7 @@ fn start_async_pnpm_install(
         .stdout(stdout)
         .stderr(stderr)
         .spawn()
-        .map(|_| ())
+        .map(|_| AsyncPnpmInstall::Started)
         .map_err(|error| {
             Error::message(format!(
                 "{partial_success_prefix}, but failed to start async pnpm install: {error}"
