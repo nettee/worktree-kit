@@ -324,7 +324,9 @@ def test_workspace_mode_new_requires_clean_manifest_history(run_wtk, workspace_f
     assert "requires committed .wtk-workspace.toml changes" in staged.output
 
 
-def test_workspace_mode_new_rolls_back_when_real_pnpm_install_fails(run_wtk, workspace_factory, repo_factory) -> None:
+def test_workspace_mode_new_does_not_roll_back_when_async_pnpm_install_fails(
+    run_wtk, workspace_factory, repo_factory
+) -> None:
     workspace, members = workspace_factory.create()
 
     run_wtk("workspace", "init", cwd=workspace)
@@ -339,18 +341,79 @@ def test_workspace_mode_new_rolls_back_when_real_pnpm_install_fails(run_wtk, wor
     repo_factory.add_real_pnpm_project(members["A"], marker_name=".pnpm-ok.txt")
     repo_factory.add_real_pnpm_project(members["B"], fail_postinstall=True, marker_name=".pnpm-fail.txt")
 
-    result = run_wtk("new", "feature/ws-fail", "--base", "main", "--no-clipboard", cwd=workspace, check=False)
-    result.assert_failure()
-    assert "pnpm install failed" in result.output
+    result = run_wtk("new", "feature/ws-fail", "--base", "main", "--no-clipboard", cwd=workspace)
+    assert "running pnpm install asynchronously" in result.output
+    assert "async pnpm install output will be written to" in result.output
 
     workspace_linked = linked_worktree_path(workspace, "feature/ws-fail")
     linked_a = linked_worktree_path(members["A"], "feature/ws-fail")
     linked_b = linked_worktree_path(members["B"], "feature/ws-fail")
+    assert workspace_linked.exists()
+    assert linked_a.exists()
+    assert linked_b.exists()
+    assert (workspace_linked / "refs" / "A").resolve() == linked_a.resolve()
+    assert (workspace_linked / "refs" / "B").resolve() == linked_b.resolve()
+    assert "feature/ws-fail" in run_git(
+        workspace, "branch", "--list", "feature/ws-fail"
+    ).stdout
+    assert "feature/ws-fail" in run_git(
+        members["A"], "branch", "--list", "feature/ws-fail"
+    ).stdout
+    assert "feature/ws-fail" in run_git(
+        members["B"], "branch", "--list", "feature/ws-fail"
+    ).stdout
+
+
+def test_workspace_mode_new_rolls_back_before_starting_async_pnpm_for_any_linked_repo(
+    run_wtk, workspace_factory, repo_factory
+) -> None:
+    workspace, members = workspace_factory.create()
+
+    run_wtk("workspace", "init", cwd=workspace)
+    run_wtk("workspace", "add", str(members["A"]), cwd=workspace)
+    run_wtk("workspace", "add", str(members["B"]), cwd=workspace)
+    repo_factory.commit_workspace_manifest(workspace)
+
+    run_git(workspace, "branch", "broken-base")
+    run_git(members["A"], "branch", "broken-base")
+
+    run_git(members["B"], "checkout", "-b", "broken-base")
+    repo_factory.commit_files(members["B"], {"config": "tracked\n"}, "add tracked config file")
+    run_git(members["B"], "checkout", "main")
+
+    repo_factory.commit_files(members["A"], {".gitignore": ".env\n"}, "ignore env")
+    (members["A"] / ".env").write_text("A=value\n", encoding="utf-8")
+    repo_factory.add_real_pnpm_project(members["A"], delay_seconds=2.0, marker_name=".pnpm-a.txt")
+
+    repo_factory.commit_files(members["B"], {".gitignore": "config/.env\n"}, "ignore nested env")
+    (members["B"] / "config").mkdir()
+    (members["B"] / "config" / ".env").write_text("B=value\n", encoding="utf-8")
+
+    result = run_wtk(
+        "new",
+        "feature/ws-copy-fail",
+        "--base",
+        "broken-base",
+        "--no-clipboard",
+        cwd=workspace,
+        check=False,
+    )
+    result.assert_failure()
+    assert "ignored .env copy failed" in result.output
+    assert "running pnpm install asynchronously" not in result.output
+
+    workspace_linked = linked_worktree_path(workspace, "feature/ws-copy-fail")
+    linked_a = linked_worktree_path(members["A"], "feature/ws-copy-fail")
+    linked_b = linked_worktree_path(members["B"], "feature/ws-copy-fail")
     assert not workspace_linked.exists()
     assert not linked_a.exists()
     assert not linked_b.exists()
-    assert (workspace / "refs" / "A").resolve() == members["A"].resolve()
-    assert (workspace / "refs" / "B").resolve() == members["B"].resolve()
-    assert "feature/ws-fail" not in run_git(workspace, "branch", "--list", "feature/ws-fail").stdout
-    assert "feature/ws-fail" not in run_git(members["A"], "branch", "--list", "feature/ws-fail").stdout
-    assert "feature/ws-fail" not in run_git(members["B"], "branch", "--list", "feature/ws-fail").stdout
+    assert "feature/ws-copy-fail" not in run_git(
+        workspace, "branch", "--list", "feature/ws-copy-fail"
+    ).stdout
+    assert "feature/ws-copy-fail" not in run_git(
+        members["A"], "branch", "--list", "feature/ws-copy-fail"
+    ).stdout
+    assert "feature/ws-copy-fail" not in run_git(
+        members["B"], "branch", "--list", "feature/ws-copy-fail"
+    ).stdout
