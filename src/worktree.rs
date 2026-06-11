@@ -200,6 +200,36 @@ pub fn init_worktree(
     worktree_path: &Path,
     ignored_env_snapshot_root: Option<&Path>,
 ) -> AppResult<()> {
+    copy_ignored_env_files_for_init(
+        session,
+        source_root,
+        worktree_path,
+        ignored_env_snapshot_root,
+    )?;
+    maybe_run_pnpm_install(session, worktree_path, "worktree initialized")
+}
+
+pub fn init_worktree_with_async_pnpm(
+    session: &mut Session<'_>,
+    source_root: &Path,
+    worktree_path: &Path,
+    ignored_env_snapshot_root: Option<&Path>,
+) -> AppResult<()> {
+    copy_ignored_env_files_for_init(
+        session,
+        source_root,
+        worktree_path,
+        ignored_env_snapshot_root,
+    )?;
+    start_async_pnpm_install(session, worktree_path, "worktree initialized")
+}
+
+fn copy_ignored_env_files_for_init(
+    session: &mut Session<'_>,
+    source_root: &Path,
+    worktree_path: &Path,
+    ignored_env_snapshot_root: Option<&Path>,
+) -> AppResult<()> {
     let (ignored_env_files, snapshot_root) = match ignored_env_snapshot_root {
         Some(snapshot_root) => match snapshot_ignored_env_files_from_root(snapshot_root) {
             Ok(ignored_env_files) => (ignored_env_files, Some(snapshot_root)),
@@ -219,7 +249,7 @@ pub fn init_worktree(
         .and_then(|copied| print_copied_ignored_env_files(session, copied));
     let cleanup_result = snapshot_root.map_or(Ok(()), remove_ignored_env_snapshot_root);
     match (copy_result, cleanup_result) {
-        (Ok(()), Ok(())) => maybe_run_pnpm_install(session, worktree_path, "worktree initialized"),
+        (Ok(()), Ok(())) => Ok(()),
         (Err(error), Ok(())) => Err(error),
         (Ok(()), Err(error)) => Err(error),
         (Err(error), Err(cleanup_error)) => {

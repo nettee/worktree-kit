@@ -566,7 +566,9 @@ pub fn new(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
     }
 
     for plan in &linked_plans {
-        if let Err(error) = worktree::init_worktree(session, &plan.source_root, &plan.path, None) {
+        if let Err(error) =
+            worktree::init_worktree_with_async_pnpm(session, &plan.source_root, &plan.path, None)
+        {
             rollback_all(&session.git, session.out, rollback)?;
             return Err(error);
         }

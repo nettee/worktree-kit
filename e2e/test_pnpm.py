@@ -68,4 +68,41 @@ def test_workspace_new_copies_env_and_runs_real_pnpm_install(run_wtk, workspace_
     assert linked_a.joinpath(".env").read_text(encoding="utf-8") == "A=value\n"
     assert linked_b.joinpath(".env").read_text(encoding="utf-8") == "B=value\n"
     assert "copied ignored .env: .env" in out
-    assert "running pnpm install in" in out
+    assert "running pnpm install asynchronously" in out
+
+
+def test_workspace_new_returns_before_slow_real_pnpm_install_finishes(
+    run_wtk, workspace_factory, repo_factory
+) -> None:
+    workspace, members = workspace_factory.create()
+    run_wtk("workspace", "init", cwd=workspace)
+    run_wtk("workspace", "add", str(members["A"]), cwd=workspace)
+    run_wtk("workspace", "add", str(members["B"]), cwd=workspace)
+    repo_factory.commit_workspace_manifest(workspace)
+
+    for name, repo in members.items():
+        repo_factory.commit_files(repo, {".gitignore": ".env\n"}, "ignore env")
+        (repo / ".env").write_text(f"{name}=value\n", encoding="utf-8")
+        repo_factory.add_real_pnpm_project(
+            repo, delay_seconds=2.0, marker_name=f".pnpm-slow-{name.lower()}.txt"
+        )
+
+    started = time.monotonic()
+    out = run_wtk(
+        "new", "feature/ws-slow-pnpm", "--base", "main", "--no-clipboard", cwd=workspace
+    ).output
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 1.5, f"workspace create waited for slow pnpm install: {elapsed:.2f}s"
+    assert "created workspace worktree" in out
+    assert "running pnpm install asynchronously" in out
+    linked_a = linked_worktree_path(members["A"], "feature/ws-slow-pnpm")
+    linked_b = linked_worktree_path(members["B"], "feature/ws-slow-pnpm")
+    assert linked_a.joinpath(".env").read_text(encoding="utf-8") == "A=value\n"
+    assert linked_b.joinpath(".env").read_text(encoding="utf-8") == "B=value\n"
+    wait_until(
+        "slow workspace pnpm markers",
+        lambda: linked_a.joinpath(".pnpm-slow-a.txt").exists()
+        and linked_b.joinpath(".pnpm-slow-b.txt").exists(),
+        timeout=15.0,
+    )
