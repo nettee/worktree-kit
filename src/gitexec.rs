@@ -1,7 +1,8 @@
 use crate::{AppResult, Error};
 use std::fmt;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Worktree {
@@ -148,6 +149,71 @@ impl Git {
                 stdout: String::from_utf8_lossy(&output.stdout)
                     .trim_end()
                     .to_string(),
+                source: std::io::Error::other("git command failed"),
+            }))
+        }
+    }
+
+    pub fn run_with_input<I, S>(&self, dir: &Path, args: I, input: &[u8]) -> AppResult<GitOutput>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let rendered: Vec<String> = args
+            .into_iter()
+            .map(|arg| arg.as_ref().to_string())
+            .collect();
+        let mut command = Command::new("git");
+        command.current_dir(dir);
+        command.args(rendered.iter().map(String::as_str));
+        command.stdin(Stdio::piped());
+        let mut child = command.spawn().map_err(|source| {
+            Error::Git(GitError {
+                args: rendered.clone(),
+                exit_code: None,
+                stderr: String::new(),
+                stdout: String::new(),
+                source,
+            })
+        })?;
+        child
+            .stdin
+            .take()
+            .ok_or_else(|| Error::message("failed to open git stdin"))?
+            .write_all(input)
+            .map_err(|source| {
+                Error::Git(GitError {
+                    args: rendered.clone(),
+                    exit_code: None,
+                    stderr: String::new(),
+                    stdout: String::new(),
+                    source,
+                })
+            })?;
+        let output = child.wait_with_output().map_err(|source| {
+            Error::Git(GitError {
+                args: rendered.clone(),
+                exit_code: None,
+                stderr: String::new(),
+                stdout: String::new(),
+                source,
+            })
+        })?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout)
+            .trim_end()
+            .to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr)
+            .trim_end()
+            .to_string();
+        if output.status.success() {
+            Ok(GitOutput { stdout, stderr })
+        } else {
+            Err(Error::Git(GitError {
+                args: rendered,
+                exit_code: output.status.code(),
+                stderr,
+                stdout,
                 source: std::io::Error::other("git command failed"),
             }))
         }

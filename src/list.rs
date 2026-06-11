@@ -2,6 +2,7 @@ use crate::gitexec::{Git, RepoContext, Worktree, same_path};
 use crate::output::Style;
 use crate::{AppResult, Error};
 use serde::Serialize;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -57,12 +58,13 @@ pub struct WorkspaceRefDetail {
 }
 
 pub fn repository_output(git: &Git, repo: &RepoContext) -> ListOutput {
+    let updated_at_by_head = commit_timestamps_by_head(git, &repo.main_root, &repo.worktrees);
     ListOutput {
         mode: "repository",
         worktrees: sorted_rows(
             repo.worktrees
                 .iter()
-                .map(|worktree| repository_row(git, repo, worktree))
+                .map(|worktree| repository_row(git, repo, worktree, &updated_at_by_head))
                 .collect(),
         ),
     }
@@ -97,16 +99,22 @@ pub fn sorted_rows(mut rows: Vec<ListRow>) -> Vec<ListRow> {
     rows
 }
 
-pub fn repository_row(git: &Git, repo: &RepoContext, worktree: &Worktree) -> ListRow {
-    repository_row_with_options(git, repo, worktree, false)
+pub fn repository_row(
+    git: &Git,
+    repo: &RepoContext,
+    worktree: &Worktree,
+    updated_at_by_head: &HashMap<String, Result<i64, String>>,
+) -> ListRow {
+    repository_row_with_options(git, repo, worktree, false, updated_at_by_head)
 }
 
 pub fn repository_row_ignoring_workspace_refs(
     git: &Git,
     repo: &RepoContext,
     worktree: &Worktree,
+    updated_at_by_head: &HashMap<String, Result<i64, String>>,
 ) -> ListRow {
-    repository_row_with_options(git, repo, worktree, true)
+    repository_row_with_options(git, repo, worktree, true, updated_at_by_head)
 }
 
 fn repository_row_with_options(
@@ -114,9 +122,10 @@ fn repository_row_with_options(
     repo: &RepoContext,
     worktree: &Worktree,
     ignore_workspace_refs: bool,
+    updated_at_by_head: &HashMap<String, Result<i64, String>>,
 ) -> ListRow {
     let mut diagnostics = Vec::new();
-    let updated_at = commit_timestamp(git, &worktree.path, &mut diagnostics);
+    let updated_at = commit_timestamp(&worktree.head, updated_at_by_head, &mut diagnostics);
     let dirty = dirty_state(git, &worktree.path, &mut diagnostics, ignore_workspace_refs);
     let is_main = same_path(&worktree.path, &repo.main_root);
     let is_current = same_path(&worktree.path, &repo.current_root);
@@ -207,17 +216,119 @@ fn labels_for_worktree(
     labels
 }
 
-fn commit_timestamp(git: &Git, path: &Path, diagnostics: &mut Vec<String>) -> Option<i64> {
-    match git.run(path, ["show", "-s", "--format=%ct", "HEAD"]) {
-        Ok(output) => match output.stdout.trim().parse::<i64>() {
-            Ok(timestamp) => Some(timestamp),
-            Err(error) => {
-                diagnostics.push(format!("failed to parse HEAD timestamp: {error}"));
-                None
-            }
-        },
-        Err(error) => {
-            diagnostics.push(format!("failed to read HEAD timestamp: {error}"));
+pub(crate) fn commit_timestamps_by_head(
+    git: &Git,
+    repo_root: &Path,
+    worktrees: &[Worktree],
+) -> HashMap<String, Result<i64, String>> {
+    let mut heads = Vec::new();
+    let mut seen_heads = HashSet::new();
+    for worktree in worktrees {
+        if !worktree.head.is_empty() && seen_heads.insert(worktree.head.clone()) {
+            heads.push(worktree.head.clone());
+        }
+    }
+    if heads.is_empty() {
+        return HashMap::new();
+    }
+
+    let input = format!("{}\n", heads.join("\n"));
+    match git.run_with_input(
+        repo_root,
+        [
+            "cat-file",
+            "--batch-check=%(objectname) %(committerdate:unix)",
+        ],
+        input.as_bytes(),
+    ) {
+        Ok(output) => parse_commit_timestamp_output(&heads, &output.stdout),
+        Err(error) => heads
+            .into_iter()
+            .map(|head| {
+                (
+                    head,
+                    Err(format!("failed to read HEAD timestamp in batch: {error}")),
+                )
+            })
+            .collect(),
+    }
+}
+
+fn parse_commit_timestamp_output(
+    heads: &[String],
+    output: &str,
+) -> HashMap<String, Result<i64, String>> {
+    let lines = output.lines().collect::<Vec<_>>();
+    if lines.len() != heads.len() {
+        let error = format!(
+            "failed to parse HEAD timestamps: expected {} rows, got {}",
+            heads.len(),
+            lines.len()
+        );
+        return heads
+            .iter()
+            .cloned()
+            .map(|head| (head, Err(error.clone())))
+            .collect();
+    }
+
+    heads
+        .iter()
+        .zip(lines)
+        .map(|(head, line)| {
+            let result = parse_commit_timestamp_line(head, line);
+            (head.clone(), result)
+        })
+        .collect()
+}
+
+fn parse_commit_timestamp_line(head: &str, line: &str) -> Result<i64, String> {
+    let mut parts = line.split_whitespace();
+    let object_name = parts
+        .next()
+        .ok_or_else(|| format!("failed to parse HEAD timestamp for {head}: missing object"))?;
+    let value = parts
+        .next()
+        .ok_or_else(|| format!("failed to parse HEAD timestamp for {head}: missing value"))?;
+    if object_name != head {
+        return Err(format!(
+            "failed to parse HEAD timestamp for {head}: got object {object_name}"
+        ));
+    }
+    if value == "missing" {
+        return Err(format!(
+            "failed to read HEAD timestamp for {head}: object missing"
+        ));
+    }
+    if parts.next().is_some() {
+        return Err(format!(
+            "failed to parse HEAD timestamp for {head}: unexpected extra fields"
+        ));
+    }
+    value
+        .parse::<i64>()
+        .map_err(|error| format!("failed to parse HEAD timestamp for {head}: {error}"))
+}
+
+fn commit_timestamp(
+    head: &str,
+    updated_at_by_head: &HashMap<String, Result<i64, String>>,
+    diagnostics: &mut Vec<String>,
+) -> Option<i64> {
+    if head.is_empty() {
+        diagnostics.push("failed to read HEAD timestamp: missing HEAD object".to_string());
+        return None;
+    }
+    match updated_at_by_head.get(head) {
+        Some(Ok(timestamp)) => Some(*timestamp),
+        Some(Err(error)) => {
+            diagnostics.push(error.clone());
+            None
+        }
+        None => {
+            diagnostics.push(format!(
+                "failed to read HEAD timestamp for {head}: batch result missing"
+            ));
             None
         }
     }
@@ -339,7 +450,7 @@ fn render_table(out: &mut dyn Write, rows: &[ListRow], style: Style) -> AppResul
 
 #[cfg(test)]
 mod tests {
-    use super::{display_name, relative_time, sorted_rows};
+    use super::{display_name, parse_commit_timestamp_output, relative_time, sorted_rows};
     use crate::list::ListRow;
     use std::path::Path;
 
@@ -372,6 +483,24 @@ mod tests {
         newer = row("a", Some(1), false, false);
         let rows = sorted_rows(vec![newer, older_current]);
         assert_eq!(rows[0].display_name, "b");
+    }
+
+    #[test]
+    fn parses_batched_commit_timestamps() {
+        let heads = vec!["abc".to_string(), "def".to_string()];
+        let parsed = parse_commit_timestamp_output(&heads, "abc 123\ndef 456");
+        assert_eq!(parsed["abc"], Ok(123));
+        assert_eq!(parsed["def"], Ok(456));
+    }
+
+    #[test]
+    fn reports_missing_batched_commit_timestamp() {
+        let heads = vec!["abc".to_string()];
+        let parsed = parse_commit_timestamp_output(&heads, "abc missing");
+        assert_eq!(
+            parsed["abc"],
+            Err("failed to read HEAD timestamp for abc: object missing".to_string())
+        );
     }
 
     fn row(name: &str, updated_at: Option<i64>, is_current: bool, is_main: bool) -> ListRow {
