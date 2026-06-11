@@ -235,10 +235,7 @@ pub(crate) fn commit_timestamps_by_head(
     let input = format!("{}\n", heads.join("\n"));
     match git.run_with_input(
         repo_root,
-        [
-            "cat-file",
-            "--batch-check=%(objectname) %(committerdate:unix)",
-        ],
+        ["log", "--no-walk=unsorted", "--format=%H %ct", "--stdin"],
         input.as_bytes(),
     ) {
         Ok(output) => parse_commit_timestamp_output(&heads, &output.stdout),

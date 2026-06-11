@@ -167,6 +167,8 @@ impl Git {
         command.current_dir(dir);
         command.args(rendered.iter().map(String::as_str));
         command.stdin(Stdio::piped());
+        command.stdout(Stdio::piped());
+        command.stderr(Stdio::piped());
         let mut child = command.spawn().map_err(|source| {
             Error::Git(GitError {
                 args: rendered.clone(),
