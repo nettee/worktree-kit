@@ -362,3 +362,58 @@ def test_workspace_mode_new_does_not_roll_back_when_async_pnpm_install_fails(
     assert "feature/ws-fail" in run_git(
         members["B"], "branch", "--list", "feature/ws-fail"
     ).stdout
+
+
+def test_workspace_mode_new_rolls_back_before_starting_async_pnpm_for_any_linked_repo(
+    run_wtk, workspace_factory, repo_factory
+) -> None:
+    workspace, members = workspace_factory.create()
+
+    run_wtk("workspace", "init", cwd=workspace)
+    run_wtk("workspace", "add", str(members["A"]), cwd=workspace)
+    run_wtk("workspace", "add", str(members["B"]), cwd=workspace)
+    repo_factory.commit_workspace_manifest(workspace)
+
+    run_git(workspace, "branch", "broken-base")
+    run_git(members["A"], "branch", "broken-base")
+
+    run_git(members["B"], "checkout", "-b", "broken-base")
+    repo_factory.commit_files(members["B"], {"config": "tracked\n"}, "add tracked config file")
+    run_git(members["B"], "checkout", "main")
+
+    repo_factory.commit_files(members["A"], {".gitignore": ".env\n"}, "ignore env")
+    (members["A"] / ".env").write_text("A=value\n", encoding="utf-8")
+    repo_factory.add_real_pnpm_project(members["A"], delay_seconds=2.0, marker_name=".pnpm-a.txt")
+
+    repo_factory.commit_files(members["B"], {".gitignore": "config/.env\n"}, "ignore nested env")
+    (members["B"] / "config").mkdir()
+    (members["B"] / "config" / ".env").write_text("B=value\n", encoding="utf-8")
+
+    result = run_wtk(
+        "new",
+        "feature/ws-copy-fail",
+        "--base",
+        "broken-base",
+        "--no-clipboard",
+        cwd=workspace,
+        check=False,
+    )
+    result.assert_failure()
+    assert "ignored .env copy failed" in result.output
+    assert "running pnpm install asynchronously" not in result.output
+
+    workspace_linked = linked_worktree_path(workspace, "feature/ws-copy-fail")
+    linked_a = linked_worktree_path(members["A"], "feature/ws-copy-fail")
+    linked_b = linked_worktree_path(members["B"], "feature/ws-copy-fail")
+    assert not workspace_linked.exists()
+    assert not linked_a.exists()
+    assert not linked_b.exists()
+    assert "feature/ws-copy-fail" not in run_git(
+        workspace, "branch", "--list", "feature/ws-copy-fail"
+    ).stdout
+    assert "feature/ws-copy-fail" not in run_git(
+        members["A"], "branch", "--list", "feature/ws-copy-fail"
+    ).stdout
+    assert "feature/ws-copy-fail" not in run_git(
+        members["B"], "branch", "--list", "feature/ws-copy-fail"
+    ).stdout

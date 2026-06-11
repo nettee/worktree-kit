@@ -215,13 +215,35 @@ pub fn init_worktree_with_async_pnpm(
     worktree_path: &Path,
     ignored_env_snapshot_root: Option<&Path>,
 ) -> AppResult<()> {
-    copy_ignored_env_files_for_init(
+    prepare_worktree_for_async_pnpm(
         session,
         source_root,
         worktree_path,
         ignored_env_snapshot_root,
     )?;
-    start_async_pnpm_install(session, worktree_path, "worktree initialized")
+    start_worktree_async_pnpm_install(session, worktree_path, "worktree initialized")
+}
+
+pub fn prepare_worktree_for_async_pnpm(
+    session: &mut Session<'_>,
+    source_root: &Path,
+    worktree_path: &Path,
+    ignored_env_snapshot_root: Option<&Path>,
+) -> AppResult<()> {
+    copy_ignored_env_files_for_init(
+        session,
+        source_root,
+        worktree_path,
+        ignored_env_snapshot_root,
+    )
+}
+
+pub fn start_worktree_async_pnpm_install(
+    session: &mut Session<'_>,
+    worktree_path: &Path,
+    partial_success_prefix: &str,
+) -> AppResult<()> {
+    start_async_pnpm_install(session, worktree_path, partial_success_prefix)
 }
 
 fn copy_ignored_env_files_for_init(
