@@ -9,13 +9,13 @@
 - `wtk remove` removes a linked worktree.
 - `wtk send-out` moves the current main-worktree branch to a linked worktree.
 - `wtk bring-in` moves a linked worktree branch back into the main worktree.
-- `wtk workspace bootstrap` creates a new Workspace repository for coordinated multi-repository worktrees.
+- `wtk auxiliary-group add` creates a local group of Auxiliary Repositories for coordinated multi-repository worktrees.
 
 `wtk create` remains available as a compatibility alias for `wtk new`.
 
-Repository Mode is the default single-repository behavior. Default linked worktree paths use the Sibling Layout: sibling directories named `<repo>-wt-<branch-slug>`.
+The Primary Repository is the repository an agent opens directly for a task. By default, `wtk new` creates a standalone linked worktree for that repository using the Sibling Layout: sibling directories named `<repo>-wt-<branch-slug>`.
 
-Workspace Mode coordinates multiple Linked Repositories from a Workspace repository that participates in the same branch/worktree lifecycle as the repositories it manages. It stores stable membership in a tracked `.wtk-workspace.toml` manifest. Each Workspace Worktree owns generated `refs/<name>` entries that point to the currently surfaced Repository Worktree path for each Linked Repository. Repository paths and ref targets are absolute paths.
+For coordinated changes, a Primary Repository can store local Auxiliary Groups in `.wtk/config.toml`. `wtk new --ag <group>` expands those groups, creates matching Auxiliary Repository worktrees, writes generated `refs/<auxiliary-name>` entries in the Primary worktree, and records fixed expanded state in `.wtk/worktrees.json`.
 
 ## Install
 
@@ -76,46 +76,48 @@ wtk list --json
 wtk remove ../repo-wt-feature-foo
 wtk send-out
 wtk bring-in feature/foo
-wtk workspace bootstrap /absolute/path/to/A /absolute/path/to/B
+wtk auxiliary-group add full-stack /absolute/path/to/api /absolute/path/to/web
+wtk new feature/full-stack --ag full-stack
 wtk upgrade
 ```
 
 `wtk list` is optimized for scanning. The default output is a compact table with the worktree directory name, branch, relative HEAD commit time, state labels, and short HEAD. It does not print absolute paths by default. Rows are sorted by the current HEAD commit's committer time, newest first; dirty state is shown as a label but does not affect sorting.
 
-Use `wtk list --json` for machine-readable output. JSON includes absolute paths, full HEADs, timestamps, labels, diagnostics, and Workspace Ref details.
+Use `wtk list --json` for machine-readable output. JSON includes absolute paths, full HEADs, timestamps, labels, diagnostics, and Auxiliary Ref details.
 
-## Workspace Mode
+## Auxiliary Groups
 
-Bootstrap a new Workspace from an empty directory:
-
-```bash
-mkdir my-workspace
-cd my-workspace
-wtk workspace bootstrap /absolute/path/to/A /absolute/path/to/B
-```
-
-`wtk workspace bootstrap` runs `git init`, writes `.wtk-workspace.toml`, creates generated `refs/<name>` entries, writes `.gitignore` with `refs/`, initializes `AGENTS.md`, and creates the initial Workspace commit. It requires at least one Linked Repository path, an empty current directory, and Linked Repository main worktrees on `main`. It fails before mutation when preflight checks such as duplicate Workspace Ref names or invalid repository paths fail.
-
-Lower-level commands remain available when you already have a Git repository and want to manage Workspace membership manually:
+Create a local Auxiliary Group from the Primary Repository:
 
 ```bash
-wtk workspace init
-wtk workspace add /absolute/path/to/A
-wtk workspace add /absolute/path/to/B
+wtk auxiliary-group add full-stack /absolute/path/to/api /absolute/path/to/web
 ```
 
-The generated manifest shape is:
+`wtk ag add` is a shorthand for `wtk auxiliary-group add`. Group creation resolves each repository path to a Git main worktree, derives the Auxiliary Repository Ref name from the repository directory name, creates or reuses `[auxiliaries.<name>]`, and writes `[groups.<group-name>]` in `.wtk/config.toml`.
+
+The generated config shape is:
 
 ```toml
-mode = "workspace"
+[auxiliaries.api]
+repository = "/absolute/path/to/api"
 
-[workspace.refs.A]
-repository = "/absolute/path/to/A"
+[auxiliaries.web]
+repository = "/absolute/path/to/web"
+
+[groups.full-stack]
+auxiliaries = ["api", "web"]
 ```
 
-In Workspace Mode, `wtk status` emits aggregate Workspace status for the current Workspace Worktree and validates generated refs without repairing them. `wtk list` shows one row per Workspace Worktree and summarizes generated Workspace Ref health, such as `refs 2/2 ok` or `refs 1/2 broken`. `wtk new` creates a coordinated Workspace Worktree plus matching Linked Repository Worktrees for the same branch. `wtk remove` removes the coordinated set. Workspace operations fail fast on malformed manifest state, relative paths, missing or incorrect refs, branch mismatches, dirty worktrees, branch collisions, or target path collisions.
+Create a coordinated worktree by selecting one or more groups:
 
-`wtk workspace bootstrap` must be run from the empty directory that will become the Workspace root. `wtk workspace init` and `wtk workspace add` must be run from the Workspace main worktree. `wtk checkout`, `wtk send-out`, and `wtk bring-in` are repository-mode-only commands and are rejected in Workspace Mode.
+```bash
+wtk new feature/full-stack --ag full-stack
+wtk new feature/full-stack --auxiliary-group full-stack
+```
+
+No selected Auxiliary Groups is the standalone case. With selected groups, `wtk new` creates the Primary Repository worktree plus matching Auxiliary Repository worktrees for the same branch. The Primary worktree receives generated `refs/<auxiliary-name>` entries pointing to the Auxiliary Repository worktrees. `.wtk/worktrees.json` stores the expanded Auxiliary Repository state by absolute Primary worktree path; changing `.wtk/config.toml` later does not mutate existing worktrees.
+
+`wtk status` validates generated refs for the current Primary worktree when auxiliary state is recorded. `wtk list` shows ordinary and coordinated Primary worktrees together and summarizes Auxiliary Ref health, such as `refs 2/2 ok` or `refs 1/2 broken`. `wtk remove` removes the coordinated set. `wtk send-out` and `wtk bring-in` reject worktrees with auxiliary state because those commands do not define an atomic multi-repository move.
 
 Every command prints the underlying `git` commands it runs. Successful commands copy the useful path or branch payload to the clipboard. Use `--no-clipboard` in CI or headless environments.
 
@@ -150,4 +152,4 @@ wtk completion powershell > wtk.ps1
 
 ## Failure behavior
 
-Dirty worktrees, malformed Workspace manifests, missing generated refs, branch mismatches, ambiguous main branch detection, missing Git context, failed Git commands, ignored `.env` copy failures, and clipboard failures are reported directly. If Git succeeds and a later required step fails, `wtk` exits non-zero so the partial failure is visible.
+Dirty worktrees, malformed Auxiliary Group config or worktree state, missing generated refs, branch mismatches, ambiguous main branch detection, missing Git context, failed Git commands, ignored `.env` copy failures, and clipboard failures are reported directly. If Git succeeds and a later required step fails, `wtk` exits non-zero so the partial failure is visible.

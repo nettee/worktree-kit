@@ -155,10 +155,6 @@ class RepoFactory:
         run_git(repo, "add", ".")
         run_git(repo, "commit", "-m", message)
 
-    def commit_workspace_manifest(self, repo: Path, message: str = "record workspace manifest") -> None:
-        run_git(repo, "add", ".wtk-workspace.toml")
-        run_git(repo, "commit", "-m", message)
-
     def add_real_pnpm_project(
         self,
         repo: Path,
@@ -216,24 +212,6 @@ class RepoFactory:
         run_git(repo, "commit", "-m", "add pnpm lockfile")
 
 
-class WorkspaceFactory:
-    def __init__(self, repo_factory: RepoFactory):
-        self.repo_factory = repo_factory
-
-    def create(self, member_names: tuple[str, ...] = ("A", "B"), branch: str = "main") -> tuple[Path, dict[str, Path]]:
-        workspace = self.repo_factory.init_repo("workspace", branch=branch)
-        members = {
-            name: self.repo_factory.init_repo(name, branch=branch)
-            for name in member_names
-        }
-        return workspace, members
-
-
 @pytest.fixture
 def repo_factory(tmp_path: Path) -> RepoFactory:
     return RepoFactory(tmp_path)
-
-
-@pytest.fixture
-def workspace_factory(repo_factory: RepoFactory) -> WorkspaceFactory:
-    return WorkspaceFactory(repo_factory)

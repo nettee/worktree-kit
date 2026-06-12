@@ -1,7 +1,7 @@
 ---
 id: 20260612-workspace-spec-helper-repo-refs
 name: Workspace Spec Helper Repo Refs
-status: planned
+status: implemented
 created: '2026-06-12'
 ---
 
@@ -99,11 +99,11 @@ Depends on: Step 4
 
 ## Progress
 
-- [ ] Step 1: Auxiliary Group Configuration
-- [ ] Step 2: New Worktree Auxiliary Expansion
-- [ ] Step 3: Auxiliary-Aware Status, List, And Remove
-- [ ] Step 4: Workspace Model Cleanup
-- [ ] Step 5: Documentation Follow-Up
+- [x] Step 1: Auxiliary Group Configuration
+- [x] Step 2: New Worktree Auxiliary Expansion
+- [x] Step 3: Auxiliary-Aware Status, List, And Remove
+- [x] Step 4: Workspace Model Cleanup
+- [x] Step 5: Documentation Follow-Up
 
 ## Implementation
 

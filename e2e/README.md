@@ -3,7 +3,7 @@
 This suite runs black-box end-to-end tests for `wtk` with real:
 
 - Git repositories and linked worktrees
-- Workspace Mode manifests and generated refs
+- Auxiliary Group configuration, coordinated worktrees, and generated refs
 - ignored `.env` file copying
 - `pnpm install` flows
 
