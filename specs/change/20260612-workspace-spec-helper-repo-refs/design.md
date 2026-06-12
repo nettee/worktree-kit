@@ -125,6 +125,8 @@ Rules:
 - Group creation accepts repository paths, derives names, creates or reuses `[auxiliaries.<name>]`, and writes `[groups.<group-name>]`.
 - Existing `[auxiliaries.<name>]` may be reused only when it resolves to the same repository.
 - Group config that references a missing auxiliary ref fails.
+- Custom Auxiliary Groups must contain at least one Auxiliary Repository Ref; an empty group is invalid because the no-group case already represents ordinary Primary worktree creation.
+- `wtk auxiliary-group add` fails when the same resolved repository appears more than once in the input paths.
 - Duplicate selected groups are deduplicated.
 - Multiple selected groups that include the same resolved Auxiliary Repository are deduplicated.
 - Different repositories that derive the same auxiliary name fail.
@@ -169,22 +171,28 @@ Rules:
 - Derives each Auxiliary Repository Ref name from the repository basename.
 - Creates or reuses matching `[auxiliaries.<name>]` entries.
 - Writes `[groups.<group-name>] auxiliaries = [...]`.
+- Updates only `.wtk/config.toml`; it does not create generated refs or auxiliary state for the Primary Repository main worktree.
 - Fails if the group already exists; this change does not include group update/delete commands.
 
 `wtk new <branch> [--ag <group>]... [--auxiliary-group <group>]...`
 
 - Without group flags, creates only the Primary Repository worktree.
 - With group flags, loads `.wtk/config.toml`, expands groups to Auxiliary Repository Refs, deduplicates resolved repositories, then creates matching Auxiliary Repository worktrees using the existing sibling layout convention.
+- `--path` is not supported when Auxiliary Groups are selected; Primary and Auxiliary worktree paths are derived from the branch using the sibling layout convention.
+- Before creating any worktree, preflight the Primary Repository and all selected Auxiliary Repositories: base ref must exist, target branch must not exist, and target worktree path must be creatable.
 - Writes `.wtk/worktrees.json` entry keyed by the absolute Primary worktree path.
 - Writes generated `refs/<auxiliary-name>` entries in the Primary worktree pointing to Auxiliary Repository worktrees.
-- Rolls back pre-async failures using the existing Workspace Mode style of rollback where applicable.
+- Rolls back synchronous failures, including worktree creation, branch creation, generated ref writes, `.wtk/worktrees.json` writes, and ignored `.env` copy failures.
+- Once asynchronous pnpm install has started, later pnpm failures should remain observable and should not roll back the created worktrees or recorded state.
 
 `wtk status`, `wtk list`, and `wtk remove`
 
 - Read `.wtk/worktrees.json` for Primary worktrees that have recorded auxiliary state.
+- `wtk status` reports current worktree state, not available Auxiliary Group configuration. If the current Primary worktree has no recorded auxiliary state, report ordinary Primary worktree status even when `.wtk/config.toml` defines groups.
 - Validate generated refs against recorded state before reporting success or removal.
 - Treat broken refs as diagnostics in list output, matching the existing Workspace list/status strictness split where practical.
 - List both ordinary Primary Repository worktrees with no auxiliary state and Primary Repository worktrees with recorded auxiliary state. This follows the old Workspace list pattern where list rows can carry extra ref-health details without making every row a different top-level command mode.
+- Before removing a Primary worktree with auxiliary state, require the Primary worktree and all recorded Auxiliary Repository worktrees to be clean. Ignore generated `refs/` dirtiness only in the Primary worktree.
 - Remove recorded Auxiliary Repository worktrees when removing a Primary worktree with auxiliary state.
 
 `wtk send-out` and `wtk bring-in`
@@ -260,14 +268,22 @@ Planned File Changes:
 ### Edge Cases
 
 - Group references an unknown Auxiliary Repository Ref: fail fast.
+- Group has no Auxiliary Repository Refs: fail fast.
+- `wtk auxiliary-group add` receives duplicate input repositories: fail fast.
 - Group creation receives a repository path that is not a Git repository main worktree: fail fast.
 - Derived auxiliary name is unsafe for a generated ref path: fail fast.
 - Existing auxiliary ref name points to a different resolved repository: fail fast.
 - Two selected groups include the same resolved repository: deduplicate.
 - Two selected groups include different repositories with the same derived name: fail fast.
+- `wtk new --ag` finds a missing base ref, existing target branch, or blocked target path in the Primary Repository or any selected Auxiliary Repository: fail fast before creating the coordinated set.
+- A synchronous initialization step fails during `wtk new --ag`: roll back created worktrees, branches, generated refs, and recorded `.wtk/worktrees.json` state.
+- An asynchronous pnpm install fails after it has started: do not roll back; leave the created coordinated set visible and report the failure state.
 - `.wtk/worktrees.json` entry exists but generated `refs/<name>` is missing or points elsewhere: fail fast for status/remove; list may report broken diagnostics.
 - Primary worktree has no `.wtk/worktrees.json` entry: treat as no auxiliary state.
+- Primary Repository main worktree has configured Auxiliary Groups in `.wtk/config.toml` but no `.wtk/worktrees.json` entry: treat it as ordinary Primary worktree state with no generated auxiliary refs.
 - `wtk list` sees a mixture of worktrees with and without auxiliary state: show both; add auxiliary ref summary/diagnostics only to rows that have recorded auxiliary state.
+- `wtk new --ag <group> --path <path>` is requested: fail fast because auxiliary-aware paths are derived from branch and sibling layout.
+- `wtk remove` targets a Primary worktree with auxiliary state and the Primary worktree or any recorded Auxiliary Repository worktree is dirty: fail fast. Generated `refs/` dirtiness in the Primary worktree is ignored.
 - `wtk send-out` is run from a Primary worktree with recorded auxiliary state: fail fast with a clear unsupported message.
 - `wtk bring-in` targets a Primary worktree with recorded auxiliary state: fail fast with a clear unsupported message.
 - Auxiliary worktree branch or path collides with an existing worktree: fail fast using existing creation preflights.
@@ -280,4 +296,5 @@ Planned File Changes:
 - Failure tests for missing groups, invalid repositories, duplicate names, stale refs, and stale worktree state.
 - Failure tests for `send-out` and `bring-in` against worktrees with auxiliary state.
 - List tests for mixed ordinary and auxiliary-aware Primary worktrees, including broken auxiliary refs as row diagnostics.
+- Rollback tests for synchronous `wtk new --ag` failures and non-rollback tests for post-start async pnpm failures.
 - Regression tests that no selected groups preserves current single-repository `wtk new` behavior.

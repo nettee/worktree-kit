@@ -23,6 +23,7 @@ created: '2026-06-12'
 - WTK should store Auxiliary Group configuration as local state under `.wtk/config.toml` and should not enforce whether that configuration is tracked or ignored by Git.
 - WTK should store fixed per-worktree expanded Auxiliary Repository state under `.wtk/worktrees.json`; it does not need to preserve the selected Auxiliary Group names.
 - Primary Repository worktrees with Auxiliary Repositories should generate `refs/<auxiliary-name>` entries that point to the corresponding Auxiliary Repository worktrees, following the existing Workspace Ref structure.
+- The Primary Repository main worktree should not receive auxiliary refs or auxiliary worktree state; only linked Primary worktrees created by `wtk new --ag` have recorded auxiliary state.
 - Auxiliary Repositories participate in coordinated code changes and PRs; they are not spec storage repositories.
 - Legacy Workspace command entrypoints and artifacts are removed in this change: `wtk workspace init`, `wtk workspace add`, `wtk workspace bootstrap`, `.wtk-workspace.toml`, Workspace Repository bootstrapping, and generated Workspace `AGENTS.md` guidance.
 - Existing general worktree commands remain, but their implementation should no longer dispatch between Repository Mode and Workspace Mode.
@@ -107,3 +108,8 @@ Depends on: Step 4
 ## Implementation
 
 See [steps.md](./steps.md).
+
+## Deferred Follow-Ups (DFU)
+
+- Add Auxiliary Group browsing and management commands such as `wtk ag list`, `wtk ag remove`, or `wtk ag update`.
+- Consider adding `wtk new -a <group-name>` as a shorter alias for `wtk new --ag <group-name>`.
