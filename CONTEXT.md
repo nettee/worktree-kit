@@ -12,6 +12,30 @@ _Avoid_: Project folder, clone
 The default `wtk` mode that operates on the current Git repository and its own Repository Worktrees.
 _Avoid_: Sibling mode
 
+**Primary Repository**:
+The repository an agent opens directly as the center of a task. It owns the specs and may expose Auxiliary Repositories for coordinated code changes.
+_Avoid_: Main repo, workspace repo
+
+**Auxiliary Repository**:
+A repository exposed from a Primary Repository when a task needs coordinated code changes or PRs outside the Primary Repository.
+_Avoid_: Helper repo, linked repo
+
+**Auxiliary Repository Ref**:
+A local named reference from a Primary Repository to one Auxiliary Repository. Its name must match the Auxiliary Repository path's final segment.
+_Avoid_: Repository alias, linked repository
+
+**Auxiliary Group**:
+A named local group of Auxiliary Repository Refs that can be selected when creating a Primary Repository worktree. A worktree may select zero or more Auxiliary Groups, and the resulting Auxiliary Repository set is fixed for that worktree.
+_Avoid_: Profile, mode, workspace mode, repository mode
+
+**Standalone Mode**:
+The derived case where a Primary Repository worktree selects no Auxiliary Groups.
+_Avoid_: Repository Mode, single-repository mode
+
+**Coordinated Mode**:
+The derived case where a Primary Repository worktree selects one or more Auxiliary Groups.
+_Avoid_: Workspace Mode, multi-repository mode
+
 **Workspace Mode**:
 The explicit `wtk` mode that operates through a Workspace to coordinate multiple Linked Repositories.
 _Avoid_: Parent-directory mode
