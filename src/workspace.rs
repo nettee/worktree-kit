@@ -331,12 +331,19 @@ pub fn list(session: &mut Session<'_>, options: ListOptions) -> AppResult<()> {
 
 fn workspace_list_output(git: &Git, ctx: &WorkspaceContext) -> AppResult<ListOutput> {
     let workspace_main_branch = current_branch(git, &ctx.repo.main_root)?;
+    let updated_at_by_head =
+        list::commit_timestamps_by_head(git, &ctx.repo.main_root, &ctx.repo.worktrees);
     let mut rows = ctx
         .repo
         .worktrees
         .iter()
         .map(|worktree| {
-            let mut row = list::repository_row_ignoring_workspace_refs(git, &ctx.repo, worktree);
+            let mut row = list::repository_row_ignoring_workspace_refs(
+                git,
+                &ctx.repo,
+                worktree,
+                &updated_at_by_head,
+            );
             row.kind = "workspace_worktree";
             row.workspace_refs = Some(workspace_ref_summary(
                 git,
