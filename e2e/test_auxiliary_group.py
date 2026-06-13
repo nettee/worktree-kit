@@ -217,6 +217,47 @@ def test_auxiliary_group_remove_rejects_primary_branch_drift(run_wtk, repo_facto
     assert primary_linked.exists()
 
 
+def test_auxiliary_group_remove_preflights_locked_auxiliaries(run_wtk, repo_factory) -> None:
+    primary = repo_factory.init_repo("primary")
+    api = repo_factory.init_repo("api")
+    web = repo_factory.init_repo("web")
+
+    run_wtk("auxiliary-group", "add", "full-stack", str(api), str(web), cwd=primary)
+    run_wtk(
+        "new",
+        "feature/aux",
+        "--base",
+        "main",
+        "--ag",
+        "full-stack",
+        "--no-clipboard",
+        cwd=primary,
+    )
+    primary_linked = linked_worktree_path(primary, "feature/aux")
+    api_linked = linked_worktree_path(api, "feature/aux")
+    web_linked = linked_worktree_path(web, "feature/aux")
+    run_git(web, "worktree", "lock", str(web_linked), "--reason", "held")
+
+    removed = run_wtk(
+        "remove",
+        str(primary_linked),
+        "--delete-branch",
+        "--no-clipboard",
+        cwd=primary,
+        check=False,
+    )
+
+    removed.assert_failure()
+    assert "Auxiliary worktree web" in removed.output
+    assert "locked" in removed.output
+    assert primary_linked.exists()
+    assert api_linked.exists()
+    assert web_linked.exists()
+
+    state = json.loads((primary / ".wtk" / "worktrees.json").read_text(encoding="utf-8"))
+    assert str(primary_linked.resolve()) in state["worktrees"]
+
+
 def test_auxiliary_group_add_rejects_duplicate_repository(run_wtk, repo_factory) -> None:
     primary = repo_factory.init_repo("primary")
     api = repo_factory.init_repo("api")

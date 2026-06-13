@@ -470,6 +470,7 @@ fn remove_with_auxiliaries(
     auxiliary::validate_primary_worktree_branch(&worktree, &entry.branch, &target)?;
     auxiliary::validate_refs(&session.git, &target, &entry)?;
     require_clean_ignoring_refs(session, &target, &entry)?;
+    validate_auxiliary_worktrees_removable(&session.git, &entry)?;
     for auxiliary in entry.auxiliaries.values() {
         require_clean(session, &auxiliary.worktree)?;
     }
@@ -499,6 +500,31 @@ fn remove_with_auxiliaries(
         target.display().to_string(),
         format!("removed coordinated worktree {}", target.display()),
     )
+}
+
+fn validate_auxiliary_worktrees_removable(git: &Git, entry: &WorktreeEntry) -> AppResult<()> {
+    for (name, auxiliary) in &entry.auxiliaries {
+        let repo = resolve(git, &auxiliary.worktree)?;
+        let worktree = repo.worktree_by_path(&auxiliary.worktree).ok_or_else(|| {
+            Error::message(format!(
+                "Auxiliary worktree {name} is missing from git worktree list at {}",
+                auxiliary.repository.display()
+            ))
+        })?;
+        if let Some(reason) = &worktree.locked {
+            let detail = if reason.is_empty() {
+                String::new()
+            } else {
+                format!(": {reason}")
+            };
+            return Err(Error::message(format!(
+                "Auxiliary worktree {name} at {} is locked{}",
+                auxiliary.worktree.display(),
+                detail
+            )));
+        }
+    }
+    Ok(())
 }
 
 pub fn prepare_worktree_for_async_pnpm(
