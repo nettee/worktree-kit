@@ -457,16 +457,18 @@ pub fn install_ref_excludes(
         }
     }
     if let Some(inherited_path) = inherited_excludes_path(git, primary_worktree, &exclude_path)? {
-        let inherited = fs::read_to_string(&inherited_path).map_err(|error| {
-            Error::message(format!(
-                "failed to read inherited git exclude file {}: {}",
-                inherited_path.display(),
-                error
-            ))
-        })?;
-        let trimmed = inherited.trim_end();
-        if !trimmed.is_empty() {
-            sections.push(trimmed.to_string());
+        if inherited_path.exists() {
+            let inherited = fs::read_to_string(&inherited_path).map_err(|error| {
+                Error::message(format!(
+                    "failed to read inherited git exclude file {}: {}",
+                    inherited_path.display(),
+                    error
+                ))
+            })?;
+            let trimmed = inherited.trim_end();
+            if !trimmed.is_empty() {
+                sections.push(trimmed.to_string());
+            }
         }
     }
     let ignored = ignored_ref_paths(entry)

@@ -146,6 +146,42 @@ def test_auxiliary_group_new_preserves_global_excludes(run_wtk, repo_factory, tm
     assert run_git(primary_linked, "diff", "--cached", "--name-only", env=env).stdout == ""
 
 
+def test_auxiliary_group_new_skips_missing_global_excludes(
+    run_wtk, repo_factory, tmp_path
+) -> None:
+    primary = repo_factory.init_repo("primary")
+    api = repo_factory.init_repo("api")
+    home = tmp_path / "home"
+    home.mkdir()
+    missing_global_excludes = tmp_path / "missing-global-excludes"
+    env = {"HOME": str(home)}
+
+    run_git(
+        primary,
+        "config",
+        "--global",
+        "core.excludesFile",
+        str(missing_global_excludes),
+        env=env,
+    )
+    run_wtk("auxiliary-group", "add", "backend", str(api), cwd=primary, env=env)
+    run_wtk(
+        "new",
+        "feature/aux",
+        "--base",
+        "main",
+        "--ag",
+        "backend",
+        "--no-clipboard",
+        cwd=primary,
+        env=env,
+    )
+
+    primary_linked = linked_worktree_path(primary, "feature/aux")
+    assert not missing_global_excludes.exists()
+    assert (primary_linked / "refs" / "api").is_symlink()
+
+
 def test_auxiliary_group_new_preserves_implicit_global_excludes(
     run_wtk, repo_factory, tmp_path
 ) -> None:
