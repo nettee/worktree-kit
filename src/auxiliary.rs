@@ -441,14 +441,45 @@ pub fn install_ref_excludes(
     if let Some(parent) = exclude_path.parent() {
         fs::create_dir_all(parent)?;
     }
+    let mut sections = Vec::new();
+    if exclude_path.exists() {
+        let existing = fs::read_to_string(&exclude_path).map_err(|error| {
+            Error::message(format!(
+                "failed to read git exclude file {}: {}",
+                exclude_path.display(),
+                error
+            ))
+        })?;
+        let trimmed = existing.trim_end();
+        if !trimmed.is_empty() {
+            sections.push(trimmed.to_string());
+        }
+    }
+    if let Some(inherited_path) = inherited_excludes_path(git, primary_worktree, &exclude_path)? {
+        let inherited = fs::read_to_string(&inherited_path).map_err(|error| {
+            Error::message(format!(
+                "failed to read inherited git exclude file {}: {}",
+                inherited_path.display(),
+                error
+            ))
+        })?;
+        let trimmed = inherited.trim_end();
+        if !trimmed.is_empty() {
+            sections.push(trimmed.to_string());
+        }
+    }
     let ignored = ignored_ref_paths(entry)
         .into_iter()
+        .map(|path| escape_gitignore_pattern(&path))
         .collect::<Vec<_>>()
         .join("\n");
-    let content = if ignored.is_empty() {
+    if !ignored.is_empty() {
+        sections.push(ignored);
+    }
+    let content = if sections.is_empty() {
         String::new()
     } else {
-        format!("{ignored}\n")
+        format!("{}\n", sections.join("\n"))
     };
     fs::write(&exclude_path, content).map_err(|error| {
         Error::message(format!(
@@ -630,6 +661,25 @@ fn worktree_git_dir(git: &Git, worktree: &Path) -> AppResult<PathBuf> {
     Ok(git_dir)
 }
 
+fn inherited_excludes_path(
+    git: &Git,
+    worktree: &Path,
+    exclude_path: &Path,
+) -> AppResult<Option<PathBuf>> {
+    match git.run(worktree, ["config", "--path", "--get", "core.excludesFile"]) {
+        Ok(output) => {
+            let path = PathBuf::from(output.stdout.trim());
+            if path.as_os_str().is_empty() || same_path(&path, exclude_path) {
+                Ok(None)
+            } else {
+                Ok(Some(path))
+            }
+        }
+        Err(Error::Git(error)) if error.exit_code == Some(1) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 fn parse_status_paths(path: &str) -> Option<Vec<String>> {
     let mut paths = Vec::new();
     let mut start = 0usize;
@@ -702,6 +752,25 @@ fn decode_status_path(path: &str) -> Option<String> {
     }
 
     String::from_utf8(decoded).ok()
+}
+
+fn escape_gitignore_pattern(path: &str) -> String {
+    let mut escaped = String::with_capacity(path.len());
+    for ch in path.chars() {
+        match ch {
+            '\\' | '*' | '?' | '[' => {
+                escaped.push('\\');
+                escaped.push(ch);
+            }
+            _ => escaped.push(ch),
+        }
+    }
+    while escaped.ends_with(' ') {
+        let new_len = escaped.len() - 1;
+        escaped.truncate(new_len);
+        escaped.push_str("\\ ");
+    }
+    escaped
 }
 
 fn repository_basename(path: &Path) -> AppResult<String> {

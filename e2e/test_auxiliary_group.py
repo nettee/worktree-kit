@@ -78,6 +78,74 @@ def test_auxiliary_group_new_status_list_and_remove(run_wtk, repo_factory) -> No
     assert "feature/aux" not in run_git(web, "branch", "--list", "feature/aux").stdout
 
 
+def test_auxiliary_group_new_escapes_gitignore_metacharacters(run_wtk, repo_factory) -> None:
+    primary = repo_factory.init_repo("primary")
+    wildcard_aux = repo_factory.init_repo("a*")
+
+    run_wtk("auxiliary-group", "add", "backend", str(wildcard_aux), cwd=primary)
+    run_wtk(
+        "new",
+        "feature/aux",
+        "--base",
+        "main",
+        "--ag",
+        "backend",
+        "--no-clipboard",
+        cwd=primary,
+    )
+    primary_linked = linked_worktree_path(primary, "feature/aux")
+    (primary_linked / "refs" / "actual").write_text("visible\n", encoding="utf-8")
+
+    assert run_git(primary_linked, "status", "--porcelain", "--untracked-files=all").stdout == "?? refs/actual\n"
+
+    listing = json.loads(run_wtk("list", "--json", cwd=primary).stdout)
+    row = next(row for row in listing["worktrees"] if row["path"] == str(primary_linked.resolve()))
+    assert row["dirty"] is True
+    assert "dirty" in row["labels"]
+
+    removed = run_wtk(
+        "remove",
+        str(primary_linked),
+        "--delete-branch",
+        "--no-clipboard",
+        cwd=primary,
+        check=False,
+    )
+    removed.assert_failure()
+    assert "worktree is dirty" in removed.output
+    assert "refs/actual" in removed.output
+
+
+def test_auxiliary_group_new_preserves_global_excludes(run_wtk, repo_factory, tmp_path) -> None:
+    primary = repo_factory.init_repo("primary")
+    api = repo_factory.init_repo("api")
+    home = tmp_path / "home"
+    home.mkdir()
+    global_excludes = tmp_path / "global-excludes"
+    global_excludes.write_text(".DS_Store\n", encoding="utf-8")
+    env = {"HOME": str(home)}
+
+    run_git(primary, "config", "--global", "core.excludesFile", str(global_excludes), env=env)
+    run_wtk("auxiliary-group", "add", "backend", str(api), cwd=primary, env=env)
+    run_wtk(
+        "new",
+        "feature/aux",
+        "--base",
+        "main",
+        "--ag",
+        "backend",
+        "--no-clipboard",
+        cwd=primary,
+        env=env,
+    )
+    primary_linked = linked_worktree_path(primary, "feature/aux")
+    (primary_linked / ".DS_Store").write_text("ignored\n", encoding="utf-8")
+
+    assert run_git(primary_linked, "status", "--porcelain", "--untracked-files=normal", env=env).stdout == ""
+    run_git(primary_linked, "add", ".", env=env)
+    assert run_git(primary_linked, "diff", "--cached", "--name-only", env=env).stdout == ""
+
+
 def test_auxiliary_group_new_prepares_each_auxiliary_base(run_wtk, tmp_path) -> None:
     primary_origin = tmp_path / "primary-origin.git"
     api_origin = tmp_path / "api-origin.git"
