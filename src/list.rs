@@ -1,3 +1,4 @@
+use crate::auxiliary;
 use crate::gitexec::{Git, RepoContext, Worktree, same_path};
 use crate::output::Style;
 use crate::{AppResult, Error};
@@ -36,19 +37,19 @@ pub struct ListRow {
     pub labels: Vec<String>,
     pub diagnostics: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub workspace_refs: Option<WorkspaceRefSummary>,
+    pub auxiliary_refs: Option<AuxiliaryRefSummary>,
 }
 
 #[derive(Debug, Serialize)]
-pub struct WorkspaceRefSummary {
+pub struct AuxiliaryRefSummary {
     pub total: usize,
     pub ok: usize,
     pub broken: usize,
-    pub details: Vec<WorkspaceRefDetail>,
+    pub details: Vec<AuxiliaryRefDetail>,
 }
 
 #[derive(Debug, Serialize)]
-pub struct WorkspaceRefDetail {
+pub struct AuxiliaryRefDetail {
     pub name: String,
     pub ok: bool,
     pub expected_target: PathBuf,
@@ -105,28 +106,19 @@ pub fn repository_row(
     worktree: &Worktree,
     updated_at_by_head: &HashMap<String, Result<i64, String>>,
 ) -> ListRow {
-    repository_row_with_options(git, repo, worktree, false, updated_at_by_head)
+    repository_row_with_options(git, repo, worktree, None, updated_at_by_head)
 }
 
-pub fn repository_row_ignoring_workspace_refs(
+pub(crate) fn repository_row_with_options(
     git: &Git,
     repo: &RepoContext,
     worktree: &Worktree,
-    updated_at_by_head: &HashMap<String, Result<i64, String>>,
-) -> ListRow {
-    repository_row_with_options(git, repo, worktree, true, updated_at_by_head)
-}
-
-fn repository_row_with_options(
-    git: &Git,
-    repo: &RepoContext,
-    worktree: &Worktree,
-    ignore_workspace_refs: bool,
+    ignored_refs: Option<&std::collections::BTreeSet<String>>,
     updated_at_by_head: &HashMap<String, Result<i64, String>>,
 ) -> ListRow {
     let mut diagnostics = Vec::new();
     let updated_at = commit_timestamp(&worktree.head, updated_at_by_head, &mut diagnostics);
-    let dirty = dirty_state(git, &worktree.path, &mut diagnostics, ignore_workspace_refs);
+    let dirty = dirty_state(git, &worktree.path, &mut diagnostics, ignored_refs);
     let is_main = same_path(&worktree.path, &repo.main_root);
     let is_current = same_path(&worktree.path, &repo.current_root);
     let mut labels = labels_for_worktree(worktree, is_main, is_current, dirty);
@@ -154,7 +146,7 @@ fn repository_row_with_options(
         updated: relative_time(updated_at),
         labels,
         diagnostics,
-        workspace_refs: None,
+        auxiliary_refs: None,
     }
 }
 
@@ -335,18 +327,12 @@ fn dirty_state(
     git: &Git,
     path: &Path,
     diagnostics: &mut Vec<String>,
-    ignore_workspace_refs: bool,
+    ignored_refs: Option<&std::collections::BTreeSet<String>>,
 ) -> bool {
-    match git.run(
-        path,
-        ["status", "--porcelain=v1", "--untracked-files=normal"],
-    ) {
-        Ok(output) => output.stdout.lines().any(|line| {
-            !ignore_workspace_refs
-                || !matches!(
-                    line.get(3..),
-                    Some(path) if path == "refs/" || path.starts_with("refs/")
-                )
+    match git.run(path, ["status", "--porcelain=v1", "--untracked-files=all"]) {
+        Ok(output) => output.stdout.lines().any(|line| match ignored_refs {
+            Some(ignored) => !auxiliary::status_line_ignored(line, ignored),
+            None => true,
         }),
         Err(error) => {
             diagnostics.push(format!("failed to read dirty state: {error}"));
@@ -371,7 +357,7 @@ fn branch_text(row: &ListRow) -> String {
 
 fn state_text(row: &ListRow) -> String {
     let mut labels = row.labels.clone();
-    if let Some(summary) = &row.workspace_refs {
+    if let Some(summary) = &row.auxiliary_refs {
         let status = if summary.broken == 0 { "ok" } else { "broken" };
         labels.insert(0, format!("refs {}/{} {status}", summary.ok, summary.total));
     }
@@ -517,7 +503,7 @@ mod tests {
             updated: "now".to_string(),
             labels: Vec::new(),
             diagnostics: Vec::new(),
-            workspace_refs: None,
+            auxiliary_refs: None,
         }
     }
 }

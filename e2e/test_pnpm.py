@@ -46,39 +46,50 @@ def test_send_out_returns_before_slow_real_pnpm_install_finishes(run_wtk, repo_f
     wait_until("slow send-out pnpm marker", lambda: linked.joinpath(".pnpm-send-out.txt").exists(), timeout=15.0)
 
 
-def test_workspace_new_copies_env_and_runs_real_pnpm_install(run_wtk, workspace_factory, repo_factory) -> None:
-    workspace, members = workspace_factory.create()
-    run_wtk("workspace", "init", cwd=workspace)
-    run_wtk("workspace", "add", str(members["A"]), cwd=workspace)
-    run_wtk("workspace", "add", str(members["B"]), cwd=workspace)
-    repo_factory.commit_workspace_manifest(workspace)
+def test_auxiliary_group_new_copies_env_and_runs_real_pnpm_install(run_wtk, repo_factory) -> None:
+    primary = repo_factory.init_repo("primary")
+    members = {
+        "A": repo_factory.init_repo("A"),
+        "B": repo_factory.init_repo("B"),
+    }
+    run_wtk("ag", "add", "full-stack", str(members["A"]), str(members["B"]), cwd=primary)
 
     for name, repo in members.items():
         repo_factory.commit_files(repo, {".gitignore": ".env\n"}, "ignore env")
         (repo / ".env").write_text(f"{name}=value\n", encoding="utf-8")
         repo_factory.add_real_pnpm_project(repo, marker_name=f".pnpm-{name.lower()}.txt")
 
-    out = run_wtk("new", "feature/ws-init", "--base", "main", "--no-clipboard", cwd=workspace).output
-    workspace_linked = linked_worktree_path(workspace, "feature/ws-init")
-    linked_a = linked_worktree_path(members["A"], "feature/ws-init")
-    linked_b = linked_worktree_path(members["B"], "feature/ws-init")
+    out = run_wtk(
+        "new",
+        "feature/aux-init",
+        "--base",
+        "main",
+        "--ag",
+        "full-stack",
+        "--no-clipboard",
+        cwd=primary,
+    ).output
+    primary_linked = linked_worktree_path(primary, "feature/aux-init")
+    linked_a = linked_worktree_path(members["A"], "feature/aux-init")
+    linked_b = linked_worktree_path(members["B"], "feature/aux-init")
 
-    assert workspace_linked.exists()
-    wait_until("workspace pnpm markers", lambda: linked_a.joinpath(".pnpm-a.txt").exists() and linked_b.joinpath(".pnpm-b.txt").exists(), timeout=15.0)
+    assert primary_linked.exists()
+    wait_until("auxiliary pnpm markers", lambda: linked_a.joinpath(".pnpm-a.txt").exists() and linked_b.joinpath(".pnpm-b.txt").exists(), timeout=15.0)
     assert linked_a.joinpath(".env").read_text(encoding="utf-8") == "A=value\n"
     assert linked_b.joinpath(".env").read_text(encoding="utf-8") == "B=value\n"
     assert "copied ignored .env: .env" in out
     assert "running pnpm install asynchronously" in out
 
 
-def test_workspace_new_returns_before_slow_real_pnpm_install_finishes(
-    run_wtk, workspace_factory, repo_factory
+def test_auxiliary_group_new_returns_before_slow_real_pnpm_install_finishes(
+    run_wtk, repo_factory
 ) -> None:
-    workspace, members = workspace_factory.create()
-    run_wtk("workspace", "init", cwd=workspace)
-    run_wtk("workspace", "add", str(members["A"]), cwd=workspace)
-    run_wtk("workspace", "add", str(members["B"]), cwd=workspace)
-    repo_factory.commit_workspace_manifest(workspace)
+    primary = repo_factory.init_repo("primary")
+    members = {
+        "A": repo_factory.init_repo("A"),
+        "B": repo_factory.init_repo("B"),
+    }
+    run_wtk("ag", "add", "full-stack", str(members["A"]), str(members["B"]), cwd=primary)
 
     for name, repo in members.items():
         repo_factory.commit_files(repo, {".gitignore": ".env\n"}, "ignore env")
@@ -89,19 +100,26 @@ def test_workspace_new_returns_before_slow_real_pnpm_install_finishes(
 
     started = time.monotonic()
     out = run_wtk(
-        "new", "feature/ws-slow-pnpm", "--base", "main", "--no-clipboard", cwd=workspace
+        "new",
+        "feature/aux-slow-pnpm",
+        "--base",
+        "main",
+        "--ag",
+        "full-stack",
+        "--no-clipboard",
+        cwd=primary,
     ).output
     elapsed = time.monotonic() - started
 
-    assert elapsed < 1.5, f"workspace create waited for slow pnpm install: {elapsed:.2f}s"
-    assert "created workspace worktree" in out
+    assert elapsed < 1.5, f"coordinated create waited for slow pnpm install: {elapsed:.2f}s"
+    assert "created coordinated worktree" in out
     assert "running pnpm install asynchronously" in out
-    linked_a = linked_worktree_path(members["A"], "feature/ws-slow-pnpm")
-    linked_b = linked_worktree_path(members["B"], "feature/ws-slow-pnpm")
+    linked_a = linked_worktree_path(members["A"], "feature/aux-slow-pnpm")
+    linked_b = linked_worktree_path(members["B"], "feature/aux-slow-pnpm")
     assert linked_a.joinpath(".env").read_text(encoding="utf-8") == "A=value\n"
     assert linked_b.joinpath(".env").read_text(encoding="utf-8") == "B=value\n"
     wait_until(
-        "slow workspace pnpm markers",
+        "slow auxiliary pnpm markers",
         lambda: linked_a.joinpath(".pnpm-slow-a.txt").exists()
         and linked_b.joinpath(".pnpm-slow-b.txt").exists(),
         timeout=15.0,

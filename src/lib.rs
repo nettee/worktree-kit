@@ -1,3 +1,4 @@
+pub mod auxiliary;
 pub mod cli;
 pub mod clipboard;
 pub mod gitexec;
@@ -5,7 +6,6 @@ pub mod list;
 pub mod output;
 pub mod paths;
 pub mod upgrade;
-pub mod workspace;
 pub mod worktree;
 
 pub const IS_RELEASE_BUILD: bool = option_env!("WTK_VERSION").is_some();

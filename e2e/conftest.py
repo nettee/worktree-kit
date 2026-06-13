@@ -107,6 +107,10 @@ def parse_yaml(output: str):
     return yaml.safe_load(output)
 
 
+def git_common_dir(repo: Path) -> Path:
+    return Path(run_git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip())
+
+
 @pytest.fixture(scope="session")
 def required_commands() -> dict[str, str]:
     return {
@@ -153,10 +157,6 @@ class RepoFactory:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(contents, encoding="utf-8")
         run_git(repo, "add", ".")
-        run_git(repo, "commit", "-m", message)
-
-    def commit_workspace_manifest(self, repo: Path, message: str = "record workspace manifest") -> None:
-        run_git(repo, "add", ".wtk-workspace.toml")
         run_git(repo, "commit", "-m", message)
 
     def add_real_pnpm_project(
@@ -216,24 +216,6 @@ class RepoFactory:
         run_git(repo, "commit", "-m", "add pnpm lockfile")
 
 
-class WorkspaceFactory:
-    def __init__(self, repo_factory: RepoFactory):
-        self.repo_factory = repo_factory
-
-    def create(self, member_names: tuple[str, ...] = ("A", "B"), branch: str = "main") -> tuple[Path, dict[str, Path]]:
-        workspace = self.repo_factory.init_repo("workspace", branch=branch)
-        members = {
-            name: self.repo_factory.init_repo(name, branch=branch)
-            for name in member_names
-        }
-        return workspace, members
-
-
 @pytest.fixture
 def repo_factory(tmp_path: Path) -> RepoFactory:
     return RepoFactory(tmp_path)
-
-
-@pytest.fixture
-def workspace_factory(repo_factory: RepoFactory) -> WorkspaceFactory:
-    return WorkspaceFactory(repo_factory)

@@ -1,10 +1,12 @@
+use crate::auxiliary::{self, AuxiliaryRefStatus, AuxiliaryWorktreeState, WorktreeEntry};
 use crate::clipboard::ClipboardProvider;
 use crate::gitexec::{Git, RepoContext, absolute_path, is_git_exit, resolve, same_path};
-use crate::list::{self, ListOptions};
+use crate::list::{self, AuxiliaryRefDetail, AuxiliaryRefSummary, ListOptions};
 use crate::output;
 use crate::paths::default_path;
 use crate::{AppResult, Error};
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
@@ -32,6 +34,7 @@ pub struct Options {
     pub from_current: bool,
     pub delete_branch: bool,
     pub no_clipboard: bool,
+    pub auxiliary_groups: Vec<String>,
 }
 
 pub struct Session<'a> {
@@ -68,6 +71,25 @@ struct StatusOutput {
     current_is_main: bool,
 }
 
+#[derive(Serialize)]
+struct AuxiliaryStatusOutput {
+    mode: &'static str,
+    primary_worktree: PathBuf,
+    primary_main_worktree: PathBuf,
+    branch: String,
+    current_is_main: bool,
+    state: PathBuf,
+    auxiliaries: BTreeMap<String, AuxiliaryStatusEntry>,
+}
+
+#[derive(Serialize)]
+struct AuxiliaryStatusEntry {
+    repository: PathBuf,
+    worktree: PathBuf,
+    ref_path: PathBuf,
+    current_target: PathBuf,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct SnapshotFile {
     relative: PathBuf,
@@ -96,6 +118,9 @@ pub enum AsyncPnpmInstall {
 }
 
 pub fn create(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
+    if !opts.auxiliary_groups.is_empty() {
+        return create_with_auxiliaries(session, opts);
+    }
     let repo = repo(session)?;
     if opts.branch.is_empty() {
         return Err(Error::message("branch is required"));
@@ -137,6 +162,188 @@ pub fn create(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
     )
 }
 
+fn create_with_auxiliaries(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
+    let repo = repo(session)?;
+    if opts.branch.is_empty() {
+        return Err(Error::message("branch is required"));
+    }
+    if opts.from_current && !opts.base.is_empty() {
+        return Err(Error::message(
+            "--base and --from-current cannot be used together",
+        ));
+    }
+    if !opts.path.is_empty() {
+        return Err(Error::message(
+            "--path is not supported with Auxiliary Groups; paths are derived from the branch name",
+        ));
+    }
+    let selections = auxiliary::expand_groups(
+        &session.git,
+        &repo.main_root,
+        &repo.git_common_dir,
+        &opts.auxiliary_groups,
+    )?;
+    if selections.is_empty() {
+        return Err(Error::message(
+            "at least one Auxiliary Group with auxiliaries is required",
+        ));
+    }
+
+    let primary_path = create_target_path(&repo, &opts.branch, "")?;
+    let coordinated_current_branch = if opts.from_current {
+        Some(current_branch_name(session, &repo.current_root)?)
+    } else {
+        None
+    };
+    let primary_base = match coordinated_current_branch.clone() {
+        Some(branch) => branch,
+        None => prepare_create_base(session, &repo, &opts)?,
+    };
+    if branch_exists(&session.git, &repo.main_root, &opts.branch)? {
+        return Err(Error::message(format!(
+            "branch already exists in Primary Repository: {}",
+            opts.branch
+        )));
+    }
+
+    let mut auxiliary_bases = BTreeMap::new();
+    let mut auxiliary_paths = BTreeMap::new();
+    for selection in &selections {
+        let base = match coordinated_current_branch.clone() {
+            Some(branch) => branch,
+            None => prepare_create_base(session, &selection.repo, &opts)?,
+        };
+        if branch_exists(&session.git, &selection.repo.main_root, &opts.branch)? {
+            return Err(Error::message(format!(
+                "branch already exists in auxiliary repository {}: {}",
+                selection.name, opts.branch
+            )));
+        }
+        let path = default_path(&selection.repo.main_root, &opts.branch);
+        if path.exists() {
+            return Err(Error::message(format!(
+                "target path already exists for auxiliary repository {}: {}",
+                selection.name,
+                path.display()
+            )));
+        }
+        ensure_creatable_parent(&path)?;
+        auxiliary_bases.insert(selection.name.clone(), base);
+        auxiliary_paths.insert(selection.name.clone(), path);
+    }
+
+    let mut created = Vec::<(PathBuf, PathBuf, String)>::new();
+    let previous_state = auxiliary::read_state(&repo.main_root, &repo.git_common_dir)?;
+    let result = (|| {
+        create_git_worktree(
+            session,
+            &repo.main_root,
+            &primary_path,
+            &opts.branch,
+            &primary_base,
+        )?;
+        created.push((
+            repo.main_root.clone(),
+            primary_path.clone(),
+            opts.branch.clone(),
+        ));
+
+        for selection in &selections {
+            let path = auxiliary_paths
+                .get(&selection.name)
+                .ok_or_else(|| Error::message("missing auxiliary target path"))?;
+            let base = auxiliary_bases
+                .get(&selection.name)
+                .ok_or_else(|| Error::message("missing auxiliary base"))?;
+            create_git_worktree(session, &selection.repo.main_root, path, &opts.branch, base)?;
+            created.push((
+                selection.repo.main_root.clone(),
+                path.clone(),
+                opts.branch.clone(),
+            ));
+        }
+
+        for selection in &selections {
+            let path = auxiliary_paths
+                .get(&selection.name)
+                .ok_or_else(|| Error::message("missing auxiliary target path"))?;
+            auxiliary::write_ref(&primary_path.join("refs").join(&selection.name), path)?;
+            auxiliary::write_auxiliary_marker(
+                &session.git,
+                path,
+                &auxiliary::AuxiliaryMarker {
+                    primary_repository: repo.main_root.clone(),
+                    primary_worktree: primary_path.clone(),
+                    branch: opts.branch.clone(),
+                },
+            )?;
+        }
+
+        let primary_env = snapshot_ignored_env_files(session, &repo.main_root)?;
+        print_copied_ignored_env_files(session, copy_snapshot_files(&primary_env, &primary_path)?)?;
+        for selection in &selections {
+            let path = auxiliary_paths
+                .get(&selection.name)
+                .ok_or_else(|| Error::message("missing auxiliary target path"))?;
+            worktree_init_without_pnpm(session, &selection.repo.main_root, path)?;
+        }
+
+        let mut state = previous_state.clone();
+        let auxiliaries = selections
+            .iter()
+            .map(|selection| {
+                let worktree = auxiliary_paths
+                    .get(&selection.name)
+                    .ok_or_else(|| Error::message("missing auxiliary target path"))?;
+                Ok((
+                    selection.name.clone(),
+                    AuxiliaryWorktreeState {
+                        repository: selection.repository.clone(),
+                        worktree: worktree.clone(),
+                    },
+                ))
+            })
+            .collect::<AppResult<BTreeMap<_, _>>>()?;
+        state.worktrees.insert(
+            absolute_path(&primary_path),
+            WorktreeEntry {
+                branch: opts.branch.clone(),
+                auxiliaries,
+            },
+        );
+        let entry = auxiliary::worktree_entry(&state, &primary_path)
+            .ok_or_else(|| Error::message("missing coordinated worktree state after creation"))?;
+        auxiliary::install_ref_excludes(&session.git, &primary_path, entry)?;
+        auxiliary::write_state(&repo.git_common_dir, &state)?;
+        Ok(())
+    })();
+
+    if let Err(error) = result {
+        for (repo_root, path, branch) in created.iter().rev() {
+            let _ = session.git.run(
+                repo_root,
+                ["worktree", "remove", "--force", &path.display().to_string()],
+            );
+            let _ = session.git.run(repo_root, ["branch", "-D", branch]);
+        }
+        let _ = auxiliary::write_state(&repo.git_common_dir, &previous_state);
+        return Err(error);
+    }
+
+    finish(
+        session,
+        opts.no_clipboard,
+        primary_path.display().to_string(),
+        format!("created coordinated worktree at {}", primary_path.display()),
+    )?;
+    for selection in &selections {
+        if let Some(path) = auxiliary_paths.get(&selection.name) {
+            start_worktree_async_pnpm_install(session, path, "worktree initialized")?;
+        }
+    }
+    start_worktree_async_pnpm_install(session, &primary_path, "worktree initialized").map(|_| ())
+}
+
 pub fn checkout(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
     let repo = repo(session)?;
     if opts.branch.is_empty() {
@@ -174,6 +381,31 @@ pub fn checkout(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
 
 pub fn status(session: &mut Session<'_>) -> AppResult<()> {
     let repo = repo(session)?;
+    let state = auxiliary::read_state(&repo.main_root, &repo.git_common_dir)?;
+    if let Some(entry) = auxiliary::worktree_entry(&state, &repo.current_root) {
+        let worktree = repo.worktree_by_path(&repo.current_root).ok_or_else(|| {
+            Error::message(format!(
+                "worktree at {} is missing from git worktree list",
+                repo.current_root.display()
+            ))
+        })?;
+        auxiliary::validate_primary_worktree_branch(worktree, &entry.branch, &repo.current_root)?;
+        let refs = auxiliary::validate_refs(&session.git, &repo.current_root, entry)?;
+        let payload = AuxiliaryStatusOutput {
+            mode: "coordinated",
+            primary_worktree: repo.current_root.clone(),
+            primary_main_worktree: repo.main_root.clone(),
+            branch: entry.branch.clone(),
+            current_is_main: repo.current_is_main,
+            state: auxiliary::state_path(&repo.main_root, &repo.git_common_dir),
+            auxiliaries: auxiliary_status_entries(&repo.current_root, entry, &refs),
+        };
+        serde_yaml::to_writer(&mut *session.out, &payload).map_err(|error| {
+            Error::message(format!("failed to serialize status as YAML: {error}"))
+        })?;
+        writeln!(session.out)?;
+        return Ok(());
+    }
     let payload = StatusOutput {
         cwd: repo.cwd.clone(),
         current_root: repo.current_root.clone(),
@@ -190,7 +422,38 @@ pub fn status(session: &mut Session<'_>) -> AppResult<()> {
 
 pub fn list(session: &mut Session<'_>, options: ListOptions) -> AppResult<()> {
     let repo = repo(session)?;
-    let payload = list::repository_output(&session.git, &repo);
+    let state = auxiliary::read_state(&repo.main_root, &repo.git_common_dir)?;
+    let updated_at_by_head =
+        list::commit_timestamps_by_head(&session.git, &repo.main_root, &repo.worktrees);
+    let mut rows = Vec::with_capacity(repo.worktrees.len());
+    for worktree in &repo.worktrees {
+        let mut row = list::repository_row(&session.git, &repo, worktree, &updated_at_by_head);
+        if let Some(entry) = auxiliary::worktree_entry(&state, &worktree.path) {
+            let ignored_refs = auxiliary::ignored_ref_paths(entry);
+            row = list::repository_row_with_options(
+                &session.git,
+                &repo,
+                worktree,
+                Some(&ignored_refs),
+                &updated_at_by_head,
+            );
+            row.kind = "primary_worktree";
+            if let Err(error) =
+                auxiliary::validate_primary_worktree_branch(worktree, &entry.branch, &worktree.path)
+            {
+                row.diagnostics.push(error.to_string());
+                if !row.labels.iter().any(|label| label == "error") {
+                    row.labels.push("error".to_string());
+                }
+            }
+            row.auxiliary_refs = Some(auxiliary_ref_summary(&session.git, &worktree.path, entry));
+        }
+        rows.push(row);
+    }
+    let payload = list::ListOutput {
+        mode: "repository",
+        worktrees: list::sorted_rows(rows),
+    };
     list::render(
         session.out,
         &payload,
@@ -227,6 +490,183 @@ pub fn init_worktree_with_async_pnpm(
         ignored_env_snapshot_root,
     )?;
     start_worktree_async_pnpm_install(session, worktree_path, "worktree initialized").map(|_| ())
+}
+
+fn worktree_init_without_pnpm(
+    session: &mut Session<'_>,
+    source_root: &Path,
+    worktree_path: &Path,
+) -> AppResult<()> {
+    let ignored_env_files = snapshot_ignored_env_files(session, source_root)?;
+    print_copied_ignored_env_files(
+        session,
+        copy_snapshot_files(&ignored_env_files, worktree_path)?,
+    )
+}
+
+fn remove_with_auxiliaries(
+    session: &mut Session<'_>,
+    opts: Options,
+    repo: RepoContext,
+    target: PathBuf,
+    worktree: crate::gitexec::Worktree,
+    state: &mut auxiliary::WorktreesState,
+    entry: WorktreeEntry,
+) -> AppResult<()> {
+    auxiliary::validate_primary_worktree_branch(&worktree, &entry.branch, &target)?;
+    if let Some(reason) = &worktree.locked {
+        let detail = if reason.is_empty() {
+            String::new()
+        } else {
+            format!(": {reason}")
+        };
+        return Err(Error::message(format!(
+            "Primary worktree at {} is locked{}",
+            target.display(),
+            detail
+        )));
+    }
+    auxiliary::validate_refs(&session.git, &target, &entry)?;
+    require_clean_ignoring_refs(session, &target, &entry)?;
+    validate_auxiliary_worktrees_removable(&session.git, &entry)?;
+    for auxiliary in entry.auxiliaries.values() {
+        require_clean(session, &auxiliary.worktree)?;
+    }
+    preflight_branch_deletions(
+        &session.git,
+        &repo.main_root,
+        &worktree,
+        opts.delete_branch,
+        &entry,
+    )?;
+
+    for auxiliary in entry.auxiliaries.values() {
+        remove_git_worktree(session, &auxiliary.repository, &auxiliary.worktree)?;
+    }
+    remove_git_worktree_force(session, &repo.main_root, &target)?;
+
+    if opts.delete_branch {
+        for auxiliary in entry.auxiliaries.values() {
+            if let Err(error) = delete_branch(session, &auxiliary.repository, &entry.branch) {
+                return Err(Error::message(format!(
+                    "coordinated worktrees removed, but auxiliary branch deletion failed; coordinated state remains in {}: {}",
+                    auxiliary::state_path(&repo.main_root, &repo.git_common_dir).display(),
+                    error
+                )));
+            }
+        }
+        if worktree.branch.is_empty() {
+            return Err(Error::message(
+                "cannot delete branch for detached linked worktree",
+            ));
+        }
+        if let Err(error) = delete_branch(session, &repo.main_root, &worktree.branch) {
+            return Err(Error::message(format!(
+                "coordinated worktrees removed, but primary branch deletion failed; coordinated state remains in {}: {}",
+                auxiliary::state_path(&repo.main_root, &repo.git_common_dir).display(),
+                error
+            )));
+        }
+    }
+    auxiliary::remove_worktree_entry(state, &target);
+    auxiliary::write_state(&repo.git_common_dir, state)?;
+
+    finish(
+        session,
+        opts.no_clipboard,
+        target.display().to_string(),
+        format!("removed coordinated worktree {}", target.display()),
+    )
+}
+
+fn preflight_branch_deletions(
+    git: &Git,
+    primary_repo_root: &Path,
+    worktree: &crate::gitexec::Worktree,
+    delete_branch: bool,
+    entry: &WorktreeEntry,
+) -> AppResult<()> {
+    if !delete_branch {
+        return Ok(());
+    }
+    for auxiliary in entry.auxiliaries.values() {
+        if let Err(error) = require_branch_deletable(git, &auxiliary.repository, &entry.branch) {
+            return Err(Error::message(format!(
+                "cannot remove coordinated worktree with --delete-branch because auxiliary branch deletion would fail in {}: {}",
+                auxiliary.repository.display(),
+                error
+            )));
+        }
+    }
+    if worktree.branch.is_empty() {
+        return Err(Error::message(
+            "cannot delete branch for detached linked worktree",
+        ));
+    }
+    if let Err(error) = require_branch_deletable(git, primary_repo_root, &worktree.branch) {
+        return Err(Error::message(format!(
+            "cannot remove coordinated worktree with --delete-branch because primary branch deletion would fail in {}: {}",
+            primary_repo_root.display(),
+            error
+        )));
+    }
+    Ok(())
+}
+
+fn require_branch_deletable(git: &Git, repo_root: &Path, branch: &str) -> AppResult<()> {
+    let branch_ref = format!("refs/heads/{branch}");
+    let delete_target = branch_delete_target(git, repo_root, &branch_ref)?;
+    match git.run(
+        repo_root,
+        ["merge-base", "--is-ancestor", &branch_ref, &delete_target],
+    ) {
+        Ok(_) => Ok(()),
+        Err(error) if is_git_exit(&error, 1) => Err(Error::message(format!(
+            "branch {branch} is not fully merged into {delete_target}"
+        ))),
+        Err(error) => Err(error),
+    }
+}
+
+fn branch_delete_target(git: &Git, repo_root: &Path, branch_ref: &str) -> AppResult<String> {
+    let upstream = git
+        .run(
+            repo_root,
+            ["for-each-ref", "--format=%(upstream:short)", branch_ref],
+        )?
+        .stdout
+        .trim()
+        .to_string();
+    if upstream.is_empty() {
+        Ok("HEAD".to_string())
+    } else {
+        Ok(upstream)
+    }
+}
+
+fn validate_auxiliary_worktrees_removable(git: &Git, entry: &WorktreeEntry) -> AppResult<()> {
+    for (name, auxiliary) in &entry.auxiliaries {
+        let repo = resolve(git, &auxiliary.worktree)?;
+        let worktree = repo.worktree_by_path(&auxiliary.worktree).ok_or_else(|| {
+            Error::message(format!(
+                "Auxiliary worktree {name} is missing from git worktree list at {}",
+                auxiliary.repository.display()
+            ))
+        })?;
+        if let Some(reason) = &worktree.locked {
+            let detail = if reason.is_empty() {
+                String::new()
+            } else {
+                format!(": {reason}")
+            };
+            return Err(Error::message(format!(
+                "Auxiliary worktree {name} at {} is locked{}",
+                auxiliary.worktree.display(),
+                detail
+            )));
+        }
+    }
+    Ok(())
 }
 
 pub fn prepare_worktree_for_async_pnpm(
@@ -298,7 +738,7 @@ pub fn remove(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
         absolute_path(Path::new(&opts.path))
     };
 
-    let worktree = repo.worktree_by_path(&target).ok_or_else(|| {
+    let worktree = repo.worktree_by_path(&target).cloned().ok_or_else(|| {
         Error::message(format!(
             "target is not a linked worktree: {}",
             target.display()
@@ -309,6 +749,23 @@ pub fn remove(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
             "target is not a linked worktree: {}",
             target.display()
         )));
+    }
+    let mut state = auxiliary::read_state(&repo.main_root, &repo.git_common_dir)?;
+    if let Some(entry) = auxiliary::worktree_entry(&state, &target).cloned() {
+        return remove_with_auxiliaries(
+            session,
+            opts,
+            repo,
+            target,
+            worktree.clone(),
+            &mut state,
+            entry,
+        );
+    }
+    if auxiliary::read_auxiliary_marker(&session.git, &target)?.is_some() {
+        return Err(Error::message(
+            "remove is not supported for worktrees with auxiliary state",
+        ));
     }
     require_clean(session, &target)?;
 
@@ -360,6 +817,7 @@ pub fn remove(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
 
 pub fn send_out(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
     let repo = repo(session)?;
+    reject_auxiliary_state(&repo, &repo.current_root, "send-out")?;
     if !repo.current_is_main {
         return Err(Error::message(
             "send-out must be run from the main worktree",
@@ -475,6 +933,7 @@ pub fn bring_in(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
                 opts.branch
             ))
         })?;
+    reject_auxiliary_state(&repo, &target, "bring-in")?;
 
     require_clean(session, &repo.main_root)?;
     require_clean(session, &target)?;
@@ -539,6 +998,84 @@ fn create_target_path(repo: &RepoContext, branch: &str, explicit_path: &str) -> 
     Ok(path)
 }
 
+fn create_git_worktree(
+    session: &mut Session<'_>,
+    repo_root: &Path,
+    path: &Path,
+    branch: &str,
+    base: &str,
+) -> AppResult<()> {
+    let args = vec![
+        "worktree".to_string(),
+        "add".to_string(),
+        "-b".to_string(),
+        branch.to_string(),
+        path.display().to_string(),
+        base.to_string(),
+    ];
+    output::git(session.out, repo_root, &args)?;
+    session
+        .git
+        .run(repo_root, args.iter().map(String::as_str))?;
+    Ok(())
+}
+
+fn remove_git_worktree(session: &mut Session<'_>, repo_root: &Path, path: &Path) -> AppResult<()> {
+    let args = vec![
+        "worktree".to_string(),
+        "remove".to_string(),
+        path.display().to_string(),
+    ];
+    output::git(session.out, repo_root, &args)?;
+    session
+        .git
+        .run(repo_root, args.iter().map(String::as_str))?;
+    Ok(())
+}
+
+fn remove_git_worktree_force(
+    session: &mut Session<'_>,
+    repo_root: &Path,
+    path: &Path,
+) -> AppResult<()> {
+    let args = vec![
+        "worktree".to_string(),
+        "remove".to_string(),
+        "--force".to_string(),
+        path.display().to_string(),
+    ];
+    output::git(session.out, repo_root, &args)?;
+    session
+        .git
+        .run(repo_root, args.iter().map(String::as_str))?;
+    Ok(())
+}
+
+fn delete_branch(session: &mut Session<'_>, repo_root: &Path, branch: &str) -> AppResult<()> {
+    let args = vec!["branch".to_string(), "-d".to_string(), branch.to_string()];
+    output::git(session.out, repo_root, &args)?;
+    session
+        .git
+        .run(repo_root, args.iter().map(String::as_str))?;
+    Ok(())
+}
+
+fn branch_exists(git: &Git, repo_root: &Path, branch: &str) -> AppResult<bool> {
+    match git.run(
+        repo_root,
+        [
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ],
+    ) {
+        Ok(_) => Ok(true),
+        Err(error) if is_git_exit(&error, 1) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
 fn require_clean(session: &Session<'_>, dir: &Path) -> AppResult<()> {
     let status = session.git.run(
         dir,
@@ -552,6 +1089,122 @@ fn require_clean(session: &Session<'_>, dir: &Path) -> AppResult<()> {
             dir.display(),
             status.stdout
         )))
+    }
+}
+
+fn require_clean_ignoring_refs(
+    session: &Session<'_>,
+    dir: &Path,
+    entry: &WorktreeEntry,
+) -> AppResult<()> {
+    let status = session
+        .git
+        .run(dir, ["status", "--porcelain=v1", "--untracked-files=all"])?;
+    let ignored = auxiliary::ignored_ref_paths(entry);
+    let visible = status
+        .stdout
+        .lines()
+        .filter(|line| !auxiliary::status_line_ignored(line, &ignored))
+        .collect::<Vec<_>>();
+    if visible.is_empty() {
+        Ok(())
+    } else {
+        Err(Error::message(format!(
+            "worktree is dirty at {}:\n{}",
+            dir.display(),
+            visible.join("\n")
+        )))
+    }
+}
+
+fn reject_auxiliary_state(
+    repo: &RepoContext,
+    primary_worktree: &Path,
+    command: &str,
+) -> AppResult<()> {
+    let state = auxiliary::read_state(&repo.main_root, &repo.git_common_dir)?;
+    if auxiliary::worktree_entry(&state, primary_worktree).is_some() {
+        return Err(Error::message(format!(
+            "{command} is not supported for worktrees with auxiliary state"
+        )));
+    }
+    if auxiliary::read_auxiliary_marker(&Git, primary_worktree)?.is_some() {
+        return Err(Error::message(format!(
+            "{command} is not supported for worktrees with auxiliary state"
+        )));
+    }
+    Ok(())
+}
+
+fn auxiliary_status_entries(
+    primary_worktree: &Path,
+    entry: &WorktreeEntry,
+    refs: &[AuxiliaryRefStatus],
+) -> BTreeMap<String, AuxiliaryStatusEntry> {
+    refs.iter()
+        .filter_map(|reference| {
+            let auxiliary = entry.auxiliaries.get(&reference.name)?;
+            Some((
+                reference.name.clone(),
+                AuxiliaryStatusEntry {
+                    repository: auxiliary.repository.clone(),
+                    worktree: auxiliary.worktree.clone(),
+                    ref_path: primary_worktree.join("refs").join(&reference.name),
+                    current_target: reference.current_target.clone(),
+                },
+            ))
+        })
+        .collect()
+}
+
+fn auxiliary_ref_summary(
+    git: &Git,
+    primary_worktree: &Path,
+    entry: &WorktreeEntry,
+) -> AuxiliaryRefSummary {
+    let details = entry
+        .auxiliaries
+        .iter()
+        .map(|(name, auxiliary)| {
+            let mut diagnostics = Vec::new();
+            let current_target =
+                match auxiliary::read_ref(&primary_worktree.join("refs").join(name)) {
+                    Ok(target) => {
+                        if !same_path(&target, &auxiliary.worktree) {
+                            diagnostics.push(format!(
+                                "Auxiliary Ref points to {}, expected {}",
+                                target.display(),
+                                auxiliary.worktree.display()
+                            ));
+                        }
+                        if let Err(error) =
+                            auxiliary::validate_worktree_branch(git, name, &entry.branch, auxiliary)
+                        {
+                            diagnostics.push(error.to_string());
+                        }
+                        Some(target)
+                    }
+                    Err(error) => {
+                        diagnostics.push(error.to_string());
+                        None
+                    }
+                };
+            AuxiliaryRefDetail {
+                name: name.clone(),
+                ok: diagnostics.is_empty(),
+                expected_target: auxiliary.worktree.clone(),
+                current_target,
+                diagnostics,
+            }
+        })
+        .collect::<Vec<_>>();
+    let ok = details.iter().filter(|detail| detail.ok).count();
+    let total = details.len();
+    AuxiliaryRefSummary {
+        total,
+        ok,
+        broken: total.saturating_sub(ok),
+        details,
     }
 }
 
@@ -724,19 +1377,23 @@ fn prepare_create_base(
                 "--base and --from-current cannot be used together",
             ));
         }
-        let current = session
-            .git
-            .run(&repo.current_root, ["branch", "--show-current"])?
-            .stdout;
-        let current = current.trim();
-        if current.is_empty() {
-            return Err(Error::message(
-                "--from-current requires the current worktree to be on a named branch",
-            ));
-        }
-        return Ok(current.to_string());
+        return current_branch_name(session, &repo.current_root);
     }
     prepare_base(session, repo, &opts.base)
+}
+
+fn current_branch_name(session: &mut Session<'_>, repo_root: &Path) -> AppResult<String> {
+    let current = session
+        .git
+        .run(repo_root, ["branch", "--show-current"])?
+        .stdout;
+    let current = current.trim();
+    if current.is_empty() {
+        return Err(Error::message(
+            "--from-current requires the current worktree to be on a named branch",
+        ));
+    }
+    Ok(current.to_string())
 }
 
 fn ensure_creatable_parent(path: &Path) -> AppResult<()> {
@@ -880,17 +1537,6 @@ pub fn apply_send_out_worktree_init(
     Ok(())
 }
 
-pub(crate) fn snapshot_dot_env_files_from_root(root: &Path) -> AppResult<Vec<SnapshotFile>> {
-    let mut snapshots = Vec::new();
-    collect_dot_env_files(root, root, &mut snapshots)?;
-    snapshots.sort_by(|left, right| left.relative.cmp(&right.relative));
-    Ok(snapshots)
-}
-
-pub(crate) fn restore_snapshot_files_to_root(files: &[SnapshotFile], root: &Path) -> AppResult<()> {
-    copy_snapshot_files(files, root).map(|_| ())
-}
-
 fn snapshot_ignored_exact_file(
     session: &Session<'_>,
     main_root: &Path,
@@ -960,45 +1606,6 @@ fn collect_ignored_env_files_from_root(
         }
     }
 
-    Ok(())
-}
-
-fn collect_dot_env_files(
-    root: &Path,
-    current: &Path,
-    snapshots: &mut Vec<SnapshotFile>,
-) -> AppResult<()> {
-    let mut entries = fs::read_dir(current)
-        .map_err(|error| Error::message(format!("failed to read {}: {error}", current.display())))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| {
-            Error::message(format!("failed to read {}: {error}", current.display()))
-        })?;
-    entries.sort_by_key(|entry| entry.path());
-
-    for entry in entries {
-        let path = entry.path();
-        let file_type = entry.file_type().map_err(|error| {
-            Error::message(format!("failed to inspect {}: {error}", path.display()))
-        })?;
-        if file_type.is_dir() {
-            collect_dot_env_files(root, &path, snapshots)?;
-            continue;
-        }
-        if path.file_name().and_then(|name| name.to_str()) != Some(".env") {
-            continue;
-        }
-        let relative = path.strip_prefix(root).map_err(|error| {
-            Error::message(format!(
-                "failed to derive relative path for {} from {}: {error}",
-                path.display(),
-                root.display()
-            ))
-        })?;
-        if let Some(snapshot) = snapshot_file(root, relative.to_path_buf())? {
-            snapshots.push(snapshot);
-        }
-    }
     Ok(())
 }
 

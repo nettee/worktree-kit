@@ -1,9 +1,10 @@
 use crate::VERSION;
+use crate::auxiliary;
 use crate::clipboard::{DisabledClipboard, SystemClipboard};
-use crate::gitexec::Git;
+use crate::gitexec::{Git, resolve};
 use crate::list::ListOptions;
+use crate::output;
 use crate::upgrade;
-use crate::workspace::{self, Mode};
 use crate::worktree::{self, Options, Session};
 use crate::{AppResult, Error};
 use std::ffi::OsString;
@@ -20,7 +21,8 @@ const TOP_LEVEL_COMMANDS: &[&str] = &[
     "remove",
     "send-out",
     "bring-in",
-    "workspace",
+    "auxiliary-group",
+    "ag",
     "upgrade",
     "completion",
     "help",
@@ -40,11 +42,8 @@ enum Parsed {
     Remove(Options),
     SendOut(Options),
     BringIn(Options),
-    WorkspaceInit,
-    WorkspaceAdd {
-        repository_path: String,
-    },
-    WorkspaceBootstrap {
+    AuxiliaryGroupAdd {
+        group_name: String,
         repository_paths: Vec<String>,
     },
     Upgrade,
@@ -124,44 +123,18 @@ where
         }
         Parsed::Create(options) => {
             execute_worktree(stdout, stderr, options.no_clipboard, |session| {
-                match workspace::resolve_mode(&session.git, &session.cwd)? {
-                    Mode::Repository => worktree::create(session, options),
-                    Mode::Workspace => workspace::new(session, options),
-                }
+                worktree::create(session, options)
             })
         }
         Parsed::Checkout(options) => {
             execute_worktree(stdout, stderr, options.no_clipboard, |session| {
-                match workspace::resolve_mode(&session.git, &session.cwd)? {
-                    Mode::Repository => worktree::checkout(session, options),
-                    Mode::Workspace => Err(Error::message(
-                        "checkout is not supported in Workspace Mode; use new or remove",
-                    )),
-                }
+                worktree::checkout(session, options)
             })
         }
-        Parsed::Status => {
-            execute_worktree(
-                stdout,
-                stderr,
-                true,
-                |session| match workspace::resolve_mode(&session.git, &session.cwd)? {
-                    Mode::Repository => worktree::status(session),
-                    Mode::Workspace => workspace::status(session),
-                },
-            )
-        }
-        Parsed::List(options) => {
-            execute_worktree(
-                stdout,
-                stderr,
-                true,
-                |session| match workspace::resolve_mode(&session.git, &session.cwd)? {
-                    Mode::Repository => worktree::list(session, options),
-                    Mode::Workspace => workspace::list(session, options),
-                },
-            )
-        }
+        Parsed::Status => execute_worktree(stdout, stderr, true, worktree::status),
+        Parsed::List(options) => execute_worktree(stdout, stderr, true, |session| {
+            worktree::list(session, options)
+        }),
         Parsed::InitWorktree {
             source_root,
             worktree_path,
@@ -176,49 +149,37 @@ where
         }),
         Parsed::Remove(options) => {
             execute_worktree(stdout, stderr, options.no_clipboard, |session| {
-                match workspace::resolve_mode(&session.git, &session.cwd)? {
-                    Mode::Repository => worktree::remove(session, options),
-                    Mode::Workspace => workspace::remove(session, options),
-                }
+                worktree::remove(session, options)
             })
         }
         Parsed::SendOut(options) => {
             execute_worktree(stdout, stderr, options.no_clipboard, |session| {
-                match workspace::resolve_mode(&session.git, &session.cwd)? {
-                    Mode::Repository => worktree::send_out(session, options),
-                    Mode::Workspace => Err(Error::message(
-                        "send-out is not supported in Workspace Mode",
-                    )),
-                }
+                worktree::send_out(session, options)
             })
         }
         Parsed::BringIn(options) => {
             execute_worktree(stdout, stderr, options.no_clipboard, |session| {
-                match workspace::resolve_mode(&session.git, &session.cwd)? {
-                    Mode::Repository => worktree::bring_in(session, options),
-                    Mode::Workspace => Err(Error::message(
-                        "bring-in is not supported in Workspace Mode",
-                    )),
-                }
+                worktree::bring_in(session, options)
             })
         }
-        Parsed::WorkspaceInit => execute_worktree(stdout, stderr, true, workspace::init),
-        Parsed::WorkspaceAdd { repository_path } => {
-            execute_worktree(stdout, stderr, true, |session| {
-                workspace::add(session, Path::new(&repository_path))
-            })
-        }
-        Parsed::WorkspaceBootstrap { repository_paths } => {
-            execute_worktree(stdout, stderr, true, |session| {
-                workspace::bootstrap(
-                    session,
-                    &repository_paths
-                        .iter()
-                        .map(PathBuf::from)
-                        .collect::<Vec<_>>(),
-                )
-            })
-        }
+        Parsed::AuxiliaryGroupAdd {
+            group_name,
+            repository_paths,
+        } => execute_worktree(stdout, stderr, true, |session| {
+            let repo = resolve(&session.git, &session.cwd)?;
+            auxiliary::add_group(
+                &session.git,
+                &repo.main_root,
+                &repo.git_common_dir,
+                &group_name,
+                &repository_paths
+                    .iter()
+                    .map(PathBuf::from)
+                    .collect::<Vec<_>>(),
+            )?;
+            output::success(session.out, &format!("added Auxiliary Group {group_name}"))?;
+            Ok(())
+        }),
         Parsed::Upgrade => match upgrade::run(stdout) {
             Ok(()) => Ok(()),
             Err(error) => {
@@ -289,7 +250,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
         "remove" => parse_remove(rest),
         "send-out" => parse_send_out(rest),
         "bring-in" => parse_bring_in(rest),
-        "workspace" => parse_workspace(rest),
+        "auxiliary-group" | "ag" => parse_auxiliary_group(rest),
         "upgrade" => parse_upgrade(rest),
         "completion" => parse_completion(rest),
         "__complete" => Ok(Parsed::HiddenComplete(rest[1..].to_vec())),
@@ -300,59 +261,33 @@ fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
     }
 }
 
-fn parse_workspace(args: &[String]) -> Result<Parsed, UsageError> {
-    let usage = command_help("workspace");
+fn parse_auxiliary_group(args: &[String]) -> Result<Parsed, UsageError> {
+    let usage = command_help(args[0].as_str());
     if args.len() == 1 {
-        return Err(UsageError::new(
-            "missing required subcommand: init, add, or bootstrap",
-            usage,
-        ));
+        return Err(UsageError::new("missing required subcommand: add", usage));
     }
     match args[1].as_str() {
-        "init" => {
-            if args.len() == 2 {
-                Ok(Parsed::WorkspaceInit)
-            } else if args.len() == 3 && matches!(args[2].as_str(), "--help" | "-h") {
-                Ok(Parsed::HelpText(usage))
-            } else {
-                Err(UsageError::new(
-                    "unexpected argument for workspace init",
-                    usage,
-                ))
-            }
-        }
         "add" => {
-            if args.len() == 3 {
-                Ok(Parsed::WorkspaceAdd {
-                    repository_path: args[2].clone(),
+            if args.len() >= 4 {
+                Ok(Parsed::AuxiliaryGroupAdd {
+                    group_name: args[2].clone(),
+                    repository_paths: args[3..].to_vec(),
                 })
             } else if args.len() == 2 {
                 Err(UsageError::new(
-                    "missing required argument: repository-path",
+                    "missing required argument: group-name",
                     usage,
                 ))
             } else {
                 Err(UsageError::new(
-                    "too many arguments: expected 1 repository-path",
-                    usage,
-                ))
-            }
-        }
-        "bootstrap" => {
-            if args.len() == 2 {
-                Err(UsageError::new(
                     "missing required argument: repository-path",
                     usage,
                 ))
-            } else {
-                Ok(Parsed::WorkspaceBootstrap {
-                    repository_paths: args[2..].to_vec(),
-                })
             }
         }
         "--help" | "-h" => Ok(Parsed::HelpText(usage)),
         other => Err(UsageError::new(
-            format!("unknown workspace subcommand: {other}"),
+            format!("unknown auxiliary-group subcommand: {other}"),
             usage,
         )),
     }
@@ -387,6 +322,25 @@ fn parse_new_like(args: &[String], command: &'static str) -> Result<Parsed, Usag
                 } else {
                     i += 1;
                     options.base = require_flag_value(args, i, "--base", usage)?;
+                }
+            }
+            flag if flag == "--ag"
+                || flag.starts_with("--ag=")
+                || flag == "--auxiliary-group"
+                || flag.starts_with("--auxiliary-group=") =>
+            {
+                let name = if flag.starts_with("--ag") {
+                    "--ag"
+                } else {
+                    "--auxiliary-group"
+                };
+                if let Some(value) = inline_flag_value(flag, name) {
+                    options.auxiliary_groups.push(value);
+                } else {
+                    i += 1;
+                    options
+                        .auxiliary_groups
+                        .push(require_flag_value(args, i, name, usage)?);
                 }
             }
             "--from-current" | "-C" => options.from_current = true,
@@ -702,7 +656,8 @@ fn root_help() -> &'static str {
         "  remove      Remove a linked worktree\n",
         "  send-out    Move the current main-worktree branch to a linked worktree\n",
         "  bring-in    Move a linked worktree branch back into the main worktree\n",
-        "  workspace   Initialize and manage Workspace Mode and bootstrapping\n",
+        "  auxiliary-group  Manage Auxiliary Groups\n",
+        "  ag          Alias for `auxiliary-group`\n",
         "  upgrade     Upgrade wtk from the latest GitHub release\n",
         "  completion  Generate shell completion script\n",
         "  help        Show help\n\n",
@@ -719,6 +674,8 @@ fn command_help(command: &str) -> &'static str {
             "Flags:\n",
             "      --path <path>\n",
             "      --base <branch>\n",
+            "      --ag <group>\n",
+            "      --auxiliary-group <group>\n",
             "  -C, --from-current\n",
             "      --no-clipboard\n",
         ),
@@ -727,6 +684,8 @@ fn command_help(command: &str) -> &'static str {
             "Flags:\n",
             "      --path <path>\n",
             "      --base <branch>\n",
+            "      --ag <group>\n",
+            "      --auxiliary-group <group>\n",
             "  -C, --from-current\n",
             "      --no-clipboard\n",
         ),
@@ -772,12 +731,10 @@ fn command_help(command: &str) -> &'static str {
             "Flags:\n",
             "      --no-clipboard\n",
         ),
-        "workspace" => concat!(
-            "Usage: wtk workspace <init|add|bootstrap> [args]\n\n",
+        "auxiliary-group" | "ag" => concat!(
+            "Usage: wtk auxiliary-group add <group-name> <repository-path>...\n\n",
             "Subcommands:\n",
-            "  init                         Initialize Workspace Mode manifest\n",
-            "  add <repository-path>        Add a Linked Repository to the manifest\n\n",
-            "  bootstrap <repo-path>...     Bootstrap an empty Workspace skeleton\n\n",
+            "  add <group-name> <repo-path>...  Create an Auxiliary Group\n\n",
             "Flags:\n",
             "  -h, --help\n",
         ),
@@ -1065,11 +1022,12 @@ mod tests {
     }
 
     #[test]
-    fn parses_workspace_bootstrap_repo_paths() {
+    fn parses_auxiliary_group_add_repo_paths() {
         let parsed = parse_args(&[
             "wtk".to_string(),
-            "workspace".to_string(),
-            "bootstrap".to_string(),
+            "ag".to_string(),
+            "add".to_string(),
+            "full-stack".to_string(),
             "../api".to_string(),
             "../web".to_string(),
         ])
@@ -1077,15 +1035,39 @@ mod tests {
 
         assert!(matches!(
             parsed,
-            Parsed::WorkspaceBootstrap { repository_paths }
-            if repository_paths == vec!["../api".to_string(), "../web".to_string()]
+            Parsed::AuxiliaryGroupAdd { group_name, repository_paths }
+            if group_name == "full-stack"
+                && repository_paths == vec!["../api".to_string(), "../web".to_string()]
         ));
     }
 
     #[test]
-    fn workspace_help_mentions_bootstrap() {
-        let help = command_help("workspace");
-        assert!(help.contains("<init|add|bootstrap>"));
-        assert!(help.contains("bootstrap <repo-path>..."));
+    fn parses_new_auxiliary_group_flags() {
+        let parsed = parse_args(&[
+            "wtk".to_string(),
+            "new".to_string(),
+            "feature/full-stack".to_string(),
+            "--ag".to_string(),
+            "api".to_string(),
+            "--auxiliary-group=web".to_string(),
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            parsed,
+            Parsed::Create(Options {
+                branch,
+                auxiliary_groups,
+                ..
+            }) if branch == "feature/full-stack"
+                && auxiliary_groups == vec!["api".to_string(), "web".to_string()]
+        ));
+    }
+
+    #[test]
+    fn auxiliary_group_help_mentions_add() {
+        let help = command_help("auxiliary-group");
+        assert!(help.contains("auxiliary-group add"));
+        assert!(help.contains("add <group-name> <repo-path>..."));
     }
 }
