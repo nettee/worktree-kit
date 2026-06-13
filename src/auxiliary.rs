@@ -352,8 +352,10 @@ pub fn status_line_ignored(line: &str, ignored: &BTreeSet<String>) -> bool {
     let Some(path) = line.get(3..) else {
         return false;
     };
-    let paths = path.split(" -> ").collect::<Vec<_>>();
-    !paths.is_empty() && paths.iter().all(|path| ignored.contains(*path))
+    let Some(paths) = parse_status_paths(path) else {
+        return false;
+    };
+    !paths.is_empty() && paths.iter().all(|path| ignored.contains(path))
 }
 
 pub fn validate_worktree_branch(
@@ -398,8 +400,11 @@ pub fn write_ref(path: &Path, target: &Path) -> AppResult<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    if path.exists() || fs::symlink_metadata(path).is_ok() {
-        fs::remove_file(path)?;
+    if fs::symlink_metadata(path).is_ok() {
+        return Err(Error::message(format!(
+            "Auxiliary Ref path already exists and will not be overwritten: {}",
+            path.display()
+        )));
     }
     #[cfg(unix)]
     {
@@ -479,6 +484,80 @@ fn require_absolute(path: &Path, label: &str) -> AppResult<PathBuf> {
             path.display()
         )))
     }
+}
+
+fn parse_status_paths(path: &str) -> Option<Vec<String>> {
+    let mut paths = Vec::new();
+    let mut start = 0usize;
+    let bytes = path.as_bytes();
+    let mut index = 0usize;
+    let mut in_quotes = false;
+
+    while index < bytes.len() {
+        match bytes[index] {
+            b'"' => {
+                in_quotes = !in_quotes;
+                index += 1;
+            }
+            b'\\' if in_quotes => {
+                index += 2;
+            }
+            b' ' if !in_quotes && bytes[index..].starts_with(b" -> ") => {
+                paths.push(decode_status_path(path[start..index].trim())?);
+                index += 4;
+                start = index;
+            }
+            _ => {
+                index += 1;
+            }
+        }
+    }
+
+    paths.push(decode_status_path(path[start..].trim())?);
+    Some(paths)
+}
+
+fn decode_status_path(path: &str) -> Option<String> {
+    if !(path.starts_with('"') && path.ends_with('"') && path.len() >= 2) {
+        return Some(path.to_string());
+    }
+
+    let mut decoded = Vec::with_capacity(path.len() - 2);
+    let mut bytes = path.as_bytes()[1..path.len() - 1].iter().copied();
+    while let Some(byte) = bytes.next() {
+        if byte != b'\\' {
+            decoded.push(byte);
+            continue;
+        }
+        let escaped = bytes.next()?;
+        match escaped {
+            b'"' | b'\\' => decoded.push(escaped),
+            b'a' => decoded.push(0x07),
+            b'b' => decoded.push(0x08),
+            b'f' => decoded.push(0x0c),
+            b'n' => decoded.push(b'\n'),
+            b'r' => decoded.push(b'\r'),
+            b't' => decoded.push(b'\t'),
+            b'v' => decoded.push(0x0b),
+            b'0'..=b'7' => {
+                let mut value = escaped - b'0';
+                for _ in 0..2 {
+                    let Some(next) = bytes.clone().next() else {
+                        break;
+                    };
+                    if !(b'0'..=b'7').contains(&next) {
+                        break;
+                    }
+                    value = (value << 3) + (next - b'0');
+                    bytes.next();
+                }
+                decoded.push(value);
+            }
+            _ => return None,
+        }
+    }
+
+    String::from_utf8(decoded).ok()
 }
 
 fn repository_basename(path: &Path) -> AppResult<String> {

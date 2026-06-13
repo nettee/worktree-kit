@@ -258,6 +258,58 @@ def test_auxiliary_group_remove_preflights_locked_auxiliaries(run_wtk, repo_fact
     assert str(primary_linked.resolve()) in state["worktrees"]
 
 
+def test_auxiliary_group_new_rejects_existing_ref_path(run_wtk, repo_factory) -> None:
+    primary = repo_factory.init_repo("primary")
+    api = repo_factory.init_repo("api")
+    repo_factory.commit_files(primary, {"refs/api": "tracked\n"}, "add tracked ref file")
+
+    run_wtk("auxiliary-group", "add", "backend", str(api), cwd=primary)
+    result = run_wtk(
+        "new",
+        "feature/aux",
+        "--base",
+        "main",
+        "--ag",
+        "backend",
+        "--no-clipboard",
+        cwd=primary,
+        check=False,
+    )
+
+    result.assert_failure()
+    assert "will not be overwritten" in result.output
+    assert "refs/api" in result.output
+    assert (primary / "refs" / "api").read_text(encoding="utf-8") == "tracked\n"
+    assert not linked_worktree_path(primary, "feature/aux").exists()
+
+
+def test_auxiliary_group_ignores_quoted_generated_ref_paths(run_wtk, repo_factory) -> None:
+    primary = repo_factory.init_repo("primary")
+    api = repo_factory.init_repo("my api")
+
+    run_wtk("auxiliary-group", "add", "backend", str(api), cwd=primary)
+    run_wtk(
+        "new",
+        "feature/aux",
+        "--base",
+        "main",
+        "--ag",
+        "backend",
+        "--no-clipboard",
+        cwd=primary,
+    )
+    primary_linked = linked_worktree_path(primary, "feature/aux")
+
+    listing = json.loads(run_wtk("list", "--json", cwd=primary).stdout)
+    row = next(row for row in listing["worktrees"] if row["path"] == str(primary_linked.resolve()))
+
+    assert row["dirty"] is False
+    assert "dirty" not in row["labels"]
+
+    run_wtk("remove", str(primary_linked), "--delete-branch", "--no-clipboard", cwd=primary)
+    assert not primary_linked.exists()
+
+
 def test_auxiliary_group_add_rejects_duplicate_repository(run_wtk, repo_factory) -> None:
     primary = repo_factory.init_repo("primary")
     api = repo_factory.init_repo("api")
