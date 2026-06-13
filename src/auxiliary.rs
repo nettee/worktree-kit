@@ -780,8 +780,15 @@ fn decode_status_path(path: &str) -> Option<String> {
 }
 
 fn escape_gitignore_pattern(path: &str) -> String {
-    let mut escaped = String::with_capacity(path.len());
-    for ch in path.chars() {
+    let trailing_spaces = path
+        .as_bytes()
+        .iter()
+        .rev()
+        .take_while(|byte| **byte == b' ')
+        .count();
+    let significant = &path[..path.len() - trailing_spaces];
+    let mut escaped = String::with_capacity(path.len() + trailing_spaces);
+    for ch in significant.chars() {
         match ch {
             '\\' | '*' | '?' | '[' => {
                 escaped.push('\\');
@@ -790,9 +797,7 @@ fn escape_gitignore_pattern(path: &str) -> String {
             _ => escaped.push(ch),
         }
     }
-    while escaped.ends_with(' ') {
-        let new_len = escaped.len() - 1;
-        escaped.truncate(new_len);
+    for _ in 0..trailing_spaces {
         escaped.push_str("\\ ");
     }
     escaped
@@ -823,4 +828,15 @@ fn validate_name(name: &str, label: &str) -> AppResult<()> {
         return Err(Error::message(format!("{label} is invalid: {name:?}")));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::escape_gitignore_pattern;
+
+    #[test]
+    fn escape_gitignore_pattern_escapes_trailing_spaces_once() {
+        assert_eq!(escape_gitignore_pattern("refs/api "), "refs/api\\ ");
+        assert_eq!(escape_gitignore_pattern("refs/api  "), "refs/api\\ \\ ");
+    }
 }

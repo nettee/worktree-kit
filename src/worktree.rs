@@ -167,6 +167,11 @@ fn create_with_auxiliaries(session: &mut Session<'_>, opts: Options) -> AppResul
     if opts.branch.is_empty() {
         return Err(Error::message("branch is required"));
     }
+    if opts.from_current && !opts.base.is_empty() {
+        return Err(Error::message(
+            "--base and --from-current cannot be used together",
+        ));
+    }
     if !opts.path.is_empty() {
         return Err(Error::message(
             "--path is not supported with Auxiliary Groups; paths are derived from the branch name",

@@ -286,6 +286,29 @@ def test_auxiliary_group_new_from_current_uses_primary_branch(run_wtk, repo_fact
     assert run_git(api_linked, "branch", "--show-current").stdout.strip() == "feature/aux"
 
 
+def test_auxiliary_group_new_rejects_base_with_from_current(run_wtk, repo_factory) -> None:
+    primary = repo_factory.init_repo("primary")
+    api = repo_factory.init_repo("api")
+
+    run_wtk("auxiliary-group", "add", "backend", str(api), cwd=primary)
+
+    result = run_wtk(
+        "new",
+        "feature/aux",
+        "--ag",
+        "backend",
+        "--base",
+        "main",
+        "--from-current",
+        "--no-clipboard",
+        cwd=primary,
+        check=False,
+    )
+
+    result.assert_failure()
+    assert "--base and --from-current cannot be used together" in result.output
+
+
 def test_auxiliary_group_remove_preserves_real_refs_changes(run_wtk, repo_factory) -> None:
     primary = repo_factory.init_repo("primary")
     api = repo_factory.init_repo("api")
