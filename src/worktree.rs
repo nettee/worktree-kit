@@ -345,6 +345,13 @@ pub fn status(session: &mut Session<'_>) -> AppResult<()> {
     let repo = repo(session)?;
     let state = auxiliary::read_state(&repo.main_root)?;
     if let Some(entry) = auxiliary::worktree_entry(&state, &repo.current_root) {
+        let worktree = repo.worktree_by_path(&repo.current_root).ok_or_else(|| {
+            Error::message(format!(
+                "worktree at {} is missing from git worktree list",
+                repo.current_root.display()
+            ))
+        })?;
+        auxiliary::validate_primary_worktree_branch(worktree, &entry.branch, &repo.current_root)?;
         let refs = auxiliary::validate_refs(&session.git, &repo.current_root, entry)?;
         let payload = AuxiliaryStatusOutput {
             mode: "coordinated",

@@ -158,6 +158,31 @@ def test_auxiliary_group_reports_auxiliary_branch_drift(run_wtk, repo_factory) -
     assert any("other-branch" in diagnostic for diagnostic in detail["diagnostics"])
 
 
+def test_auxiliary_group_status_rejects_primary_branch_drift(run_wtk, repo_factory) -> None:
+    primary = repo_factory.init_repo("primary")
+    api = repo_factory.init_repo("api")
+
+    run_wtk("auxiliary-group", "add", "backend", str(api), cwd=primary)
+    run_wtk(
+        "new",
+        "feature/aux",
+        "--base",
+        "main",
+        "--ag",
+        "backend",
+        "--no-clipboard",
+        cwd=primary,
+    )
+    primary_linked = linked_worktree_path(primary, "feature/aux")
+    run_git(primary_linked, "checkout", "-B", "other-branch")
+
+    status = run_wtk("status", cwd=primary_linked, check=False)
+
+    status.assert_failure()
+    assert "Primary worktree" in status.output
+    assert "other-branch" in status.output
+
+
 def test_auxiliary_group_remove_rejects_primary_branch_drift(run_wtk, repo_factory) -> None:
     primary = repo_factory.init_repo("primary")
     api = repo_factory.init_repo("api")
