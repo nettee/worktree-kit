@@ -188,10 +188,11 @@ def test_auxiliary_group_new_preserves_implicit_global_excludes(
     primary = repo_factory.init_repo("primary")
     api = repo_factory.init_repo("api")
     home = tmp_path / "home"
-    global_excludes = home / ".config" / "git" / "ignore"
+    xdg_config_home = home / ".config"
+    global_excludes = xdg_config_home / "git" / "ignore"
     global_excludes.parent.mkdir(parents=True)
     global_excludes.write_text(".DS_Store\n", encoding="utf-8")
-    env = {"HOME": str(home)}
+    env = {"HOME": str(home), "XDG_CONFIG_HOME": str(xdg_config_home)}
 
     run_wtk("auxiliary-group", "add", "backend", str(api), cwd=primary, env=env)
     run_wtk(
