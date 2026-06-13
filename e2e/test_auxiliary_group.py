@@ -146,6 +146,37 @@ def test_auxiliary_group_new_preserves_global_excludes(run_wtk, repo_factory, tm
     assert run_git(primary_linked, "diff", "--cached", "--name-only", env=env).stdout == ""
 
 
+def test_auxiliary_group_new_preserves_implicit_global_excludes(
+    run_wtk, repo_factory, tmp_path
+) -> None:
+    primary = repo_factory.init_repo("primary")
+    api = repo_factory.init_repo("api")
+    home = tmp_path / "home"
+    global_excludes = home / ".config" / "git" / "ignore"
+    global_excludes.parent.mkdir(parents=True)
+    global_excludes.write_text(".DS_Store\n", encoding="utf-8")
+    env = {"HOME": str(home)}
+
+    run_wtk("auxiliary-group", "add", "backend", str(api), cwd=primary, env=env)
+    run_wtk(
+        "new",
+        "feature/aux",
+        "--base",
+        "main",
+        "--ag",
+        "backend",
+        "--no-clipboard",
+        cwd=primary,
+        env=env,
+    )
+    primary_linked = linked_worktree_path(primary, "feature/aux")
+    (primary_linked / ".DS_Store").write_text("ignored\n", encoding="utf-8")
+
+    assert run_git(primary_linked, "status", "--porcelain", "--untracked-files=normal", env=env).stdout == ""
+    run_git(primary_linked, "add", ".", env=env)
+    assert run_git(primary_linked, "diff", "--cached", "--name-only", env=env).stdout == ""
+
+
 def test_auxiliary_group_new_prepares_each_auxiliary_base(run_wtk, tmp_path) -> None:
     primary_origin = tmp_path / "primary-origin.git"
     api_origin = tmp_path / "api-origin.git"

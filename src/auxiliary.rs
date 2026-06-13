@@ -2,6 +2,7 @@ use crate::gitexec::{Git, RepoContext, absolute_path, resolve, same_path};
 use crate::{AppResult, Error};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::env;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
@@ -675,8 +676,28 @@ fn inherited_excludes_path(
                 Ok(Some(path))
             }
         }
-        Err(Error::Git(error)) if error.exit_code == Some(1) => Ok(None),
+        Err(Error::Git(error)) if error.exit_code == Some(1) => {
+            Ok(default_global_excludes_path(exclude_path))
+        }
         Err(error) => Err(error),
+    }
+}
+
+fn default_global_excludes_path(exclude_path: &Path) -> Option<PathBuf> {
+    let path = if let Some(xdg_config_home) = env::var_os("XDG_CONFIG_HOME") {
+        PathBuf::from(xdg_config_home).join("git").join("ignore")
+    } else if let Some(home) = env::var_os("HOME") {
+        PathBuf::from(home)
+            .join(".config")
+            .join("git")
+            .join("ignore")
+    } else {
+        return None;
+    };
+    if path.exists() && !same_path(&path, exclude_path) {
+        Some(path)
+    } else {
+        None
     }
 }
 
