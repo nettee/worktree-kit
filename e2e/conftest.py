@@ -107,6 +107,10 @@ def parse_yaml(output: str):
     return yaml.safe_load(output)
 
 
+def git_common_dir(repo: Path) -> Path:
+    return Path(run_git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip())
+
+
 @pytest.fixture(scope="session")
 def required_commands() -> dict[str, str]:
     return {

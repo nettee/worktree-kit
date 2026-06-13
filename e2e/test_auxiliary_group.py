@@ -2,20 +2,22 @@ from __future__ import annotations
 
 import json
 
-from conftest import linked_worktree_path, parse_yaml, run_git
+from conftest import git_common_dir, linked_worktree_path, parse_yaml, run_git
 
 
 def test_auxiliary_group_new_status_list_and_remove(run_wtk, repo_factory) -> None:
     primary = repo_factory.init_repo("primary")
     api = repo_factory.init_repo("api")
     web = repo_factory.init_repo("web")
+    wtk_dir = git_common_dir(primary) / "wtk"
 
     run_wtk("auxiliary-group", "add", "full-stack", str(api), str(web), cwd=primary)
 
-    config_text = (primary / ".wtk" / "config.toml").read_text(encoding="utf-8")
+    config_text = (wtk_dir / "config.toml").read_text(encoding="utf-8")
     assert "[auxiliaries.api]" in config_text
     assert "[auxiliaries.web]" in config_text
     assert "[groups.full-stack]" in config_text
+    assert run_git(primary, "status", "--porcelain", "--untracked-files=normal").stdout == ""
 
     out = run_wtk(
         "new",
@@ -38,10 +40,11 @@ def test_auxiliary_group_new_status_list_and_remove(run_wtk, repo_factory) -> No
     assert (primary_linked / "refs" / "api").resolve() == api_linked.resolve()
     assert (primary_linked / "refs" / "web").resolve() == web_linked.resolve()
 
-    state = json.loads((primary / ".wtk" / "worktrees.json").read_text(encoding="utf-8"))
+    state = json.loads((wtk_dir / "worktrees.json").read_text(encoding="utf-8"))
     entry = state["worktrees"][str(primary_linked.resolve())]
     assert entry["branch"] == "feature/aux"
     assert set(entry["auxiliaries"]) == {"api", "web"}
+    assert run_git(primary, "status", "--porcelain", "--untracked-files=normal").stdout == ""
 
     status = parse_yaml(run_wtk("status", cwd=primary_linked).stdout)
     assert status["mode"] == "coordinated"
@@ -280,7 +283,9 @@ def test_auxiliary_group_remove_preflights_locked_auxiliaries(run_wtk, repo_fact
     assert api_linked.exists()
     assert web_linked.exists()
 
-    state = json.loads((primary / ".wtk" / "worktrees.json").read_text(encoding="utf-8"))
+    state = json.loads(
+        ((git_common_dir(primary) / "wtk") / "worktrees.json").read_text(encoding="utf-8")
+    )
     assert str(primary_linked.resolve()) in state["worktrees"]
 
 
@@ -320,7 +325,9 @@ def test_auxiliary_group_remove_keeps_state_when_branch_delete_fails(
     assert not primary_linked.exists()
     assert not api_linked.exists()
 
-    state = json.loads((primary / ".wtk" / "worktrees.json").read_text(encoding="utf-8"))
+    state = json.loads(
+        ((git_common_dir(primary) / "wtk") / "worktrees.json").read_text(encoding="utf-8")
+    )
     assert str(primary_linked.resolve()) in state["worktrees"]
 
 
@@ -361,7 +368,9 @@ def test_auxiliary_group_remove_preflights_locked_primary(run_wtk, repo_factory)
     assert api_linked.exists()
     assert web_linked.exists()
 
-    state = json.loads((primary / ".wtk" / "worktrees.json").read_text(encoding="utf-8"))
+    state = json.loads(
+        ((git_common_dir(primary) / "wtk") / "worktrees.json").read_text(encoding="utf-8")
+    )
     assert str(primary_linked.resolve()) in state["worktrees"]
 
 
@@ -425,4 +434,4 @@ def test_auxiliary_group_add_rejects_duplicate_repository(run_wtk, repo_factory)
 
     result.assert_failure()
     assert "duplicate auxiliary repository" in result.output
-    assert not (primary / ".wtk" / "config.toml").exists()
+    assert not ((git_common_dir(primary) / "wtk") / "config.toml").exists()

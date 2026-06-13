@@ -172,8 +172,12 @@ fn create_with_auxiliaries(session: &mut Session<'_>, opts: Options) -> AppResul
             "--path is not supported with Auxiliary Groups; paths are derived from the branch name",
         ));
     }
-    let selections =
-        auxiliary::expand_groups(&session.git, &repo.main_root, &opts.auxiliary_groups)?;
+    let selections = auxiliary::expand_groups(
+        &session.git,
+        &repo.main_root,
+        &repo.git_common_dir,
+        &opts.auxiliary_groups,
+    )?;
     if selections.is_empty() {
         return Err(Error::message(
             "at least one Auxiliary Group with auxiliaries is required",
@@ -210,7 +214,7 @@ fn create_with_auxiliaries(session: &mut Session<'_>, opts: Options) -> AppResul
     }
 
     let mut created = Vec::<(PathBuf, PathBuf, String)>::new();
-    let previous_state = auxiliary::read_state(&repo.main_root)?;
+    let previous_state = auxiliary::read_state(&repo.main_root, &repo.git_common_dir)?;
     let result = (|| {
         create_git_worktree(session, &repo.main_root, &primary_path, &opts.branch, &base)?;
         created.push((
@@ -276,7 +280,7 @@ fn create_with_auxiliaries(session: &mut Session<'_>, opts: Options) -> AppResul
                 auxiliaries,
             },
         );
-        auxiliary::write_state(&repo.main_root, &state)?;
+        auxiliary::write_state(&repo.git_common_dir, &state)?;
         Ok(())
     })();
 
@@ -288,7 +292,7 @@ fn create_with_auxiliaries(session: &mut Session<'_>, opts: Options) -> AppResul
             );
             let _ = session.git.run(repo_root, ["branch", "-D", branch]);
         }
-        let _ = auxiliary::write_state(&repo.main_root, &previous_state);
+        let _ = auxiliary::write_state(&repo.git_common_dir, &previous_state);
         return Err(error);
     }
 
@@ -343,7 +347,7 @@ pub fn checkout(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
 
 pub fn status(session: &mut Session<'_>) -> AppResult<()> {
     let repo = repo(session)?;
-    let state = auxiliary::read_state(&repo.main_root)?;
+    let state = auxiliary::read_state(&repo.main_root, &repo.git_common_dir)?;
     if let Some(entry) = auxiliary::worktree_entry(&state, &repo.current_root) {
         let worktree = repo.worktree_by_path(&repo.current_root).ok_or_else(|| {
             Error::message(format!(
@@ -359,7 +363,7 @@ pub fn status(session: &mut Session<'_>) -> AppResult<()> {
             primary_main_worktree: repo.main_root.clone(),
             branch: entry.branch.clone(),
             current_is_main: repo.current_is_main,
-            state: auxiliary::state_path(&repo.main_root),
+            state: auxiliary::state_path(&repo.main_root, &repo.git_common_dir),
             auxiliaries: auxiliary_status_entries(&repo.current_root, entry, &refs),
         };
         serde_yaml::to_writer(&mut *session.out, &payload).map_err(|error| {
@@ -384,7 +388,7 @@ pub fn status(session: &mut Session<'_>) -> AppResult<()> {
 
 pub fn list(session: &mut Session<'_>, options: ListOptions) -> AppResult<()> {
     let repo = repo(session)?;
-    let state = auxiliary::read_state(&repo.main_root)?;
+    let state = auxiliary::read_state(&repo.main_root, &repo.git_common_dir)?;
     let updated_at_by_head =
         list::commit_timestamps_by_head(&session.git, &repo.main_root, &repo.worktrees);
     let mut rows = Vec::with_capacity(repo.worktrees.len());
@@ -505,7 +509,7 @@ fn remove_with_auxiliaries(
             if let Err(error) = delete_branch(session, &auxiliary.repository, &entry.branch) {
                 return Err(Error::message(format!(
                     "coordinated worktrees removed, but auxiliary branch deletion failed; coordinated state remains in {}: {}",
-                    auxiliary::state_path(&repo.main_root).display(),
+                    auxiliary::state_path(&repo.main_root, &repo.git_common_dir).display(),
                     error
                 )));
             }
@@ -518,13 +522,13 @@ fn remove_with_auxiliaries(
         if let Err(error) = delete_branch(session, &repo.main_root, &worktree.branch) {
             return Err(Error::message(format!(
                 "coordinated worktrees removed, but primary branch deletion failed; coordinated state remains in {}: {}",
-                auxiliary::state_path(&repo.main_root).display(),
+                auxiliary::state_path(&repo.main_root, &repo.git_common_dir).display(),
                 error
             )));
         }
     }
     auxiliary::remove_worktree_entry(state, &target);
-    auxiliary::write_state(&repo.main_root, state)?;
+    auxiliary::write_state(&repo.git_common_dir, state)?;
 
     finish(
         session,
@@ -640,7 +644,7 @@ pub fn remove(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
             target.display()
         )));
     }
-    let mut state = auxiliary::read_state(&repo.main_root)?;
+    let mut state = auxiliary::read_state(&repo.main_root, &repo.git_common_dir)?;
     if let Some(entry) = auxiliary::worktree_entry(&state, &target).cloned() {
         return remove_with_auxiliaries(
             session,
@@ -1007,7 +1011,7 @@ fn reject_auxiliary_state(
     primary_worktree: &Path,
     command: &str,
 ) -> AppResult<()> {
-    let state = auxiliary::read_state(&repo.main_root)?;
+    let state = auxiliary::read_state(&repo.main_root, &repo.git_common_dir)?;
     if auxiliary::worktree_entry(&state, primary_worktree).is_some() {
         return Err(Error::message(format!(
             "{command} is not supported for worktrees with auxiliary state"

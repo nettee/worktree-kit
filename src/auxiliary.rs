@@ -68,6 +68,7 @@ pub struct AuxiliaryRefStatus {
 pub fn add_group(
     git: &Git,
     primary_root: &Path,
+    git_common_dir: &Path,
     group_name: &str,
     repository_paths: &[PathBuf],
 ) -> AppResult<()> {
@@ -78,7 +79,7 @@ pub fn add_group(
         ));
     }
 
-    let config_path = config_path(primary_root);
+    let config_path = read_config_path(primary_root, git_common_dir);
     let mut config = read_config_or_default(&config_path)?;
     if config.groups.contains_key(group_name) {
         return Err(Error::message(format!(
@@ -145,18 +146,19 @@ pub fn add_group(
             auxiliaries: group_refs,
         },
     );
-    write_config(&config_path, &config)
+    write_config(&private_config_path(git_common_dir), &config)
 }
 
 pub fn expand_groups(
     git: &Git,
     primary_root: &Path,
+    git_common_dir: &Path,
     group_names: &[String],
 ) -> AppResult<Vec<AuxiliarySelection>> {
     if group_names.is_empty() {
         return Ok(Vec::new());
     }
-    let config_path = config_path(primary_root);
+    let config_path = read_config_path(primary_root, git_common_dir);
     let config = read_config(&config_path)?;
     let mut selected_group_names = BTreeSet::new();
     let mut by_repository = Vec::<AuxiliarySelection>::new();
@@ -220,8 +222,8 @@ pub fn expand_groups(
     Ok(by_repository)
 }
 
-pub fn read_state(primary_root: &Path) -> AppResult<WorktreesState> {
-    let path = state_path(primary_root);
+pub fn read_state(primary_root: &Path, git_common_dir: &Path) -> AppResult<WorktreesState> {
+    let path = state_path(primary_root, git_common_dir);
     if !path.exists() {
         return Ok(WorktreesState::default());
     }
@@ -249,8 +251,8 @@ pub fn read_state(primary_root: &Path) -> AppResult<WorktreesState> {
     Ok(state)
 }
 
-pub fn write_state(primary_root: &Path, state: &WorktreesState) -> AppResult<()> {
-    let path = state_path(primary_root);
+pub fn write_state(git_common_dir: &Path, state: &WorktreesState) -> AppResult<()> {
+    let path = private_state_path(git_common_dir);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -427,12 +429,22 @@ pub fn read_ref(path: &Path) -> AppResult<PathBuf> {
     })
 }
 
-pub fn state_path(primary_root: &Path) -> PathBuf {
-    primary_root.join(".wtk").join("worktrees.json")
+pub fn state_path(primary_root: &Path, git_common_dir: &Path) -> PathBuf {
+    let private = private_state_path(git_common_dir);
+    if private.exists() {
+        private
+    } else {
+        legacy_state_path(primary_root)
+    }
 }
 
-fn config_path(primary_root: &Path) -> PathBuf {
-    primary_root.join(".wtk").join("config.toml")
+fn read_config_path(primary_root: &Path, git_common_dir: &Path) -> PathBuf {
+    let private = private_config_path(git_common_dir);
+    if private.exists() {
+        private
+    } else {
+        legacy_config_path(primary_root)
+    }
 }
 
 fn read_config_or_default(path: &Path) -> AppResult<Config> {
@@ -473,6 +485,22 @@ fn write_config(path: &Path, config: &Config) -> AppResult<()> {
             error
         ))
     })
+}
+
+fn private_state_path(git_common_dir: &Path) -> PathBuf {
+    git_common_dir.join("wtk").join("worktrees.json")
+}
+
+fn legacy_state_path(primary_root: &Path) -> PathBuf {
+    primary_root.join(".wtk").join("worktrees.json")
+}
+
+fn private_config_path(git_common_dir: &Path) -> PathBuf {
+    git_common_dir.join("wtk").join("config.toml")
+}
+
+fn legacy_config_path(primary_root: &Path) -> PathBuf {
+    primary_root.join(".wtk").join("config.toml")
 }
 
 fn require_absolute(path: &Path, label: &str) -> AppResult<PathBuf> {

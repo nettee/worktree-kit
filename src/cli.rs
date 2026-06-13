@@ -170,6 +170,7 @@ where
             auxiliary::add_group(
                 &session.git,
                 &repo.main_root,
+                &repo.git_common_dir,
                 &group_name,
                 &repository_paths
                     .iter()
