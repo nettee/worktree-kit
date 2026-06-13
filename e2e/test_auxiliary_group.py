@@ -146,6 +146,39 @@ def test_auxiliary_group_new_preserves_global_excludes(run_wtk, repo_factory, tm
     assert run_git(primary_linked, "diff", "--cached", "--name-only", env=env).stdout == ""
 
 
+def test_auxiliary_group_new_resolves_relative_inherited_excludes_from_worktree(
+    run_wtk, repo_factory
+) -> None:
+    primary = repo_factory.init_repo("primary")
+    api = repo_factory.init_repo("api")
+    repo_factory.commit_files(
+        primary,
+        {".gitignore_global": ".DS_Store\n"},
+        "add inherited excludes",
+    )
+    nested = primary / "nested" / "dir"
+    nested.mkdir(parents=True)
+
+    run_git(primary, "config", "core.excludesFile", ".gitignore_global")
+    run_wtk("auxiliary-group", "add", "backend", str(api), cwd=primary)
+    run_wtk(
+        "new",
+        "feature/aux",
+        "--base",
+        "main",
+        "--ag",
+        "backend",
+        "--no-clipboard",
+        cwd=nested,
+    )
+    primary_linked = linked_worktree_path(primary, "feature/aux")
+    (primary_linked / ".DS_Store").write_text("ignored\n", encoding="utf-8")
+
+    assert run_git(primary_linked, "status", "--porcelain", "--untracked-files=normal").stdout == ""
+    run_git(primary_linked, "add", ".", check=False)
+    assert run_git(primary_linked, "diff", "--cached", "--name-only").stdout == ""
+
+
 def test_auxiliary_group_new_skips_missing_global_excludes(
     run_wtk, repo_factory, tmp_path
 ) -> None:

@@ -671,7 +671,7 @@ fn inherited_excludes_path(
 ) -> AppResult<Option<PathBuf>> {
     match git.run(worktree, ["config", "--path", "--get", "core.excludesFile"]) {
         Ok(output) => {
-            let path = PathBuf::from(output.stdout.trim());
+            let path = resolve_worktree_relative_path(worktree, output.stdout.trim());
             if path.as_os_str().is_empty() {
                 Ok(default_global_excludes_path(exclude_path))
             } else if same_path(&path, exclude_path) {
@@ -684,6 +684,15 @@ fn inherited_excludes_path(
             Ok(default_global_excludes_path(exclude_path))
         }
         Err(error) => Err(error),
+    }
+}
+
+fn resolve_worktree_relative_path(worktree: &Path, path: &str) -> PathBuf {
+    let path = PathBuf::from(path);
+    if path.is_absolute() {
+        path
+    } else {
+        worktree.join(path)
     }
 }
 
