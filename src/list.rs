@@ -108,7 +108,7 @@ pub fn repository_row(
     repository_row_with_options(git, repo, worktree, false, updated_at_by_head)
 }
 
-fn repository_row_with_options(
+pub(crate) fn repository_row_with_options(
     git: &Git,
     repo: &RepoContext,
     worktree: &Worktree,

@@ -50,6 +50,8 @@ def test_auxiliary_group_new_status_list_and_remove(run_wtk, repo_factory) -> No
 
     listing = json.loads(run_wtk("list", "--json", cwd=primary).stdout)
     row = next(row for row in listing["worktrees"] if row["path"] == str(primary_linked.resolve()))
+    assert row["dirty"] is False
+    assert "dirty" not in row["labels"]
     assert row["auxiliary_refs"]["total"] == 2
     assert row["auxiliary_refs"]["broken"] == 0
 

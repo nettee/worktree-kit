@@ -377,14 +377,29 @@ pub fn status(session: &mut Session<'_>) -> AppResult<()> {
 
 pub fn list(session: &mut Session<'_>, options: ListOptions) -> AppResult<()> {
     let repo = repo(session)?;
-    let mut payload = list::repository_output(&session.git, &repo);
     let state = auxiliary::read_state(&repo.main_root)?;
-    for row in &mut payload.worktrees {
-        if let Some(entry) = auxiliary::worktree_entry(&state, &row.path) {
+    let updated_at_by_head =
+        list::commit_timestamps_by_head(&session.git, &repo.main_root, &repo.worktrees);
+    let mut rows = Vec::with_capacity(repo.worktrees.len());
+    for worktree in &repo.worktrees {
+        let mut row = list::repository_row(&session.git, &repo, worktree, &updated_at_by_head);
+        if let Some(entry) = auxiliary::worktree_entry(&state, &worktree.path) {
+            row = list::repository_row_with_options(
+                &session.git,
+                &repo,
+                worktree,
+                true,
+                &updated_at_by_head,
+            );
             row.kind = "primary_worktree";
-            row.auxiliary_refs = Some(auxiliary_ref_summary(&row.path, entry));
+            row.auxiliary_refs = Some(auxiliary_ref_summary(&worktree.path, entry));
         }
+        rows.push(row);
     }
+    let payload = list::ListOutput {
+        mode: "repository",
+        worktrees: list::sorted_rows(rows),
+    };
     list::render(
         session.out,
         &payload,
