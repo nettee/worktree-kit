@@ -42,12 +42,15 @@ def test_auxiliary_group_new_status_list_and_remove(run_wtk, repo_factory) -> No
     assert run_git(primary_linked, "status", "--porcelain", "--untracked-files=normal").stdout == ""
     run_git(primary_linked, "add", ".")
     assert run_git(primary_linked, "diff", "--cached", "--name-only").stdout == ""
+    (primary / "refs").mkdir()
+    (primary / "refs" / "api").write_text("real ref\n", encoding="utf-8")
+    assert run_git(primary, "status", "--porcelain", "--untracked-files=all").stdout == "?? refs/api\n"
 
     state = json.loads((wtk_dir / "worktrees.json").read_text(encoding="utf-8"))
     entry = state["worktrees"][str(primary_linked.resolve())]
     assert entry["branch"] == "feature/aux"
     assert set(entry["auxiliaries"]) == {"api", "web"}
-    assert run_git(primary, "status", "--porcelain", "--untracked-files=normal").stdout == ""
+    assert run_git(primary, "status", "--porcelain", "--untracked-files=all").stdout == "?? refs/api\n"
 
     status = parse_yaml(run_wtk("status", cwd=primary_linked).stdout)
     assert status["mode"] == "coordinated"
@@ -69,6 +72,7 @@ def test_auxiliary_group_new_status_list_and_remove(run_wtk, repo_factory) -> No
     assert not primary_linked.exists()
     assert not api_linked.exists()
     assert not web_linked.exists()
+    assert run_git(primary, "status", "--porcelain", "--untracked-files=all").stdout == "?? refs/api\n"
     assert "feature/aux" not in run_git(primary, "branch", "--list", "feature/aux").stdout
     assert "feature/aux" not in run_git(api, "branch", "--list", "feature/aux").stdout
     assert "feature/aux" not in run_git(web, "branch", "--list", "feature/aux").stdout

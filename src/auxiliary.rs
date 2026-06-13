@@ -431,50 +431,41 @@ pub fn install_ref_excludes(
     primary_worktree: &Path,
     entry: &WorktreeEntry,
 ) -> AppResult<()> {
-    let exclude_path = git
-        .run(
-            primary_worktree,
-            ["rev-parse", "--git-path", "info/exclude"],
-        )?
-        .stdout;
-    let exclude_path = PathBuf::from(exclude_path.trim());
+    git.run(
+        primary_worktree,
+        ["config", "extensions.worktreeConfig", "true"],
+    )?;
+    let exclude_path = worktree_git_dir(git, primary_worktree)?
+        .join("info")
+        .join("exclude");
     if let Some(parent) = exclude_path.parent() {
         fs::create_dir_all(parent)?;
     }
-
-    let existing = if exclude_path.exists() {
-        fs::read_to_string(&exclude_path).map_err(|error| {
-            Error::message(format!(
-                "failed to read git exclude file {}: {}",
-                exclude_path.display(),
-                error
-            ))
-        })?
-    } else {
+    let ignored = ignored_ref_paths(entry)
+        .into_iter()
+        .collect::<Vec<_>>()
+        .join("\n");
+    let content = if ignored.is_empty() {
         String::new()
+    } else {
+        format!("{ignored}\n")
     };
-
-    let mut updated = existing.clone();
-    for ignored in ignored_ref_paths(entry) {
-        if existing.lines().any(|line| line.trim() == ignored) {
-            continue;
-        }
-        if !updated.is_empty() && !updated.ends_with('\n') {
-            updated.push('\n');
-        }
-        updated.push_str(&ignored);
-        updated.push('\n');
-    }
-
-    if updated != existing {
-        fs::write(&exclude_path, updated).map_err(|error| {
-            Error::message(format!(
-                "failed to write git exclude file {}: {}",
-                exclude_path.display(),
-                error
-            ))
-        })?;
-    }
+    fs::write(&exclude_path, content).map_err(|error| {
+        Error::message(format!(
+            "failed to write git exclude file {}: {}",
+            exclude_path.display(),
+            error
+        ))
+    })?;
+    git.run(
+        primary_worktree,
+        [
+            "config",
+            "--worktree",
+            "core.excludesFile",
+            &exclude_path.display().to_string(),
+        ],
+    )?;
 
     Ok(())
 }
@@ -618,9 +609,14 @@ fn require_absolute(path: &Path, label: &str) -> AppResult<PathBuf> {
 }
 
 fn auxiliary_marker_path(git: &Git, auxiliary_worktree: &Path) -> AppResult<PathBuf> {
+    let git_dir = worktree_git_dir(git, auxiliary_worktree)?;
+    Ok(git_dir.join("wtk-coordinated-primary.json"))
+}
+
+fn worktree_git_dir(git: &Git, worktree: &Path) -> AppResult<PathBuf> {
     let git_dir = git
         .run(
-            auxiliary_worktree,
+            worktree,
             ["rev-parse", "--path-format=absolute", "--git-dir"],
         )?
         .stdout;
@@ -631,7 +627,7 @@ fn auxiliary_marker_path(git: &Git, auxiliary_worktree: &Path) -> AppResult<Path
             git_dir.display()
         )));
     }
-    Ok(git_dir.join("wtk-coordinated-primary.json"))
+    Ok(git_dir)
 }
 
 fn parse_status_paths(path: &str) -> Option<Vec<String>> {
