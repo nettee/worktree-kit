@@ -185,7 +185,7 @@ fn create_with_auxiliaries(session: &mut Session<'_>, opts: Options) -> AppResul
     }
 
     let primary_path = create_target_path(&repo, &opts.branch, "")?;
-    let base = prepare_create_base(session, &repo, &opts)?;
+    let primary_base = prepare_create_base(session, &repo, &opts)?;
     if branch_exists(&session.git, &repo.main_root, &opts.branch)? {
         return Err(Error::message(format!(
             "branch already exists in Primary Repository: {}",
@@ -193,8 +193,10 @@ fn create_with_auxiliaries(session: &mut Session<'_>, opts: Options) -> AppResul
         )));
     }
 
+    let mut auxiliary_bases = BTreeMap::new();
     let mut auxiliary_paths = BTreeMap::new();
     for selection in &selections {
+        let base = prepare_create_base(session, &selection.repo, &opts)?;
         if branch_exists(&session.git, &selection.repo.main_root, &opts.branch)? {
             return Err(Error::message(format!(
                 "branch already exists in auxiliary repository {}: {}",
@@ -210,13 +212,20 @@ fn create_with_auxiliaries(session: &mut Session<'_>, opts: Options) -> AppResul
             )));
         }
         ensure_creatable_parent(&path)?;
+        auxiliary_bases.insert(selection.name.clone(), base);
         auxiliary_paths.insert(selection.name.clone(), path);
     }
 
     let mut created = Vec::<(PathBuf, PathBuf, String)>::new();
     let previous_state = auxiliary::read_state(&repo.main_root, &repo.git_common_dir)?;
     let result = (|| {
-        create_git_worktree(session, &repo.main_root, &primary_path, &opts.branch, &base)?;
+        create_git_worktree(
+            session,
+            &repo.main_root,
+            &primary_path,
+            &opts.branch,
+            &primary_base,
+        )?;
         created.push((
             repo.main_root.clone(),
             primary_path.clone(),
@@ -227,13 +236,10 @@ fn create_with_auxiliaries(session: &mut Session<'_>, opts: Options) -> AppResul
             let path = auxiliary_paths
                 .get(&selection.name)
                 .ok_or_else(|| Error::message("missing auxiliary target path"))?;
-            create_git_worktree(
-                session,
-                &selection.repo.main_root,
-                path,
-                &opts.branch,
-                &base,
-            )?;
+            let base = auxiliary_bases
+                .get(&selection.name)
+                .ok_or_else(|| Error::message("missing auxiliary base"))?;
+            create_git_worktree(session, &selection.repo.main_root, path, &opts.branch, base)?;
             created.push((
                 selection.repo.main_root.clone(),
                 path.clone(),
