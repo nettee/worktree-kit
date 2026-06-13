@@ -263,6 +263,15 @@ fn create_with_auxiliaries(session: &mut Session<'_>, opts: Options) -> AppResul
                 .get(&selection.name)
                 .ok_or_else(|| Error::message("missing auxiliary target path"))?;
             auxiliary::write_ref(&primary_path.join("refs").join(&selection.name), path)?;
+            auxiliary::write_auxiliary_marker(
+                &session.git,
+                path,
+                &auxiliary::AuxiliaryMarker {
+                    primary_repository: repo.main_root.clone(),
+                    primary_worktree: primary_path.clone(),
+                    branch: opts.branch.clone(),
+                },
+            )?;
         }
 
         let primary_env = snapshot_ignored_env_files(session, &repo.main_root)?;
@@ -745,6 +754,11 @@ pub fn remove(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
             entry,
         );
     }
+    if auxiliary::read_auxiliary_marker(&session.git, &target)?.is_some() {
+        return Err(Error::message(
+            "remove is not supported for worktrees with auxiliary state",
+        ));
+    }
     require_clean(session, &target)?;
 
     let remove_args = vec![
@@ -1102,6 +1116,11 @@ fn reject_auxiliary_state(
 ) -> AppResult<()> {
     let state = auxiliary::read_state(&repo.main_root, &repo.git_common_dir)?;
     if auxiliary::worktree_entry(&state, primary_worktree).is_some() {
+        return Err(Error::message(format!(
+            "{command} is not supported for worktrees with auxiliary state"
+        )));
+    }
+    if auxiliary::read_auxiliary_marker(&Git, primary_worktree)?.is_some() {
         return Err(Error::message(format!(
             "{command} is not supported for worktrees with auxiliary state"
         )));

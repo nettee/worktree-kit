@@ -58,6 +58,13 @@ pub struct AuxiliaryWorktreeState {
     pub worktree: PathBuf,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuxiliaryMarker {
+    pub primary_repository: PathBuf,
+    pub primary_worktree: PathBuf,
+    pub branch: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct AuxiliaryRefStatus {
     pub name: String,
@@ -429,6 +436,49 @@ pub fn read_ref(path: &Path) -> AppResult<PathBuf> {
     })
 }
 
+pub fn write_auxiliary_marker(
+    git: &Git,
+    auxiliary_worktree: &Path,
+    marker: &AuxiliaryMarker,
+) -> AppResult<()> {
+    let path = auxiliary_marker_path(git, auxiliary_worktree)?;
+    let text = serde_json::to_string_pretty(marker).map_err(|error| {
+        Error::message(format!("failed to serialize auxiliary marker: {error}"))
+    })?;
+    fs::write(&path, format!("{text}\n")).map_err(|error| {
+        Error::message(format!(
+            "failed to write auxiliary marker {}: {}",
+            path.display(),
+            error
+        ))
+    })
+}
+
+pub fn read_auxiliary_marker(
+    git: &Git,
+    auxiliary_worktree: &Path,
+) -> AppResult<Option<AuxiliaryMarker>> {
+    let path = auxiliary_marker_path(git, auxiliary_worktree)?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let text = fs::read_to_string(&path).map_err(|error| {
+        Error::message(format!(
+            "failed to read auxiliary marker {}: {}",
+            path.display(),
+            error
+        ))
+    })?;
+    let marker = serde_json::from_str(&text).map_err(|error| {
+        Error::message(format!(
+            "failed to parse auxiliary marker {}: {}",
+            path.display(),
+            error
+        ))
+    })?;
+    Ok(Some(marker))
+}
+
 pub fn state_path(primary_root: &Path, git_common_dir: &Path) -> PathBuf {
     let private = private_state_path(git_common_dir);
     if private.exists() {
@@ -512,6 +562,23 @@ fn require_absolute(path: &Path, label: &str) -> AppResult<PathBuf> {
             path.display()
         )))
     }
+}
+
+fn auxiliary_marker_path(git: &Git, auxiliary_worktree: &Path) -> AppResult<PathBuf> {
+    let git_dir = git
+        .run(
+            auxiliary_worktree,
+            ["rev-parse", "--path-format=absolute", "--git-dir"],
+        )?
+        .stdout;
+    let git_dir = PathBuf::from(git_dir.trim());
+    if !git_dir.is_absolute() {
+        return Err(Error::message(format!(
+            "Auxiliary worktree git dir must be absolute: {}",
+            git_dir.display()
+        )));
+    }
+    Ok(git_dir.join("wtk-coordinated-primary.json"))
 }
 
 fn parse_status_paths(path: &str) -> Option<Vec<String>> {

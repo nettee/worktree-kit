@@ -176,6 +176,33 @@ def test_auxiliary_group_remove_preserves_real_refs_changes(run_wtk, repo_factor
     assert primary_linked.exists()
 
 
+def test_auxiliary_group_remove_rejects_auxiliary_side_removal(run_wtk, repo_factory) -> None:
+    primary = repo_factory.init_repo("primary")
+    api = repo_factory.init_repo("api")
+
+    run_wtk("auxiliary-group", "add", "backend", str(api), cwd=primary)
+    run_wtk(
+        "new",
+        "feature/aux",
+        "--base",
+        "main",
+        "--ag",
+        "backend",
+        "--no-clipboard",
+        cwd=primary,
+    )
+    primary_linked = linked_worktree_path(primary, "feature/aux")
+    api_linked = linked_worktree_path(api, "feature/aux")
+
+    removed = run_wtk("remove", "--no-clipboard", cwd=api_linked, check=False)
+
+    removed.assert_failure()
+    assert "remove is not supported for worktrees with auxiliary state" in removed.output
+    assert api_linked.exists()
+    state = json.loads((git_common_dir(primary) / "wtk" / "worktrees.json").read_text(encoding="utf-8"))
+    assert str(primary_linked.resolve()) in state["worktrees"]
+
+
 def test_auxiliary_group_list_preserves_real_refs_changes(run_wtk, repo_factory) -> None:
     primary = repo_factory.init_repo("primary")
     api = repo_factory.init_repo("api")
@@ -199,6 +226,31 @@ def test_auxiliary_group_list_preserves_real_refs_changes(run_wtk, repo_factory)
 
     assert row["dirty"] is True
     assert "dirty" in row["labels"]
+
+
+def test_auxiliary_group_bring_in_rejects_auxiliary_side_coordinated_branch(run_wtk, repo_factory) -> None:
+    primary = repo_factory.init_repo("primary")
+    api = repo_factory.init_repo("api")
+
+    run_wtk("auxiliary-group", "add", "backend", str(api), cwd=primary)
+    run_wtk(
+        "new",
+        "feature/aux",
+        "--base",
+        "main",
+        "--ag",
+        "backend",
+        "--no-clipboard",
+        cwd=primary,
+    )
+    api_linked = linked_worktree_path(api, "feature/aux")
+
+    brought_in = run_wtk("bring-in", "feature/aux", "--no-clipboard", cwd=api, check=False)
+
+    brought_in.assert_failure()
+    assert "bring-in is not supported for worktrees with auxiliary state" in brought_in.output
+    assert api_linked.exists()
+    assert run_git(api, "branch", "--show-current").stdout.strip() == "main"
 
 
 def test_auxiliary_group_reports_auxiliary_branch_drift(run_wtk, repo_factory) -> None:
