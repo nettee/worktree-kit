@@ -670,7 +670,9 @@ fn inherited_excludes_path(
     match git.run(worktree, ["config", "--path", "--get", "core.excludesFile"]) {
         Ok(output) => {
             let path = PathBuf::from(output.stdout.trim());
-            if path.as_os_str().is_empty() || same_path(&path, exclude_path) {
+            if path.as_os_str().is_empty() {
+                Ok(default_global_excludes_path(exclude_path))
+            } else if same_path(&path, exclude_path) {
                 Ok(None)
             } else {
                 Ok(Some(path))
