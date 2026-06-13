@@ -6,7 +6,7 @@ use crate::output;
 use crate::paths::default_path;
 use crate::{AppResult, Error};
 use serde::Serialize;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
@@ -384,11 +384,12 @@ pub fn list(session: &mut Session<'_>, options: ListOptions) -> AppResult<()> {
     for worktree in &repo.worktrees {
         let mut row = list::repository_row(&session.git, &repo, worktree, &updated_at_by_head);
         if let Some(entry) = auxiliary::worktree_entry(&state, &worktree.path) {
+            let ignored_refs = auxiliary::ignored_ref_paths(entry);
             row = list::repository_row_with_options(
                 &session.git,
                 &repo,
                 worktree,
-                true,
+                Some(&ignored_refs),
                 &updated_at_by_head,
             );
             row.kind = "primary_worktree";
@@ -459,6 +460,7 @@ fn remove_with_auxiliaries(
     state: &mut auxiliary::WorktreesState,
     entry: WorktreeEntry,
 ) -> AppResult<()> {
+    auxiliary::validate_primary_worktree_branch(&worktree, &entry.branch, &target)?;
     auxiliary::validate_refs(&session.git, &target, &entry)?;
     require_clean_ignoring_refs(session, &target, &entry)?;
     for auxiliary in entry.auxiliaries.values() {
@@ -918,11 +920,11 @@ fn require_clean_ignoring_refs(
     let status = session
         .git
         .run(dir, ["status", "--porcelain=v1", "--untracked-files=all"])?;
-    let ignored = ignored_ref_paths(entry);
+    let ignored = auxiliary::ignored_ref_paths(entry);
     let visible = status
         .stdout
         .lines()
-        .filter(|line| !status_line_ignored(line, &ignored))
+        .filter(|line| !auxiliary::status_line_ignored(line, &ignored))
         .collect::<Vec<_>>();
     if visible.is_empty() {
         Ok(())
@@ -933,22 +935,6 @@ fn require_clean_ignoring_refs(
             visible.join("\n")
         )))
     }
-}
-
-fn ignored_ref_paths(entry: &WorktreeEntry) -> BTreeSet<String> {
-    entry
-        .auxiliaries
-        .keys()
-        .map(|name| format!("refs/{name}"))
-        .collect()
-}
-
-fn status_line_ignored(line: &str, ignored: &BTreeSet<String>) -> bool {
-    let Some(path) = line.get(3..) else {
-        return false;
-    };
-    let paths = path.split(" -> ").collect::<Vec<_>>();
-    !paths.is_empty() && paths.iter().all(|path| ignored.contains(*path))
 }
 
 fn reject_auxiliary_state(

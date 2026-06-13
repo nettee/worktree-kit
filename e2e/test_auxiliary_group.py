@@ -101,6 +101,31 @@ def test_auxiliary_group_remove_preserves_real_refs_changes(run_wtk, repo_factor
     assert primary_linked.exists()
 
 
+def test_auxiliary_group_list_preserves_real_refs_changes(run_wtk, repo_factory) -> None:
+    primary = repo_factory.init_repo("primary")
+    api = repo_factory.init_repo("api")
+
+    run_wtk("auxiliary-group", "add", "backend", str(api), cwd=primary)
+    run_wtk(
+        "new",
+        "feature/aux",
+        "--base",
+        "main",
+        "--ag",
+        "backend",
+        "--no-clipboard",
+        cwd=primary,
+    )
+    primary_linked = linked_worktree_path(primary, "feature/aux")
+    (primary_linked / "refs" / "notes.txt").write_text("keep me\n", encoding="utf-8")
+
+    listing = json.loads(run_wtk("list", "--json", cwd=primary).stdout)
+    row = next(row for row in listing["worktrees"] if row["path"] == str(primary_linked.resolve()))
+
+    assert row["dirty"] is True
+    assert "dirty" in row["labels"]
+
+
 def test_auxiliary_group_reports_auxiliary_branch_drift(run_wtk, repo_factory) -> None:
     primary = repo_factory.init_repo("primary")
     api = repo_factory.init_repo("api")
@@ -131,6 +156,40 @@ def test_auxiliary_group_reports_auxiliary_branch_drift(run_wtk, repo_factory) -
     detail = row["auxiliary_refs"]["details"][0]
     assert detail["ok"] is False
     assert any("other-branch" in diagnostic for diagnostic in detail["diagnostics"])
+
+
+def test_auxiliary_group_remove_rejects_primary_branch_drift(run_wtk, repo_factory) -> None:
+    primary = repo_factory.init_repo("primary")
+    api = repo_factory.init_repo("api")
+
+    run_wtk("auxiliary-group", "add", "backend", str(api), cwd=primary)
+    run_wtk(
+        "new",
+        "feature/aux",
+        "--base",
+        "main",
+        "--ag",
+        "backend",
+        "--no-clipboard",
+        cwd=primary,
+    )
+    primary_linked = linked_worktree_path(primary, "feature/aux")
+    run_git(primary_linked, "checkout", "-B", "other-branch")
+
+    removed = run_wtk(
+        "remove",
+        str(primary_linked),
+        "--delete-branch",
+        "--no-clipboard",
+        cwd=primary,
+        check=False,
+    )
+
+    removed.assert_failure()
+    assert "Primary worktree" in removed.output
+    assert "other-branch" in removed.output
+    assert "expected feature/aux" in removed.output
+    assert primary_linked.exists()
 
 
 def test_auxiliary_group_add_rejects_duplicate_repository(run_wtk, repo_factory) -> None:

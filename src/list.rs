@@ -1,3 +1,4 @@
+use crate::auxiliary;
 use crate::gitexec::{Git, RepoContext, Worktree, same_path};
 use crate::output::Style;
 use crate::{AppResult, Error};
@@ -105,19 +106,19 @@ pub fn repository_row(
     worktree: &Worktree,
     updated_at_by_head: &HashMap<String, Result<i64, String>>,
 ) -> ListRow {
-    repository_row_with_options(git, repo, worktree, false, updated_at_by_head)
+    repository_row_with_options(git, repo, worktree, None, updated_at_by_head)
 }
 
 pub(crate) fn repository_row_with_options(
     git: &Git,
     repo: &RepoContext,
     worktree: &Worktree,
-    ignore_refs: bool,
+    ignored_refs: Option<&std::collections::BTreeSet<String>>,
     updated_at_by_head: &HashMap<String, Result<i64, String>>,
 ) -> ListRow {
     let mut diagnostics = Vec::new();
     let updated_at = commit_timestamp(&worktree.head, updated_at_by_head, &mut diagnostics);
-    let dirty = dirty_state(git, &worktree.path, &mut diagnostics, ignore_refs);
+    let dirty = dirty_state(git, &worktree.path, &mut diagnostics, ignored_refs);
     let is_main = same_path(&worktree.path, &repo.main_root);
     let is_current = same_path(&worktree.path, &repo.current_root);
     let mut labels = labels_for_worktree(worktree, is_main, is_current, dirty);
@@ -322,17 +323,16 @@ fn commit_timestamp(
     }
 }
 
-fn dirty_state(git: &Git, path: &Path, diagnostics: &mut Vec<String>, ignore_refs: bool) -> bool {
-    match git.run(
-        path,
-        ["status", "--porcelain=v1", "--untracked-files=normal"],
-    ) {
-        Ok(output) => output.stdout.lines().any(|line| {
-            !ignore_refs
-                || !matches!(
-                    line.get(3..),
-                    Some(path) if path == "refs/" || path.starts_with("refs/")
-                )
+fn dirty_state(
+    git: &Git,
+    path: &Path,
+    diagnostics: &mut Vec<String>,
+    ignored_refs: Option<&std::collections::BTreeSet<String>>,
+) -> bool {
+    match git.run(path, ["status", "--porcelain=v1", "--untracked-files=all"]) {
+        Ok(output) => output.stdout.lines().any(|line| match ignored_refs {
+            Some(ignored) => !auxiliary::status_line_ignored(line, ignored),
+            None => true,
         }),
         Err(error) => {
             diagnostics.push(format!("failed to read dirty state: {error}"));

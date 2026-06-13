@@ -317,6 +317,45 @@ pub fn validate_refs(
     Ok(refs)
 }
 
+pub fn validate_primary_worktree_branch(
+    worktree: &crate::gitexec::Worktree,
+    expected_branch: &str,
+    primary_worktree: &Path,
+) -> AppResult<()> {
+    if worktree.detached {
+        return Err(Error::message(format!(
+            "Primary worktree at {} is detached, expected branch {}",
+            primary_worktree.display(),
+            expected_branch
+        )));
+    }
+    if worktree.branch != expected_branch {
+        return Err(Error::message(format!(
+            "Primary worktree at {} is on branch {}, expected {}",
+            primary_worktree.display(),
+            worktree.branch,
+            expected_branch
+        )));
+    }
+    Ok(())
+}
+
+pub fn ignored_ref_paths(entry: &WorktreeEntry) -> BTreeSet<String> {
+    entry
+        .auxiliaries
+        .keys()
+        .map(|name| format!("refs/{name}"))
+        .collect()
+}
+
+pub fn status_line_ignored(line: &str, ignored: &BTreeSet<String>) -> bool {
+    let Some(path) = line.get(3..) else {
+        return false;
+    };
+    let paths = path.split(" -> ").collect::<Vec<_>>();
+    !paths.is_empty() && paths.iter().all(|path| ignored.contains(*path))
+}
+
 pub fn validate_worktree_branch(
     git: &Git,
     name: &str,
