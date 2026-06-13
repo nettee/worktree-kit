@@ -400,6 +400,14 @@ pub fn list(session: &mut Session<'_>, options: ListOptions) -> AppResult<()> {
                 &updated_at_by_head,
             );
             row.kind = "primary_worktree";
+            if let Err(error) =
+                auxiliary::validate_primary_worktree_branch(worktree, &entry.branch, &worktree.path)
+            {
+                row.diagnostics.push(error.to_string());
+                if !row.labels.iter().any(|label| label == "error") {
+                    row.labels.push("error".to_string());
+                }
+            }
             row.auxiliary_refs = Some(auxiliary_ref_summary(&session.git, &worktree.path, entry));
         }
         rows.push(row);
@@ -491,20 +499,32 @@ fn remove_with_auxiliaries(
         remove_git_worktree(session, &auxiliary.repository, &auxiliary.worktree)?;
     }
     remove_git_worktree_force(session, &repo.main_root, &target)?;
-    auxiliary::remove_worktree_entry(state, &target);
-    auxiliary::write_state(&repo.main_root, state)?;
 
     if opts.delete_branch {
         for auxiliary in entry.auxiliaries.values() {
-            delete_branch(session, &auxiliary.repository, &entry.branch)?;
+            if let Err(error) = delete_branch(session, &auxiliary.repository, &entry.branch) {
+                return Err(Error::message(format!(
+                    "coordinated worktrees removed, but auxiliary branch deletion failed; coordinated state remains in {}: {}",
+                    auxiliary::state_path(&repo.main_root).display(),
+                    error
+                )));
+            }
         }
         if worktree.branch.is_empty() {
             return Err(Error::message(
                 "cannot delete branch for detached linked worktree",
             ));
         }
-        delete_branch(session, &repo.main_root, &worktree.branch)?;
+        if let Err(error) = delete_branch(session, &repo.main_root, &worktree.branch) {
+            return Err(Error::message(format!(
+                "coordinated worktrees removed, but primary branch deletion failed; coordinated state remains in {}: {}",
+                auxiliary::state_path(&repo.main_root).display(),
+                error
+            )));
+        }
     }
+    auxiliary::remove_worktree_entry(state, &target);
+    auxiliary::write_state(&repo.main_root, state)?;
 
     finish(
         session,

@@ -183,6 +183,32 @@ def test_auxiliary_group_status_rejects_primary_branch_drift(run_wtk, repo_facto
     assert "other-branch" in status.output
 
 
+def test_auxiliary_group_list_reports_primary_branch_drift(run_wtk, repo_factory) -> None:
+    primary = repo_factory.init_repo("primary")
+    api = repo_factory.init_repo("api")
+
+    run_wtk("auxiliary-group", "add", "backend", str(api), cwd=primary)
+    run_wtk(
+        "new",
+        "feature/aux",
+        "--base",
+        "main",
+        "--ag",
+        "backend",
+        "--no-clipboard",
+        cwd=primary,
+    )
+    primary_linked = linked_worktree_path(primary, "feature/aux")
+    run_git(primary_linked, "checkout", "-B", "other-branch")
+
+    listing = json.loads(run_wtk("list", "--json", cwd=primary).stdout)
+    row = next(row for row in listing["worktrees"] if row["path"] == str(primary_linked.resolve()))
+
+    assert "error" in row["labels"]
+    assert any("Primary worktree" in diagnostic for diagnostic in row["diagnostics"])
+    assert any("other-branch" in diagnostic for diagnostic in row["diagnostics"])
+
+
 def test_auxiliary_group_remove_rejects_primary_branch_drift(run_wtk, repo_factory) -> None:
     primary = repo_factory.init_repo("primary")
     api = repo_factory.init_repo("api")
@@ -253,6 +279,46 @@ def test_auxiliary_group_remove_preflights_locked_auxiliaries(run_wtk, repo_fact
     assert primary_linked.exists()
     assert api_linked.exists()
     assert web_linked.exists()
+
+    state = json.loads((primary / ".wtk" / "worktrees.json").read_text(encoding="utf-8"))
+    assert str(primary_linked.resolve()) in state["worktrees"]
+
+
+def test_auxiliary_group_remove_keeps_state_when_branch_delete_fails(
+    run_wtk, repo_factory
+) -> None:
+    primary = repo_factory.init_repo("primary")
+    api = repo_factory.init_repo("api")
+
+    run_wtk("auxiliary-group", "add", "backend", str(api), cwd=primary)
+    run_wtk(
+        "new",
+        "feature/aux",
+        "--base",
+        "main",
+        "--ag",
+        "backend",
+        "--no-clipboard",
+        cwd=primary,
+    )
+    primary_linked = linked_worktree_path(primary, "feature/aux")
+    api_linked = linked_worktree_path(api, "feature/aux")
+    repo_factory.commit_files(primary_linked, {"feature.txt": "branch-only\n"}, "branch work")
+
+    removed = run_wtk(
+        "remove",
+        str(primary_linked),
+        "--delete-branch",
+        "--no-clipboard",
+        cwd=primary,
+        check=False,
+    )
+
+    removed.assert_failure()
+    assert "branch deletion failed" in removed.output
+    assert "coordinated state remains" in removed.output
+    assert not primary_linked.exists()
+    assert not api_linked.exists()
 
     state = json.loads((primary / ".wtk" / "worktrees.json").read_text(encoding="utf-8"))
     assert str(primary_linked.resolve()) in state["worktrees"]
