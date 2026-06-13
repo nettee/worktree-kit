@@ -335,7 +335,7 @@ def test_auxiliary_group_remove_preflights_locked_auxiliaries(run_wtk, repo_fact
     assert str(primary_linked.resolve()) in state["worktrees"]
 
 
-def test_auxiliary_group_remove_keeps_state_when_branch_delete_fails(
+def test_auxiliary_group_remove_preflights_branch_delete_failure(
     run_wtk, repo_factory
 ) -> None:
     primary = repo_factory.init_repo("primary")
@@ -366,10 +366,10 @@ def test_auxiliary_group_remove_keeps_state_when_branch_delete_fails(
     )
 
     removed.assert_failure()
-    assert "branch deletion failed" in removed.output
-    assert "coordinated state remains" in removed.output
-    assert not primary_linked.exists()
-    assert not api_linked.exists()
+    assert "cannot remove coordinated worktree with --delete-branch" in removed.output
+    assert "primary branch deletion would fail" in removed.output
+    assert primary_linked.exists()
+    assert api_linked.exists()
 
     state = json.loads(
         ((git_common_dir(primary) / "wtk") / "worktrees.json").read_text(encoding="utf-8")

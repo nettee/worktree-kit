@@ -504,6 +504,13 @@ fn remove_with_auxiliaries(
     for auxiliary in entry.auxiliaries.values() {
         require_clean(session, &auxiliary.worktree)?;
     }
+    preflight_branch_deletions(
+        &session.git,
+        &repo.main_root,
+        &worktree,
+        opts.delete_branch,
+        &entry,
+    )?;
 
     for auxiliary in entry.auxiliaries.values() {
         remove_git_worktree(session, &auxiliary.repository, &auxiliary.worktree)?;
@@ -542,6 +549,71 @@ fn remove_with_auxiliaries(
         target.display().to_string(),
         format!("removed coordinated worktree {}", target.display()),
     )
+}
+
+fn preflight_branch_deletions(
+    git: &Git,
+    primary_repo_root: &Path,
+    worktree: &crate::gitexec::Worktree,
+    delete_branch: bool,
+    entry: &WorktreeEntry,
+) -> AppResult<()> {
+    if !delete_branch {
+        return Ok(());
+    }
+    for auxiliary in entry.auxiliaries.values() {
+        if let Err(error) = require_branch_deletable(git, &auxiliary.repository, &entry.branch) {
+            return Err(Error::message(format!(
+                "cannot remove coordinated worktree with --delete-branch because auxiliary branch deletion would fail in {}: {}",
+                auxiliary.repository.display(),
+                error
+            )));
+        }
+    }
+    if worktree.branch.is_empty() {
+        return Err(Error::message(
+            "cannot delete branch for detached linked worktree",
+        ));
+    }
+    if let Err(error) = require_branch_deletable(git, primary_repo_root, &worktree.branch) {
+        return Err(Error::message(format!(
+            "cannot remove coordinated worktree with --delete-branch because primary branch deletion would fail in {}: {}",
+            primary_repo_root.display(),
+            error
+        )));
+    }
+    Ok(())
+}
+
+fn require_branch_deletable(git: &Git, repo_root: &Path, branch: &str) -> AppResult<()> {
+    let branch_ref = format!("refs/heads/{branch}");
+    let delete_target = branch_delete_target(git, repo_root, &branch_ref)?;
+    match git.run(
+        repo_root,
+        ["merge-base", "--is-ancestor", &branch_ref, &delete_target],
+    ) {
+        Ok(_) => Ok(()),
+        Err(error) if is_git_exit(&error, 1) => Err(Error::message(format!(
+            "branch {branch} is not fully merged into {delete_target}"
+        ))),
+        Err(error) => Err(error),
+    }
+}
+
+fn branch_delete_target(git: &Git, repo_root: &Path, branch_ref: &str) -> AppResult<String> {
+    let upstream = git
+        .run(
+            repo_root,
+            ["for-each-ref", "--format=%(upstream:short)", branch_ref],
+        )?
+        .stdout
+        .trim()
+        .to_string();
+    if upstream.is_empty() {
+        Ok("HEAD".to_string())
+    } else {
+        Ok(upstream)
+    }
 }
 
 fn validate_auxiliary_worktrees_removable(git: &Git, entry: &WorktreeEntry) -> AppResult<()> {
