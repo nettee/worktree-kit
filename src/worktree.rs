@@ -468,6 +468,18 @@ fn remove_with_auxiliaries(
     entry: WorktreeEntry,
 ) -> AppResult<()> {
     auxiliary::validate_primary_worktree_branch(&worktree, &entry.branch, &target)?;
+    if let Some(reason) = &worktree.locked {
+        let detail = if reason.is_empty() {
+            String::new()
+        } else {
+            format!(": {reason}")
+        };
+        return Err(Error::message(format!(
+            "Primary worktree at {} is locked{}",
+            target.display(),
+            detail
+        )));
+    }
     auxiliary::validate_refs(&session.git, &target, &entry)?;
     require_clean_ignoring_refs(session, &target, &entry)?;
     validate_auxiliary_worktrees_removable(&session.git, &entry)?;
