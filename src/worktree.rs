@@ -6,7 +6,7 @@ use crate::output;
 use crate::paths::default_path;
 use crate::{AppResult, Error};
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
@@ -345,7 +345,7 @@ pub fn status(session: &mut Session<'_>) -> AppResult<()> {
     let repo = repo(session)?;
     let state = auxiliary::read_state(&repo.main_root)?;
     if let Some(entry) = auxiliary::worktree_entry(&state, &repo.current_root) {
-        let refs = auxiliary::validate_refs(&repo.current_root, entry)?;
+        let refs = auxiliary::validate_refs(&session.git, &repo.current_root, entry)?;
         let payload = AuxiliaryStatusOutput {
             mode: "coordinated",
             primary_worktree: repo.current_root.clone(),
@@ -392,7 +392,7 @@ pub fn list(session: &mut Session<'_>, options: ListOptions) -> AppResult<()> {
                 &updated_at_by_head,
             );
             row.kind = "primary_worktree";
-            row.auxiliary_refs = Some(auxiliary_ref_summary(&worktree.path, entry));
+            row.auxiliary_refs = Some(auxiliary_ref_summary(&session.git, &worktree.path, entry));
         }
         rows.push(row);
     }
@@ -459,8 +459,8 @@ fn remove_with_auxiliaries(
     state: &mut auxiliary::WorktreesState,
     entry: WorktreeEntry,
 ) -> AppResult<()> {
-    auxiliary::validate_refs(&target, &entry)?;
-    require_clean_ignoring_refs(session, &target)?;
+    auxiliary::validate_refs(&session.git, &target, &entry)?;
+    require_clean_ignoring_refs(session, &target, &entry)?;
     for auxiliary in entry.auxiliaries.values() {
         require_clean(session, &auxiliary.worktree)?;
     }
@@ -910,20 +910,19 @@ fn require_clean(session: &Session<'_>, dir: &Path) -> AppResult<()> {
     }
 }
 
-fn require_clean_ignoring_refs(session: &Session<'_>, dir: &Path) -> AppResult<()> {
-    let status = session.git.run(
-        dir,
-        ["status", "--porcelain=v1", "--untracked-files=normal"],
-    )?;
+fn require_clean_ignoring_refs(
+    session: &Session<'_>,
+    dir: &Path,
+    entry: &WorktreeEntry,
+) -> AppResult<()> {
+    let status = session
+        .git
+        .run(dir, ["status", "--porcelain=v1", "--untracked-files=all"])?;
+    let ignored = ignored_ref_paths(entry);
     let visible = status
         .stdout
         .lines()
-        .filter(|line| {
-            !matches!(
-                line.get(3..),
-                Some(path) if path == "refs/" || path.starts_with("refs/")
-            )
-        })
+        .filter(|line| !status_line_ignored(line, &ignored))
         .collect::<Vec<_>>();
     if visible.is_empty() {
         Ok(())
@@ -934,6 +933,22 @@ fn require_clean_ignoring_refs(session: &Session<'_>, dir: &Path) -> AppResult<(
             visible.join("\n")
         )))
     }
+}
+
+fn ignored_ref_paths(entry: &WorktreeEntry) -> BTreeSet<String> {
+    entry
+        .auxiliaries
+        .keys()
+        .map(|name| format!("refs/{name}"))
+        .collect()
+}
+
+fn status_line_ignored(line: &str, ignored: &BTreeSet<String>) -> bool {
+    let Some(path) = line.get(3..) else {
+        return false;
+    };
+    let paths = path.split(" -> ").collect::<Vec<_>>();
+    !paths.is_empty() && paths.iter().all(|path| ignored.contains(*path))
 }
 
 fn reject_auxiliary_state(
@@ -971,7 +986,11 @@ fn auxiliary_status_entries(
         .collect()
 }
 
-fn auxiliary_ref_summary(primary_worktree: &Path, entry: &WorktreeEntry) -> AuxiliaryRefSummary {
+fn auxiliary_ref_summary(
+    git: &Git,
+    primary_worktree: &Path,
+    entry: &WorktreeEntry,
+) -> AuxiliaryRefSummary {
     let details = entry
         .auxiliaries
         .iter()
@@ -986,6 +1005,11 @@ fn auxiliary_ref_summary(primary_worktree: &Path, entry: &WorktreeEntry) -> Auxi
                                 target.display(),
                                 auxiliary.worktree.display()
                             ));
+                        }
+                        if let Err(error) =
+                            auxiliary::validate_worktree_branch(git, name, &entry.branch, auxiliary)
+                        {
+                            diagnostics.push(error.to_string());
                         }
                         Some(target)
                     }

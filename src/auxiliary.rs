@@ -291,6 +291,7 @@ pub fn remove_worktree_entry(
 }
 
 pub fn validate_refs(
+    git: &Git,
     primary_worktree: &Path,
     entry: &WorktreeEntry,
 ) -> AppResult<Vec<AuxiliaryRefStatus>> {
@@ -306,6 +307,7 @@ pub fn validate_refs(
                 auxiliary.worktree.display()
             )));
         }
+        validate_worktree_branch(git, name, &entry.branch, auxiliary)?;
         refs.push(AuxiliaryRefStatus {
             name: name.clone(),
             expected_target: auxiliary.worktree.clone(),
@@ -313,6 +315,44 @@ pub fn validate_refs(
         });
     }
     Ok(refs)
+}
+
+pub fn validate_worktree_branch(
+    git: &Git,
+    name: &str,
+    expected_branch: &str,
+    auxiliary: &AuxiliaryWorktreeState,
+) -> AppResult<()> {
+    let repo = resolve(git, &auxiliary.worktree)?;
+    if !same_path(&repo.current_root, &auxiliary.worktree) {
+        return Err(Error::message(format!(
+            "Auxiliary worktree {name} resolved to {}, expected {}",
+            repo.current_root.display(),
+            auxiliary.worktree.display()
+        )));
+    }
+    let worktree = repo.worktree_by_path(&auxiliary.worktree).ok_or_else(|| {
+        Error::message(format!(
+            "Auxiliary worktree {name} is missing from git worktree list at {}",
+            auxiliary.repository.display()
+        ))
+    })?;
+    if worktree.detached {
+        return Err(Error::message(format!(
+            "Auxiliary worktree {name} at {} is detached, expected branch {}",
+            auxiliary.worktree.display(),
+            expected_branch
+        )));
+    }
+    if worktree.branch != expected_branch {
+        return Err(Error::message(format!(
+            "Auxiliary worktree {name} at {} is on branch {}, expected {}",
+            auxiliary.worktree.display(),
+            worktree.branch,
+            expected_branch
+        )));
+    }
+    Ok(())
 }
 
 pub fn write_ref(path: &Path, target: &Path) -> AppResult<()> {
