@@ -185,7 +185,15 @@ fn create_with_auxiliaries(session: &mut Session<'_>, opts: Options) -> AppResul
     }
 
     let primary_path = create_target_path(&repo, &opts.branch, "")?;
-    let primary_base = prepare_create_base(session, &repo, &opts)?;
+    let coordinated_current_branch = if opts.from_current {
+        Some(current_branch_name(session, &repo.current_root)?)
+    } else {
+        None
+    };
+    let primary_base = match coordinated_current_branch.clone() {
+        Some(branch) => branch,
+        None => prepare_create_base(session, &repo, &opts)?,
+    };
     if branch_exists(&session.git, &repo.main_root, &opts.branch)? {
         return Err(Error::message(format!(
             "branch already exists in Primary Repository: {}",
@@ -196,7 +204,10 @@ fn create_with_auxiliaries(session: &mut Session<'_>, opts: Options) -> AppResul
     let mut auxiliary_bases = BTreeMap::new();
     let mut auxiliary_paths = BTreeMap::new();
     for selection in &selections {
-        let base = prepare_create_base(session, &selection.repo, &opts)?;
+        let base = match coordinated_current_branch.clone() {
+            Some(branch) => branch,
+            None => prepare_create_base(session, &selection.repo, &opts)?,
+        };
         if branch_exists(&session.git, &selection.repo.main_root, &opts.branch)? {
             return Err(Error::message(format!(
                 "branch already exists in auxiliary repository {}: {}",
@@ -1339,19 +1350,23 @@ fn prepare_create_base(
                 "--base and --from-current cannot be used together",
             ));
         }
-        let current = session
-            .git
-            .run(&repo.current_root, ["branch", "--show-current"])?
-            .stdout;
-        let current = current.trim();
-        if current.is_empty() {
-            return Err(Error::message(
-                "--from-current requires the current worktree to be on a named branch",
-            ));
-        }
-        return Ok(current.to_string());
+        return current_branch_name(session, &repo.current_root);
     }
     prepare_base(session, repo, &opts.base)
+}
+
+fn current_branch_name(session: &mut Session<'_>, repo_root: &Path) -> AppResult<String> {
+    let current = session
+        .git
+        .run(repo_root, ["branch", "--show-current"])?
+        .stdout;
+    let current = current.trim();
+    if current.is_empty() {
+        return Err(Error::message(
+            "--from-current requires the current worktree to be on a named branch",
+        ));
+    }
+    Ok(current.to_string())
 }
 
 fn ensure_creatable_parent(path: &Path) -> AppResult<()> {

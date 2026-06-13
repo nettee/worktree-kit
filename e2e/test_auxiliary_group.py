@@ -117,6 +117,32 @@ def test_auxiliary_group_new_prepares_each_auxiliary_base(run_wtk, tmp_path) -> 
     assert run_git(api_linked, "rev-parse", "HEAD").stdout.strip() == fresh_main
 
 
+def test_auxiliary_group_new_from_current_uses_primary_branch(run_wtk, repo_factory) -> None:
+    primary = repo_factory.init_repo("primary")
+    api = repo_factory.init_repo("api")
+
+    run_git(primary, "checkout", "-b", "release/1.0")
+    (primary / "primary-release.txt").write_text("primary release\n", encoding="utf-8")
+    run_git(primary, "add", "primary-release.txt")
+    run_git(primary, "commit", "-m", "primary release")
+
+    run_git(api, "checkout", "-b", "release/1.0")
+    (api / "api-release.txt").write_text("api release\n", encoding="utf-8")
+    run_git(api, "add", "api-release.txt")
+    run_git(api, "commit", "-m", "api release")
+    run_git(api, "checkout", "main")
+
+    run_wtk("auxiliary-group", "add", "backend", str(api), cwd=primary)
+    run_wtk("new", "feature/aux", "--ag", "backend", "--from-current", "--no-clipboard", cwd=primary)
+
+    primary_linked = linked_worktree_path(primary, "feature/aux")
+    api_linked = linked_worktree_path(api, "feature/aux")
+
+    assert (primary_linked / "primary-release.txt").read_text(encoding="utf-8") == "primary release\n"
+    assert (api_linked / "api-release.txt").read_text(encoding="utf-8") == "api release\n"
+    assert run_git(api_linked, "branch", "--show-current").stdout.strip() == "feature/aux"
+
+
 def test_auxiliary_group_remove_preserves_real_refs_changes(run_wtk, repo_factory) -> None:
     primary = repo_factory.init_repo("primary")
     api = repo_factory.init_repo("api")
