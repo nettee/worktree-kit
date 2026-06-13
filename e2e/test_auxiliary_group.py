@@ -39,6 +39,9 @@ def test_auxiliary_group_new_status_list_and_remove(run_wtk, repo_factory) -> No
     assert web_linked.exists()
     assert (primary_linked / "refs" / "api").resolve() == api_linked.resolve()
     assert (primary_linked / "refs" / "web").resolve() == web_linked.resolve()
+    assert run_git(primary_linked, "status", "--porcelain", "--untracked-files=normal").stdout == ""
+    run_git(primary_linked, "add", ".")
+    assert run_git(primary_linked, "diff", "--cached", "--name-only").stdout == ""
 
     state = json.loads((wtk_dir / "worktrees.json").read_text(encoding="utf-8"))
     entry = state["worktrees"][str(primary_linked.resolve())]

@@ -426,6 +426,59 @@ pub fn write_ref(path: &Path, target: &Path) -> AppResult<()> {
     Ok(())
 }
 
+pub fn install_ref_excludes(
+    git: &Git,
+    primary_worktree: &Path,
+    entry: &WorktreeEntry,
+) -> AppResult<()> {
+    let exclude_path = git
+        .run(
+            primary_worktree,
+            ["rev-parse", "--git-path", "info/exclude"],
+        )?
+        .stdout;
+    let exclude_path = PathBuf::from(exclude_path.trim());
+    if let Some(parent) = exclude_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let existing = if exclude_path.exists() {
+        fs::read_to_string(&exclude_path).map_err(|error| {
+            Error::message(format!(
+                "failed to read git exclude file {}: {}",
+                exclude_path.display(),
+                error
+            ))
+        })?
+    } else {
+        String::new()
+    };
+
+    let mut updated = existing.clone();
+    for ignored in ignored_ref_paths(entry) {
+        if existing.lines().any(|line| line.trim() == ignored) {
+            continue;
+        }
+        if !updated.is_empty() && !updated.ends_with('\n') {
+            updated.push('\n');
+        }
+        updated.push_str(&ignored);
+        updated.push('\n');
+    }
+
+    if updated != existing {
+        fs::write(&exclude_path, updated).map_err(|error| {
+            Error::message(format!(
+                "failed to write git exclude file {}: {}",
+                exclude_path.display(),
+                error
+            ))
+        })?;
+    }
+
+    Ok(())
+}
+
 pub fn read_ref(path: &Path) -> AppResult<PathBuf> {
     fs::read_link(path).map_err(|error| {
         Error::message(format!(
