@@ -2,9 +2,10 @@ use crate::gitexec::{Git, RepoContext, absolute_path, resolve, same_path};
 use crate::{AppResult, Error};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use std::env;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+
+const GUIDANCE_FILE: &str = "WTK-AUXILIARY.md";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
@@ -358,6 +359,50 @@ pub fn ignored_ref_paths(entry: &WorktreeEntry) -> BTreeSet<String> {
         .collect()
 }
 
+fn generated_exclude_patterns() -> [&'static str; 2] {
+    ["/refs/", "/WTK-AUXILIARY.md"]
+}
+
+pub fn write_guidance(primary_worktree: &Path, entry: &WorktreeEntry) -> AppResult<()> {
+    let path = primary_worktree.join(GUIDANCE_FILE);
+    let text = render_guidance(entry);
+    fs::write(&path, text).map_err(|error| {
+        Error::message(format!(
+            "failed to write auxiliary guidance {}: {}",
+            path.display(),
+            error
+        ))
+    })
+}
+
+fn render_guidance(entry: &WorktreeEntry) -> String {
+    let mut text = String::from(
+        "# WTK Auxiliary Guidance\n\
+         \n\
+         This is a coordinated Primary Repository worktree.\n\
+         \n\
+         Specs and planning artifacts remain in this Primary Repository. Auxiliary Repositories are for coordinated code changes and PRs.\n\
+         \n\
+         ## Auxiliary Repositories\n\
+         \n",
+    );
+    for (name, auxiliary) in &entry.auxiliaries {
+        text.push_str(&format!(
+            "- {name}:\n  - ref: refs/{name}\n  - target: {}\n",
+            auxiliary.worktree.display()
+        ));
+    }
+    text.push_str(
+        "\n\
+         ## Operational Rules\n\
+         \n\
+         - Edit Auxiliary Repository code through the matching `refs/<name>` entrypoint.\n\
+         - Do not edit or commit generated `refs/` entries or `WTK-AUXILIARY.md`.\n\
+         - Open PRs in each repository that receives changes.\n",
+    );
+    text
+}
+
 pub fn status_line_ignored(line: &str, ignored: &BTreeSet<String>) -> bool {
     let Some(path) = line.get(3..) else {
         return false;
@@ -430,19 +475,15 @@ pub fn write_ref(path: &Path, target: &Path) -> AppResult<()> {
 pub fn install_ref_excludes(
     git: &Git,
     primary_worktree: &Path,
-    entry: &WorktreeEntry,
+    _entry: &WorktreeEntry,
 ) -> AppResult<()> {
-    git.run(
-        primary_worktree,
-        ["config", "extensions.worktreeConfig", "true"],
-    )?;
-    let exclude_path = worktree_git_dir(git, primary_worktree)?
+    let exclude_path = common_git_dir(git, primary_worktree)?
         .join("info")
         .join("exclude");
     if let Some(parent) = exclude_path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let mut sections = Vec::new();
+    let mut lines = Vec::new();
     if exclude_path.exists() {
         let existing = fs::read_to_string(&exclude_path).map_err(|error| {
             Error::message(format!(
@@ -451,38 +492,17 @@ pub fn install_ref_excludes(
                 error
             ))
         })?;
-        let trimmed = existing.trim_end();
-        if !trimmed.is_empty() {
-            sections.push(trimmed.to_string());
+        lines.extend(existing.lines().map(str::to_string));
+    }
+    for pattern in generated_exclude_patterns() {
+        if !lines.iter().any(|line| line == pattern) {
+            lines.push(pattern.to_string());
         }
     }
-    if let Some(inherited_path) = inherited_excludes_path(git, primary_worktree, &exclude_path)? {
-        if inherited_path.exists() {
-            let inherited = fs::read_to_string(&inherited_path).map_err(|error| {
-                Error::message(format!(
-                    "failed to read inherited git exclude file {}: {}",
-                    inherited_path.display(),
-                    error
-                ))
-            })?;
-            let trimmed = inherited.trim_end();
-            if !trimmed.is_empty() {
-                sections.push(trimmed.to_string());
-            }
-        }
-    }
-    let ignored = ignored_ref_paths(entry)
-        .into_iter()
-        .map(|path| escape_gitignore_pattern(&path))
-        .collect::<Vec<_>>()
-        .join("\n");
-    if !ignored.is_empty() {
-        sections.push(ignored);
-    }
-    let content = if sections.is_empty() {
+    let content = if lines.is_empty() {
         String::new()
     } else {
-        format!("{}\n", sections.join("\n"))
+        format!("{}\n", lines.join("\n"))
     };
     fs::write(&exclude_path, content).map_err(|error| {
         Error::message(format!(
@@ -491,15 +511,6 @@ pub fn install_ref_excludes(
             error
         ))
     })?;
-    git.run(
-        primary_worktree,
-        [
-            "config",
-            "--worktree",
-            "core.excludesFile",
-            &exclude_path.display().to_string(),
-        ],
-    )?;
 
     Ok(())
 }
@@ -664,54 +675,21 @@ fn worktree_git_dir(git: &Git, worktree: &Path) -> AppResult<PathBuf> {
     Ok(git_dir)
 }
 
-fn inherited_excludes_path(
-    git: &Git,
-    worktree: &Path,
-    exclude_path: &Path,
-) -> AppResult<Option<PathBuf>> {
-    match git.run(worktree, ["config", "--path", "--get", "core.excludesFile"]) {
-        Ok(output) => {
-            let path = resolve_worktree_relative_path(worktree, output.stdout.trim());
-            if path.as_os_str().is_empty() {
-                Ok(default_global_excludes_path(exclude_path))
-            } else if same_path(&path, exclude_path) {
-                Ok(None)
-            } else {
-                Ok(Some(path))
-            }
-        }
-        Err(Error::Git(error)) if error.exit_code == Some(1) => {
-            Ok(default_global_excludes_path(exclude_path))
-        }
-        Err(error) => Err(error),
+fn common_git_dir(git: &Git, worktree: &Path) -> AppResult<PathBuf> {
+    let git_dir = git
+        .run(
+            worktree,
+            ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        )?
+        .stdout;
+    let git_dir = PathBuf::from(git_dir.trim());
+    if !git_dir.is_absolute() {
+        return Err(Error::message(format!(
+            "Git common dir must be absolute: {}",
+            git_dir.display()
+        )));
     }
-}
-
-fn resolve_worktree_relative_path(worktree: &Path, path: &str) -> PathBuf {
-    let path = PathBuf::from(path);
-    if path.is_absolute() {
-        path
-    } else {
-        worktree.join(path)
-    }
-}
-
-fn default_global_excludes_path(exclude_path: &Path) -> Option<PathBuf> {
-    let path = if let Some(xdg_config_home) = env::var_os("XDG_CONFIG_HOME") {
-        PathBuf::from(xdg_config_home).join("git").join("ignore")
-    } else if let Some(home) = env::var_os("HOME") {
-        PathBuf::from(home)
-            .join(".config")
-            .join("git")
-            .join("ignore")
-    } else {
-        return None;
-    };
-    if path.exists() && !same_path(&path, exclude_path) {
-        Some(path)
-    } else {
-        None
-    }
+    Ok(git_dir)
 }
 
 fn parse_status_paths(path: &str) -> Option<Vec<String>> {
@@ -788,30 +766,6 @@ fn decode_status_path(path: &str) -> Option<String> {
     String::from_utf8(decoded).ok()
 }
 
-fn escape_gitignore_pattern(path: &str) -> String {
-    let trailing_spaces = path
-        .as_bytes()
-        .iter()
-        .rev()
-        .take_while(|byte| **byte == b' ')
-        .count();
-    let significant = &path[..path.len() - trailing_spaces];
-    let mut escaped = String::with_capacity(path.len() + trailing_spaces);
-    for ch in significant.chars() {
-        match ch {
-            '\\' | '*' | '?' | '[' => {
-                escaped.push('\\');
-                escaped.push(ch);
-            }
-            _ => escaped.push(ch),
-        }
-    }
-    for _ in 0..trailing_spaces {
-        escaped.push_str("\\ ");
-    }
-    escaped
-}
-
 fn repository_basename(path: &Path) -> AppResult<String> {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -837,15 +791,4 @@ fn validate_name(name: &str, label: &str) -> AppResult<()> {
         return Err(Error::message(format!("{label} is invalid: {name:?}")));
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::escape_gitignore_pattern;
-
-    #[test]
-    fn escape_gitignore_pattern_escapes_trailing_spaces_once() {
-        assert_eq!(escape_gitignore_pattern("refs/api "), "refs/api\\ ");
-        assert_eq!(escape_gitignore_pattern("refs/api  "), "refs/api\\ \\ ");
-    }
 }

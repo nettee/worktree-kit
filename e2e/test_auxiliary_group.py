@@ -39,18 +39,33 @@ def test_auxiliary_group_new_status_list_and_remove(run_wtk, repo_factory) -> No
     assert web_linked.exists()
     assert (primary_linked / "refs" / "api").resolve() == api_linked.resolve()
     assert (primary_linked / "refs" / "web").resolve() == web_linked.resolve()
+    guidance = primary_linked / "WTK-AUXILIARY.md"
+    guidance_text = guidance.read_text(encoding="utf-8")
+    assert "# WTK Auxiliary Guidance" in guidance_text
+    assert "coordinated Primary Repository worktree" in guidance_text
+    assert "Specs and planning artifacts remain in this Primary Repository" in guidance_text
+    assert "- api:" in guidance_text
+    assert "ref: refs/api" in guidance_text
+    assert f"target: {api_linked.resolve()}" in guidance_text
+    assert "- web:" in guidance_text
+    assert "ref: refs/web" in guidance_text
+    assert f"target: {web_linked.resolve()}" in guidance_text
+    assert "Do not edit or commit generated `refs/` entries or `WTK-AUXILIARY.md`." in guidance_text
+    exclude_text = (git_common_dir(primary) / "info" / "exclude").read_text(encoding="utf-8")
+    assert "/refs/" in exclude_text
+    assert "/WTK-AUXILIARY.md" in exclude_text
     assert run_git(primary_linked, "status", "--porcelain", "--untracked-files=normal").stdout == ""
     run_git(primary_linked, "add", ".")
     assert run_git(primary_linked, "diff", "--cached", "--name-only").stdout == ""
     (primary / "refs").mkdir()
     (primary / "refs" / "api").write_text("real ref\n", encoding="utf-8")
-    assert run_git(primary, "status", "--porcelain", "--untracked-files=all").stdout == "?? refs/api\n"
+    assert run_git(primary, "status", "--porcelain", "--untracked-files=all").stdout == ""
 
     state = json.loads((wtk_dir / "worktrees.json").read_text(encoding="utf-8"))
     entry = state["worktrees"][str(primary_linked.resolve())]
     assert entry["branch"] == "feature/aux"
     assert set(entry["auxiliaries"]) == {"api", "web"}
-    assert run_git(primary, "status", "--porcelain", "--untracked-files=all").stdout == "?? refs/api\n"
+    assert run_git(primary, "status", "--porcelain", "--untracked-files=all").stdout == ""
 
     status = parse_yaml(run_wtk("status", cwd=primary_linked).stdout)
     assert status["mode"] == "coordinated"
@@ -72,13 +87,13 @@ def test_auxiliary_group_new_status_list_and_remove(run_wtk, repo_factory) -> No
     assert not primary_linked.exists()
     assert not api_linked.exists()
     assert not web_linked.exists()
-    assert run_git(primary, "status", "--porcelain", "--untracked-files=all").stdout == "?? refs/api\n"
+    assert run_git(primary, "status", "--porcelain", "--untracked-files=all").stdout == ""
     assert "feature/aux" not in run_git(primary, "branch", "--list", "feature/aux").stdout
     assert "feature/aux" not in run_git(api, "branch", "--list", "feature/aux").stdout
     assert "feature/aux" not in run_git(web, "branch", "--list", "feature/aux").stdout
 
 
-def test_auxiliary_group_new_escapes_gitignore_metacharacters(run_wtk, repo_factory) -> None:
+def test_auxiliary_group_new_ignores_refs_directory(run_wtk, repo_factory) -> None:
     primary = repo_factory.init_repo("primary")
     wildcard_aux = repo_factory.init_repo("a*")
 
@@ -96,12 +111,12 @@ def test_auxiliary_group_new_escapes_gitignore_metacharacters(run_wtk, repo_fact
     primary_linked = linked_worktree_path(primary, "feature/aux")
     (primary_linked / "refs" / "actual").write_text("visible\n", encoding="utf-8")
 
-    assert run_git(primary_linked, "status", "--porcelain", "--untracked-files=all").stdout == "?? refs/actual\n"
+    assert run_git(primary_linked, "status", "--porcelain", "--untracked-files=all").stdout == ""
 
     listing = json.loads(run_wtk("list", "--json", cwd=primary).stdout)
     row = next(row for row in listing["worktrees"] if row["path"] == str(primary_linked.resolve()))
-    assert row["dirty"] is True
-    assert "dirty" in row["labels"]
+    assert row["dirty"] is False
+    assert "dirty" not in row["labels"]
 
     removed = run_wtk(
         "remove",
@@ -109,11 +124,8 @@ def test_auxiliary_group_new_escapes_gitignore_metacharacters(run_wtk, repo_fact
         "--delete-branch",
         "--no-clipboard",
         cwd=primary,
-        check=False,
     )
-    removed.assert_failure()
-    assert "worktree is dirty" in removed.output
-    assert "refs/actual" in removed.output
+    assert str(primary_linked) in removed.output
 
 
 def test_auxiliary_group_new_preserves_global_excludes(run_wtk, repo_factory, tmp_path) -> None:
@@ -342,7 +354,7 @@ def test_auxiliary_group_new_rejects_base_with_from_current(run_wtk, repo_factor
     assert "--base and --from-current cannot be used together" in result.output
 
 
-def test_auxiliary_group_remove_preserves_real_refs_changes(run_wtk, repo_factory) -> None:
+def test_auxiliary_group_remove_ignores_refs_directory(run_wtk, repo_factory) -> None:
     primary = repo_factory.init_repo("primary")
     api = repo_factory.init_repo("api")
 
@@ -366,13 +378,10 @@ def test_auxiliary_group_remove_preserves_real_refs_changes(run_wtk, repo_factor
         "--delete-branch",
         "--no-clipboard",
         cwd=primary,
-        check=False,
     )
 
-    removed.assert_failure()
-    assert "worktree is dirty" in removed.output
-    assert "refs/notes.txt" in removed.output
-    assert primary_linked.exists()
+    assert str(primary_linked) in removed.output
+    assert not primary_linked.exists()
 
 
 def test_auxiliary_group_remove_rejects_auxiliary_side_removal(run_wtk, repo_factory) -> None:
@@ -402,7 +411,7 @@ def test_auxiliary_group_remove_rejects_auxiliary_side_removal(run_wtk, repo_fac
     assert str(primary_linked.resolve()) in state["worktrees"]
 
 
-def test_auxiliary_group_list_preserves_real_refs_changes(run_wtk, repo_factory) -> None:
+def test_auxiliary_group_list_ignores_refs_directory(run_wtk, repo_factory) -> None:
     primary = repo_factory.init_repo("primary")
     api = repo_factory.init_repo("api")
 
@@ -423,8 +432,8 @@ def test_auxiliary_group_list_preserves_real_refs_changes(run_wtk, repo_factory)
     listing = json.loads(run_wtk("list", "--json", cwd=primary).stdout)
     row = next(row for row in listing["worktrees"] if row["path"] == str(primary_linked.resolve()))
 
-    assert row["dirty"] is True
-    assert "dirty" in row["labels"]
+    assert row["dirty"] is False
+    assert "dirty" not in row["labels"]
 
 
 def test_auxiliary_group_bring_in_rejects_auxiliary_side_coordinated_branch(run_wtk, repo_factory) -> None:

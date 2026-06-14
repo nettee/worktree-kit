@@ -117,6 +117,8 @@ wtk new feature/full-stack --auxiliary-group full-stack
 
 No selected Auxiliary Groups is the standalone case. With selected groups, `wtk new` creates the Primary Repository worktree plus matching Auxiliary Repository worktrees for the same branch. The Primary worktree receives generated `refs/<auxiliary-name>` entries pointing to the Auxiliary Repository worktrees. `$(git rev-parse --git-common-dir)/wtk/worktrees.json` stores the expanded Auxiliary Repository state by absolute Primary worktree path; changing the config later does not mutate existing worktrees.
 
+Coordinated Primary worktrees also receive a generated `WTK-AUXILIARY.md` file that lists the concrete Auxiliary Repository refs and targets for agents. WTK keeps both `/refs/` and `/WTK-AUXILIARY.md` ignored through `.git/info/exclude`.
+
 `wtk status` validates generated refs for the current Primary worktree when auxiliary state is recorded. `wtk list` shows ordinary and coordinated Primary worktrees together and summarizes Auxiliary Ref health, such as `refs 2/2 ok` or `refs 1/2 broken`. `wtk remove` removes the coordinated set. `wtk send-out` and `wtk bring-in` reject worktrees with auxiliary state because those commands do not define an atomic multi-repository move.
 
 Every command prints the underlying `git` commands it runs. Successful commands copy the useful path or branch payload to the clipboard. Use `--no-clipboard` in CI or headless environments.

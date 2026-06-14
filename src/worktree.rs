@@ -313,6 +313,7 @@ fn create_with_auxiliaries(session: &mut Session<'_>, opts: Options) -> AppResul
         );
         let entry = auxiliary::worktree_entry(&state, &primary_path)
             .ok_or_else(|| Error::message("missing coordinated worktree state after creation"))?;
+        auxiliary::write_guidance(&primary_path, entry)?;
         auxiliary::install_ref_excludes(&session.git, &primary_path, entry)?;
         auxiliary::write_state(&repo.git_common_dir, &state)?;
         Ok(())
