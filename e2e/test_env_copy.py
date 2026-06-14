@@ -34,6 +34,46 @@ def test_root_and_nested_ignored_env_files_copy(run_wtk, repo_factory) -> None:
     assert "initializing worktree asynchronously" in out
 
 
+def test_root_and_nested_ignored_secrets_auto_tfvars_copy(run_wtk, repo_factory) -> None:
+    repo = repo_factory.init_repo("repo")
+    repo_factory.commit_files(
+        repo,
+        {
+            ".gitignore": "secrets.auto.tfvars\napps/web/secrets.auto.tfvars\nservices/api/secrets.auto.tfvars\n",
+            "apps/web/keep.txt": "web\n",
+            "services/api/keep.txt": "api\n",
+        },
+        "add secrets tfvars paths",
+    )
+    (repo / "secrets.auto.tfvars").write_text('root_secret = "ROOT"\n', encoding="utf-8")
+    (repo / "apps" / "web" / "secrets.auto.tfvars").write_text(
+        'web_secret = "WEB"\n', encoding="utf-8"
+    )
+    (repo / "services" / "api" / "secrets.auto.tfvars").write_text(
+        'api_secret = "API"\n', encoding="utf-8"
+    )
+
+    out = run_wtk("new", "feature/tfvars", "--base", "main", "--no-clipboard", cwd=repo).output
+    linked = linked_worktree_path(repo, "feature/tfvars")
+    wait_until(
+        "copied tfvars files",
+        lambda: linked.joinpath("secrets.auto.tfvars").exists()
+        and linked.joinpath("apps/web/secrets.auto.tfvars").exists()
+        and linked.joinpath("services/api/secrets.auto.tfvars").exists(),
+    )
+
+    assert linked.joinpath("secrets.auto.tfvars").read_text(encoding="utf-8") == 'root_secret = "ROOT"\n'
+    assert (
+        linked.joinpath("apps/web/secrets.auto.tfvars").read_text(encoding="utf-8")
+        == 'web_secret = "WEB"\n'
+    )
+    assert (
+        linked.joinpath("services/api/secrets.auto.tfvars").read_text(encoding="utf-8")
+        == 'api_secret = "API"\n'
+    )
+    assert "initializing worktree asynchronously" in out
+
+
 def test_ignored_only_dirs_non_ascii_and_tracked_env_behavior(run_wtk, repo_factory) -> None:
     repo = repo_factory.init_repo("repo")
     repo_factory.commit_files(
@@ -108,3 +148,22 @@ def test_similarly_named_files_are_not_copied(run_wtk, repo_factory) -> None:
     assert not linked.joinpath(".env.example").exists()
     assert not linked.joinpath(".envrc").exists()
     assert not linked.joinpath("config/.env.local").exists()
+
+
+def test_similarly_named_tfvars_files_are_not_copied(run_wtk, repo_factory) -> None:
+    repo = repo_factory.init_repo("repo")
+    repo_factory.commit_files(
+        repo,
+        {
+            ".gitignore": "secrets.auto.tfvars.json\nconfig/secrets.auto.tfvars.tpl\n",
+            "config/keep.txt": "keep\n",
+        },
+        "add tfvars ignore patterns",
+    )
+    (repo / "secrets.auto.tfvars.json").write_text('{"secret":"value"}\n', encoding="utf-8")
+    (repo / "config" / "secrets.auto.tfvars.tpl").write_text('secret = "value"\n', encoding="utf-8")
+
+    run_wtk("new", "feature/named-tfvars", "--base", "main", "--no-clipboard", cwd=repo)
+    linked = linked_worktree_path(repo, "feature/named-tfvars")
+    assert not linked.joinpath("secrets.auto.tfvars.json").exists()
+    assert not linked.joinpath("config/secrets.auto.tfvars.tpl").exists()

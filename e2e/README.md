@@ -4,7 +4,7 @@ This suite runs black-box end-to-end tests for `wtk` with real:
 
 - Git repositories and linked worktrees
 - Auxiliary Group configuration, coordinated worktrees, and generated refs
-- ignored `.env` file copying
+- ignored recursive file copying such as `.env` and `secrets.auto.tfvars`
 - `pnpm install` flows
 
 Run it from the repository root:
