@@ -6,6 +6,8 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 const GUIDANCE_FILE: &str = "WTK-AUXILIARY.md";
+const GUIDANCE_TEMPLATE: &str = include_str!("templates/wtk-auxiliary.md");
+const AUXILIARY_REPOSITORIES_PLACEHOLDER: &str = "{{AUXILIARY_REPOSITORIES}}";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
@@ -376,31 +378,14 @@ pub fn write_guidance(primary_worktree: &Path, entry: &WorktreeEntry) -> AppResu
 }
 
 fn render_guidance(entry: &WorktreeEntry) -> String {
-    let mut text = String::from(
-        "# WTK Auxiliary Guidance\n\
-         \n\
-         This is a coordinated Primary Repository worktree.\n\
-         \n\
-         Specs and planning artifacts remain in this Primary Repository. Auxiliary Repositories are for coordinated code changes and PRs.\n\
-         \n\
-         ## Auxiliary Repositories\n\
-         \n",
-    );
+    let mut auxiliaries = String::new();
     for (name, auxiliary) in &entry.auxiliaries {
-        text.push_str(&format!(
+        auxiliaries.push_str(&format!(
             "- {name}:\n  - ref: refs/{name}\n  - target: {}\n",
             auxiliary.worktree.display()
         ));
     }
-    text.push_str(
-        "\n\
-         ## Operational Rules\n\
-         \n\
-         - Edit Auxiliary Repository code through the matching `refs/<name>` entrypoint.\n\
-         - Do not edit or commit generated `refs/` entries or `WTK-AUXILIARY.md`.\n\
-         - Open PRs in each repository that receives changes.\n",
-    );
-    text
+    GUIDANCE_TEMPLATE.replace(AUXILIARY_REPOSITORIES_PLACEHOLDER, &auxiliaries)
 }
 
 pub fn status_line_ignored(line: &str, ignored: &BTreeSet<String>) -> bool {
@@ -776,6 +761,33 @@ fn repository_basename(path: &Path) -> AppResult<String> {
                 path.display()
             ))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_guidance_uses_template_file() {
+        let entry = WorktreeEntry {
+            branch: "feature/aux".to_string(),
+            auxiliaries: BTreeMap::from([(
+                "api".to_string(),
+                AuxiliaryWorktreeState {
+                    repository: PathBuf::from("/repos/api"),
+                    worktree: PathBuf::from("/worktrees/api-feature-aux"),
+                },
+            )]),
+        };
+
+        let guidance = render_guidance(&entry);
+
+        assert!(guidance.contains("# WTK Auxiliary Guidance"));
+        assert!(guidance.contains("- api:"));
+        assert!(guidance.contains("ref: refs/api"));
+        assert!(guidance.contains("target: /worktrees/api-feature-aux"));
+        assert!(!guidance.contains(AUXILIARY_REPOSITORIES_PLACEHOLDER));
+    }
 }
 
 fn validate_name(name: &str, label: &str) -> AppResult<()> {
