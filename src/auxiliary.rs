@@ -34,6 +34,18 @@ pub struct AuxiliarySelection {
     pub repo: RepoContext,
 }
 
+#[derive(Debug, Clone)]
+pub struct AuxiliaryGroupListing {
+    pub name: String,
+    pub auxiliaries: Vec<AuxiliaryListingEntry>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AuxiliaryListingEntry {
+    pub name: String,
+    pub repository: PathBuf,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorktreesState {
     pub version: u32,
@@ -231,6 +243,83 @@ pub fn expand_groups(
         }
     }
     Ok(by_repository)
+}
+
+pub fn list_groups(
+    git: &Git,
+    primary_root: &Path,
+    git_common_dir: &Path,
+) -> AppResult<Vec<AuxiliaryGroupListing>> {
+    let config_path = read_config_path(primary_root, git_common_dir);
+    let config = read_config_or_default(&config_path)?;
+    let mut groups = Vec::new();
+
+    for (group_name, group) in &config.groups {
+        if group.auxiliaries.is_empty() {
+            return Err(Error::message(format!(
+                "auxiliary group has no auxiliaries: {group_name}"
+            )));
+        }
+
+        let mut auxiliaries = Vec::new();
+        for auxiliary_name in &group.auxiliaries {
+            let auxiliary = config.auxiliaries.get(auxiliary_name).ok_or_else(|| {
+                Error::message(format!(
+                    "auxiliary group {group_name} references missing auxiliary ref: {auxiliary_name}"
+                ))
+            })?;
+            validate_name(auxiliary_name, "auxiliary repository ref name")?;
+            let configured = require_absolute(&auxiliary.repository, "auxiliary repository path")?;
+            let basename = repository_basename(&configured)?;
+            if basename != *auxiliary_name {
+                return Err(Error::message(format!(
+                    "auxiliary ref {auxiliary_name} must match repository basename {basename}"
+                )));
+            }
+            let repo = resolve(git, &configured)?;
+            if !same_path(&repo.main_root, &configured) {
+                return Err(Error::message(format!(
+                    "configured auxiliary repository does not resolve to its main worktree: {}",
+                    configured.display()
+                )));
+            }
+            auxiliaries.push(AuxiliaryListingEntry {
+                name: auxiliary_name.clone(),
+                repository: repo.main_root,
+            });
+        }
+
+        groups.push(AuxiliaryGroupListing {
+            name: group_name.clone(),
+            auxiliaries,
+        });
+    }
+
+    Ok(groups)
+}
+
+pub fn remove_group(primary_root: &Path, git_common_dir: &Path, group_name: &str) -> AppResult<()> {
+    validate_name(group_name, "auxiliary group name")?;
+
+    let config_path = read_config_path(primary_root, git_common_dir);
+    let mut config = read_config_or_default(&config_path)?;
+    let removed = config
+        .groups
+        .remove(group_name)
+        .ok_or_else(|| Error::message(format!("unknown auxiliary group: {group_name}")))?;
+
+    let referenced = config
+        .groups
+        .values()
+        .flat_map(|group| group.auxiliaries.iter().cloned())
+        .collect::<BTreeSet<_>>();
+    for auxiliary_name in removed.auxiliaries {
+        if !referenced.contains(&auxiliary_name) {
+            config.auxiliaries.remove(&auxiliary_name);
+        }
+    }
+
+    write_config(&private_config_path(git_common_dir), &config)
 }
 
 pub fn read_state(primary_root: &Path, git_common_dir: &Path) -> AppResult<WorktreesState> {
@@ -600,8 +689,12 @@ fn write_config(path: &Path, config: &Config) -> AppResult<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let text = toml::to_string_pretty(config)
-        .map_err(|error| Error::message(format!("failed to serialize WTK config: {error}")))?;
+    let text = if config.auxiliaries.is_empty() && config.groups.is_empty() {
+        String::new()
+    } else {
+        toml::to_string_pretty(config)
+            .map_err(|error| Error::message(format!("failed to serialize WTK config: {error}")))?
+    };
     fs::write(path, text).map_err(|error| {
         Error::message(format!(
             "failed to write WTK config {}: {}",

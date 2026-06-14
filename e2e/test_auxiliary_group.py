@@ -93,6 +93,47 @@ def test_auxiliary_group_new_status_list_and_remove(run_wtk, repo_factory) -> No
     assert "feature/aux" not in run_git(web, "branch", "--list", "feature/aux").stdout
 
 
+def test_auxiliary_group_list_and_remove_manage_config(run_wtk, repo_factory) -> None:
+    primary = repo_factory.init_repo("primary")
+    api = repo_factory.init_repo("api")
+    web = repo_factory.init_repo("web")
+    wtk_dir = git_common_dir(primary) / "wtk"
+
+    run_wtk("ag", "add", "full-stack", str(api), str(web), cwd=primary)
+    run_wtk("ag", "add", "backend", str(api), cwd=primary)
+
+    listed = run_wtk("ag", "list", cwd=primary).stdout
+    assert "backend:" in listed
+    assert f"  api: {api.resolve()}" in listed
+    assert "full-stack:" in listed
+    assert f"  web: {web.resolve()}" in listed
+
+    run_wtk("ag", "remove", "full-stack", cwd=primary)
+    config_text = (wtk_dir / "config.toml").read_text(encoding="utf-8")
+    assert "[groups.full-stack]" not in config_text
+    assert "[groups.backend]" in config_text
+    assert "[auxiliaries.api]" in config_text
+    assert "[auxiliaries.web]" not in config_text
+
+    listed = run_wtk("ag", "list", cwd=primary).stdout
+    assert "full-stack:" not in listed
+    assert "backend:" in listed
+    assert f"  api: {api.resolve()}" in listed
+
+    run_wtk("ag", "remove", "backend", cwd=primary)
+    assert (wtk_dir / "config.toml").read_text(encoding="utf-8").strip() == ""
+    assert run_wtk("ag", "list", cwd=primary).stdout == "No Auxiliary Groups configured.\n"
+
+
+def test_auxiliary_group_remove_rejects_unknown_group(run_wtk, repo_factory) -> None:
+    primary = repo_factory.init_repo("primary")
+
+    removed = run_wtk("ag", "remove", "missing", cwd=primary, check=False)
+
+    removed.assert_failure()
+    assert "unknown auxiliary group: missing" in removed.output
+
+
 def test_auxiliary_group_new_ignores_refs_directory(run_wtk, repo_factory) -> None:
     primary = repo_factory.init_repo("primary")
     wildcard_aux = repo_factory.init_repo("a*")
