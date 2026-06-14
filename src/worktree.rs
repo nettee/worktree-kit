@@ -22,9 +22,25 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const IGNORED_ENV_SNAPSHOT_PREFIX: &str = "wtk-init-worktree-snapshot-";
-const IGNORED_ENV_SNAPSHOT_MARKER: &str = ".wtk-ignored-env-snapshot";
+const RECURSIVE_IGNORED_FILE_SNAPSHOT_PREFIX: &str = "wtk-init-worktree-snapshot-";
+const RECURSIVE_IGNORED_FILE_SNAPSHOT_MARKER: &str = ".wtk-recursive-ignored-files-snapshot";
 const IGNORED_SEND_OUT_ACTIVE_SPEC_PATH: &str = "specs/change/active";
+const RECURSIVE_IGNORED_FILE_SPECS: &[RecursiveIgnoredFileSpec] = &[
+    RecursiveIgnoredFileSpec {
+        file_name: ".env",
+        copy_label: "copied ignored .env",
+    },
+    RecursiveIgnoredFileSpec {
+        file_name: "secrets.auto.tfvars",
+        copy_label: "copied ignored secrets.auto.tfvars",
+    },
+];
+
+#[derive(Clone, Copy)]
+struct RecursiveIgnoredFileSpec {
+    file_name: &'static str,
+    copy_label: &'static str,
+}
 
 #[derive(Debug, Default, Clone)]
 pub struct Options {
@@ -108,7 +124,7 @@ pub(crate) enum SnapshotFileKind {
 }
 
 pub struct SendOutWorktreeInit {
-    ignored_env_files: Vec<SnapshotFile>,
+    recursive_ignored_files: Vec<SnapshotFile>,
     ignored_active_spec: Option<SnapshotFile>,
 }
 
@@ -140,25 +156,26 @@ pub fn create(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
     session
         .git
         .run(&repo.main_root, args.iter().map(String::as_str))?;
-    let ignored_env_files =
-        snapshot_ignored_env_files(session, &repo.main_root).map_err(|error| {
+    let recursive_ignored_files = snapshot_recursive_ignored_files(session, &repo.main_root)
+        .map_err(|error| {
             Error::message(format!(
-                "worktree created, but failed to snapshot ignored .env files: {error}"
+                "worktree created, but failed to snapshot ignored recursive files: {error}"
             ))
         })?;
-    let ignored_env_snapshot_root = write_ignored_env_snapshot(&ignored_env_files, &path)?;
-    cleanup_ignored_env_snapshot_on_error(
+    let ignored_snapshot_root =
+        write_recursive_ignored_file_snapshot(&recursive_ignored_files, &path)?;
+    cleanup_recursive_ignored_file_snapshot_on_error(
         finish(
             session,
             opts.no_clipboard,
             path.display().to_string(),
             format!("created worktree at {}", path.display()),
         ),
-        &ignored_env_snapshot_root,
+        &ignored_snapshot_root,
     )?;
-    cleanup_ignored_env_snapshot_on_error(
-        start_async_init_worktree(session, &repo.main_root, &path, &ignored_env_snapshot_root),
-        &ignored_env_snapshot_root,
+    cleanup_recursive_ignored_file_snapshot_on_error(
+        start_async_init_worktree(session, &repo.main_root, &path, &ignored_snapshot_root),
+        &ignored_snapshot_root,
     )
 }
 
@@ -279,8 +296,11 @@ fn create_with_auxiliaries(session: &mut Session<'_>, opts: Options) -> AppResul
             )?;
         }
 
-        let primary_env = snapshot_ignored_env_files(session, &repo.main_root)?;
-        print_copied_ignored_env_files(session, copy_snapshot_files(&primary_env, &primary_path)?)?;
+        let primary_ignored = snapshot_recursive_ignored_files(session, &repo.main_root)?;
+        print_copied_recursive_ignored_files(
+            session,
+            copy_snapshot_files(&primary_ignored, &primary_path)?,
+        )?;
         for selection in &selections {
             let path = auxiliary_paths
                 .get(&selection.name)
@@ -352,7 +372,7 @@ pub fn checkout(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
     }
 
     let path = create_target_path(&repo, &opts.branch, &opts.path)?;
-    let ignored_env_files = snapshot_ignored_env_files(session, &repo.main_root)?;
+    let ignored_files = snapshot_recursive_ignored_files(session, &repo.main_root)?;
     let args = vec![
         "worktree".to_string(),
         "add".to_string(),
@@ -363,11 +383,11 @@ pub fn checkout(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
     session
         .git
         .run(&repo.main_root, args.iter().map(String::as_str))?;
-    print_copied_ignored_env_files(
+    print_copied_recursive_ignored_files(
         session,
-        copy_snapshot_files(&ignored_env_files, &path).map_err(|error| {
+        copy_snapshot_files(&ignored_files, &path).map_err(|error| {
             Error::message(format!(
-                "worktree created, but ignored .env copy failed: {error}"
+                "worktree created, but ignored recursive file copy failed: {error}"
             ))
         })?,
     )?;
@@ -467,13 +487,13 @@ pub fn init_worktree(
     session: &mut Session<'_>,
     source_root: &Path,
     worktree_path: &Path,
-    ignored_env_snapshot_root: Option<&Path>,
+    ignored_snapshot_root: Option<&Path>,
 ) -> AppResult<()> {
-    copy_ignored_env_files_for_init(
+    copy_recursive_ignored_files_for_init(
         session,
         source_root,
         worktree_path,
-        ignored_env_snapshot_root,
+        ignored_snapshot_root,
     )?;
     maybe_run_pnpm_install(session, worktree_path, "worktree initialized")
 }
@@ -482,14 +502,9 @@ pub fn init_worktree_with_async_pnpm(
     session: &mut Session<'_>,
     source_root: &Path,
     worktree_path: &Path,
-    ignored_env_snapshot_root: Option<&Path>,
+    ignored_snapshot_root: Option<&Path>,
 ) -> AppResult<()> {
-    prepare_worktree_for_async_pnpm(
-        session,
-        source_root,
-        worktree_path,
-        ignored_env_snapshot_root,
-    )?;
+    prepare_worktree_for_async_pnpm(session, source_root, worktree_path, ignored_snapshot_root)?;
     start_worktree_async_pnpm_install(session, worktree_path, "worktree initialized").map(|_| ())
 }
 
@@ -498,10 +513,10 @@ fn worktree_init_without_pnpm(
     source_root: &Path,
     worktree_path: &Path,
 ) -> AppResult<()> {
-    let ignored_env_files = snapshot_ignored_env_files(session, source_root)?;
-    print_copied_ignored_env_files(
+    let ignored_files = snapshot_recursive_ignored_files(session, source_root)?;
+    print_copied_recursive_ignored_files(
         session,
-        copy_snapshot_files(&ignored_env_files, worktree_path)?,
+        copy_snapshot_files(&ignored_files, worktree_path)?,
     )
 }
 
@@ -674,13 +689,13 @@ pub fn prepare_worktree_for_async_pnpm(
     session: &mut Session<'_>,
     source_root: &Path,
     worktree_path: &Path,
-    ignored_env_snapshot_root: Option<&Path>,
+    ignored_snapshot_root: Option<&Path>,
 ) -> AppResult<()> {
-    copy_ignored_env_files_for_init(
+    copy_recursive_ignored_files_for_init(
         session,
         source_root,
         worktree_path,
-        ignored_env_snapshot_root,
+        ignored_snapshot_root,
     )
 }
 
@@ -692,17 +707,17 @@ pub fn start_worktree_async_pnpm_install(
     start_async_pnpm_install(session, worktree_path, partial_success_prefix)
 }
 
-fn copy_ignored_env_files_for_init(
+fn copy_recursive_ignored_files_for_init(
     session: &mut Session<'_>,
     source_root: &Path,
     worktree_path: &Path,
-    ignored_env_snapshot_root: Option<&Path>,
+    ignored_snapshot_root: Option<&Path>,
 ) -> AppResult<()> {
-    let (ignored_env_files, snapshot_root) = match ignored_env_snapshot_root {
-        Some(snapshot_root) => match snapshot_ignored_env_files_from_root(snapshot_root) {
-            Ok(ignored_env_files) => (ignored_env_files, Some(snapshot_root)),
+    let (ignored_files, snapshot_root) = match ignored_snapshot_root {
+        Some(snapshot_root) => match snapshot_recursive_ignored_files_from_root(snapshot_root) {
+            Ok(ignored_files) => (ignored_files, Some(snapshot_root)),
             Err(error) => {
-                return match remove_ignored_env_snapshot_root(snapshot_root) {
+                return match remove_recursive_ignored_file_snapshot_root(snapshot_root) {
                     Ok(()) => Err(error),
                     Err(cleanup_error) => {
                         Err(Error::message(format!("{error}; also {cleanup_error}")))
@@ -710,12 +725,15 @@ fn copy_ignored_env_files_for_init(
                 };
             }
         },
-        None => (snapshot_ignored_env_files(session, source_root)?, None),
+        None => (
+            snapshot_recursive_ignored_files(session, source_root)?,
+            None,
+        ),
     };
-    let copy_result = copy_snapshot_files(&ignored_env_files, worktree_path)
-        .map_err(|error| Error::message(format!("ignored .env copy failed: {error}")))
-        .and_then(|copied| print_copied_ignored_env_files(session, copied));
-    let cleanup_result = snapshot_root.map_or(Ok(()), remove_ignored_env_snapshot_root);
+    let copy_result = copy_snapshot_files(&ignored_files, worktree_path)
+        .map_err(|error| Error::message(format!("ignored recursive file copy failed: {error}")))
+        .and_then(|copied| print_copied_recursive_ignored_files(session, copied));
+    let cleanup_result = snapshot_root.map_or(Ok(()), remove_recursive_ignored_file_snapshot_root);
     match (copy_result, cleanup_result) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(error), Ok(())) => Err(error),
@@ -849,7 +867,7 @@ pub fn send_out(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
     let path = create_target_path(&repo, branch.trim(), &opts.path)?;
     ensure_creatable_parent(&path)?;
 
-    let ignored_env_files = snapshot_ignored_env_files(session, &repo.main_root)?;
+    let ignored_files = snapshot_recursive_ignored_files(session, &repo.main_root)?;
     let ignored_active_spec = snapshot_ignored_send_out_active_spec(session, &repo.main_root)?;
 
     let switch_args = vec!["switch".to_string(), base.clone()];
@@ -877,11 +895,11 @@ pub fn send_out(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
             error
         )));
     }
-    print_copied_ignored_env_files(
+    print_copied_recursive_ignored_files(
         session,
-        copy_snapshot_files(&ignored_env_files, &path).map_err(|error| {
+        copy_snapshot_files(&ignored_files, &path).map_err(|error| {
             Error::message(format!(
-                "main worktree switched to {base} and linked worktree created, but ignored .env copy failed: {error}"
+                "main worktree switched to {base} and linked worktree created, but ignored recursive file copy failed: {error}"
             ))
         })?,
     )?;
@@ -1487,12 +1505,12 @@ fn copy_snapshot_files(
     Ok(copied)
 }
 
-fn snapshot_ignored_env_files(
+fn snapshot_recursive_ignored_files(
     session: &Session<'_>,
     main_root: &Path,
 ) -> AppResult<Vec<SnapshotFile>> {
     let mut ignored = Vec::new();
-    for relative in ignored_env_files(session, main_root)? {
+    for relative in recursive_ignored_files(session, main_root)? {
         if let Some(snapshot) = snapshot_file(main_root, relative)? {
             ignored.push(snapshot);
         }
@@ -1512,7 +1530,7 @@ pub fn snapshot_send_out_worktree_init(
     main_root: &Path,
 ) -> AppResult<SendOutWorktreeInit> {
     Ok(SendOutWorktreeInit {
-        ignored_env_files: snapshot_ignored_env_files(session, main_root)?,
+        recursive_ignored_files: snapshot_recursive_ignored_files(session, main_root)?,
         ignored_active_spec: snapshot_ignored_send_out_active_spec(session, main_root)?,
     })
 }
@@ -1522,10 +1540,11 @@ pub fn apply_send_out_worktree_init(
     worktree_path: &Path,
     init: &SendOutWorktreeInit,
 ) -> AppResult<()> {
-    print_copied_ignored_env_files(
+    print_copied_recursive_ignored_files(
         session,
-        copy_snapshot_files(&init.ignored_env_files, worktree_path)
-            .map_err(|error| Error::message(format!("ignored .env copy failed: {error}")))?,
+        copy_snapshot_files(&init.recursive_ignored_files, worktree_path).map_err(|error| {
+            Error::message(format!("ignored recursive file copy failed: {error}"))
+        })?,
     )?;
     if let Some(active_spec) = &init.ignored_active_spec {
         print_copied_ignored_files(
@@ -1550,14 +1569,14 @@ fn snapshot_ignored_exact_file(
     snapshot_file(main_root, relative_path)
 }
 
-fn snapshot_ignored_env_files_from_root(root: &Path) -> AppResult<Vec<SnapshotFile>> {
+fn snapshot_recursive_ignored_files_from_root(root: &Path) -> AppResult<Vec<SnapshotFile>> {
     let mut ignored = Vec::new();
-    collect_ignored_env_files_from_root(root, root, &mut ignored)?;
+    collect_recursive_ignored_files_from_root(root, root, &mut ignored)?;
     ignored.sort_by(|left, right| left.relative.cmp(&right.relative));
     Ok(ignored)
 }
 
-fn collect_ignored_env_files_from_root(
+fn collect_recursive_ignored_files_from_root(
     root: &Path,
     current: &Path,
     ignored: &mut Vec<SnapshotFile>,
@@ -1587,11 +1606,15 @@ fn collect_ignored_env_files_from_root(
             ))
         })?;
         if file_type.is_dir() {
-            collect_ignored_env_files_from_root(root, &path, ignored)?;
+            collect_recursive_ignored_files_from_root(root, &path, ignored)?;
             continue;
         }
 
-        if path.file_name().is_none_or(|name| name != ".env") {
+        if !path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(is_recursive_ignored_file_name)
+        {
             continue;
         }
 
@@ -1662,27 +1685,33 @@ fn create_symlink(target: &Path, path: &Path) -> std::io::Result<()> {
     windows_fs::symlink_file(target, path)
 }
 
-fn ignored_env_files(session: &Session<'_>, main_root: &Path) -> AppResult<Vec<PathBuf>> {
-    let output = session.git.run_bytes(
-        main_root,
-        [
-            "ls-files",
-            "--others",
-            "--ignored",
-            "--exclude-standard",
-            "--full-name",
-            "-z",
-            "--",
-            ".env",
-            ":(glob)**/.env",
-        ],
-    )?;
+fn recursive_ignored_files(session: &Session<'_>, main_root: &Path) -> AppResult<Vec<PathBuf>> {
+    let mut args = vec![
+        "ls-files".to_string(),
+        "--others".to_string(),
+        "--ignored".to_string(),
+        "--exclude-standard".to_string(),
+        "--full-name".to_string(),
+        "-z".to_string(),
+        "--".to_string(),
+    ];
+    for spec in RECURSIVE_IGNORED_FILE_SPECS {
+        args.push(spec.file_name.to_string());
+        args.push(format!(":(glob)**/{}", spec.file_name));
+    }
+    let output = session
+        .git
+        .run_bytes(main_root, args.iter().map(String::as_str))?;
     let mut ignored: Vec<_> = output
         .stdout
         .split(|byte| *byte == b'\0')
         .filter(|path| !path.is_empty())
         .map(path_buf_from_git_bytes)
-        .filter(|path| path.file_name().is_some_and(|name| name == ".env"))
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(is_recursive_ignored_file_name)
+        })
         .collect();
     ignored.sort();
     Ok(ignored)
@@ -1720,11 +1749,38 @@ fn path_buf_from_git_bytes(path: &[u8]) -> PathBuf {
     PathBuf::from(String::from_utf8_lossy(path).into_owned())
 }
 
-fn print_copied_ignored_env_files(
+fn is_recursive_ignored_file_name(file_name: &str) -> bool {
+    RECURSIVE_IGNORED_FILE_SPECS
+        .iter()
+        .any(|spec| spec.file_name == file_name)
+}
+
+fn print_copied_recursive_ignored_files(
     session: &mut Session<'_>,
     copied: Vec<PathBuf>,
 ) -> AppResult<()> {
-    print_copied_ignored_files(session, "copied ignored .env", copied)
+    for relative in copied {
+        let file_name = relative
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| {
+                Error::message(format!(
+                    "ignored file has no terminal file name: {}",
+                    relative.display()
+                ))
+            })?;
+        let spec = RECURSIVE_IGNORED_FILE_SPECS
+            .iter()
+            .find(|spec| spec.file_name == file_name)
+            .ok_or_else(|| {
+                Error::message(format!(
+                    "ignored file is not configured for copy reporting: {}",
+                    relative.display()
+                ))
+            })?;
+        writeln!(session.out, "{}: {}", spec.copy_label, relative.display())?;
+    }
+    Ok(())
 }
 
 fn print_copied_ignored_files(
@@ -1742,7 +1798,7 @@ fn start_async_init_worktree(
     session: &mut Session<'_>,
     source_root: &Path,
     worktree_path: &Path,
-    ignored_env_snapshot_root: &Path,
+    ignored_snapshot_root: &Path,
 ) -> AppResult<()> {
     let exe = std::env::current_exe()
         .map_err(|error| Error::message(format!("worktree created, but failed to locate wtk executable for async initialization: {error}")))?;
@@ -1769,7 +1825,7 @@ fn start_async_init_worktree(
         .arg(source_root)
         .arg(worktree_path)
         .arg("--snapshot-root")
-        .arg(ignored_env_snapshot_root)
+        .arg(ignored_snapshot_root)
         .stdin(Stdio::null())
         .stdout(stdout)
         .stderr(stderr)
@@ -1782,8 +1838,8 @@ fn start_async_init_worktree(
     Ok(())
 }
 
-fn write_ignored_env_snapshot(
-    ignored_env_files: &[SnapshotFile],
+fn write_recursive_ignored_file_snapshot(
+    ignored_files: &[SnapshotFile],
     worktree_path: &Path,
 ) -> AppResult<PathBuf> {
     let nonce = SystemTime::now()
@@ -1796,23 +1852,23 @@ fn write_ignored_env_snapshot(
         .unwrap_or("worktree");
     let snapshot_root = std::env::temp_dir().join(format!(
         "{}{}-{}-{}",
-        IGNORED_ENV_SNAPSHOT_PREFIX,
+        RECURSIVE_IGNORED_FILE_SNAPSHOT_PREFIX,
         std::process::id(),
         worktree_name,
         nonce
     ));
     fs::create_dir_all(&snapshot_root).map_err(|error| {
         Error::message(format!(
-            "worktree created, but failed to create ignored .env snapshot {}: {error}",
+            "worktree created, but failed to create ignored recursive file snapshot {}: {error}",
             snapshot_root.display()
         ))
     })?;
-    write_ignored_env_snapshot_marker(&snapshot_root)?;
-    cleanup_ignored_env_snapshot_on_error(
-        copy_snapshot_files(ignored_env_files, &snapshot_root)
+    write_recursive_ignored_file_snapshot_marker(&snapshot_root)?;
+    cleanup_recursive_ignored_file_snapshot_on_error(
+        copy_snapshot_files(ignored_files, &snapshot_root)
             .map_err(|error| {
                 Error::message(format!(
-                    "worktree created, but failed to snapshot ignored .env files in {}: {error}",
+                    "worktree created, but failed to snapshot ignored recursive files in {}: {error}",
                     snapshot_root.display()
                 ))
             })
@@ -1822,59 +1878,61 @@ fn write_ignored_env_snapshot(
     Ok(snapshot_root)
 }
 
-fn write_ignored_env_snapshot_marker(snapshot_root: &Path) -> AppResult<()> {
+fn write_recursive_ignored_file_snapshot_marker(snapshot_root: &Path) -> AppResult<()> {
     fs::write(
-        snapshot_root.join(IGNORED_ENV_SNAPSHOT_MARKER),
+        snapshot_root.join(RECURSIVE_IGNORED_FILE_SNAPSHOT_MARKER),
         b"managed by wtk\n",
     )
     .map_err(|error| {
         Error::message(format!(
-            "worktree created, but failed to mark ignored .env snapshot {}: {error}",
+            "worktree created, but failed to mark ignored recursive file snapshot {}: {error}",
             snapshot_root.display()
         ))
     })
 }
 
-fn remove_ignored_env_snapshot_root(snapshot_root: &Path) -> AppResult<()> {
-    validate_ignored_env_snapshot_root(snapshot_root)?;
+fn remove_recursive_ignored_file_snapshot_root(snapshot_root: &Path) -> AppResult<()> {
+    validate_recursive_ignored_file_snapshot_root(snapshot_root)?;
     fs::remove_dir_all(snapshot_root).map_err(|error| {
         Error::message(format!(
-            "failed to remove ignored .env snapshot {}: {error}",
+            "failed to remove ignored recursive file snapshot {}: {error}",
             snapshot_root.display()
         ))
     })
 }
 
-fn validate_ignored_env_snapshot_root(snapshot_root: &Path) -> AppResult<()> {
+fn validate_recursive_ignored_file_snapshot_root(snapshot_root: &Path) -> AppResult<()> {
     let file_name = snapshot_root
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| {
             Error::message(format!(
-                "refusing to remove unmanaged ignored .env snapshot {}",
+                "refusing to remove unmanaged ignored recursive file snapshot {}",
                 snapshot_root.display()
             ))
         })?;
     let expected_parent = std::env::temp_dir();
     if snapshot_root.parent() != Some(expected_parent.as_path())
-        || !file_name.starts_with(IGNORED_ENV_SNAPSHOT_PREFIX)
-        || !snapshot_root.join(IGNORED_ENV_SNAPSHOT_MARKER).is_file()
+        || !file_name.starts_with(RECURSIVE_IGNORED_FILE_SNAPSHOT_PREFIX)
+        || !snapshot_root
+            .join(RECURSIVE_IGNORED_FILE_SNAPSHOT_MARKER)
+            .is_file()
     {
         return Err(Error::message(format!(
-            "refusing to remove unmanaged ignored .env snapshot {}",
+            "refusing to remove unmanaged ignored recursive file snapshot {}",
             snapshot_root.display()
         )));
     }
     Ok(())
 }
 
-fn cleanup_ignored_env_snapshot_on_error(
+fn cleanup_recursive_ignored_file_snapshot_on_error(
     result: AppResult<()>,
     snapshot_root: &Path,
 ) -> AppResult<()> {
     match result {
         Ok(()) => Ok(()),
-        Err(error) => match remove_ignored_env_snapshot_root(snapshot_root) {
+        Err(error) => match remove_recursive_ignored_file_snapshot_root(snapshot_root) {
             Ok(()) => Err(error),
             Err(cleanup_error) => Err(Error::message(format!("{error}; also {cleanup_error}"))),
         },
@@ -2066,9 +2124,10 @@ pub(crate) fn finish(
 #[cfg(test)]
 mod tests {
     use super::{
-        async_init_stdio, async_pnpm_install_stdio, cleanup_ignored_env_snapshot_on_error, finish,
-        open_async_init_log, remove_ignored_env_snapshot_root, should_run_pnpm_install,
-        write_ignored_env_snapshot_marker,
+        async_init_stdio, async_pnpm_install_stdio,
+        cleanup_recursive_ignored_file_snapshot_on_error, finish, open_async_init_log,
+        remove_recursive_ignored_file_snapshot_root, should_run_pnpm_install,
+        write_recursive_ignored_file_snapshot_marker,
     };
     use crate::clipboard::ClipboardProvider;
     use crate::{AppResult, Error};
@@ -2105,10 +2164,10 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_ignored_env_snapshot_on_error_removes_snapshot_root() {
+    fn cleanup_recursive_ignored_file_snapshot_on_error_removes_snapshot_root() {
         let snapshot_root = std::env::temp_dir().join(format!(
             "{}{}-{}",
-            super::IGNORED_ENV_SNAPSHOT_PREFIX,
+            super::RECURSIVE_IGNORED_FILE_SNAPSHOT_PREFIX,
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -2116,10 +2175,10 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&snapshot_root).unwrap();
-        write_ignored_env_snapshot_marker(&snapshot_root).unwrap();
+        write_recursive_ignored_file_snapshot_marker(&snapshot_root).unwrap();
         std::fs::write(snapshot_root.join(".env"), "SECRET=value\n").unwrap();
 
-        let error = cleanup_ignored_env_snapshot_on_error(
+        let error = cleanup_recursive_ignored_file_snapshot_on_error(
             Err(Error::message(
                 "operation succeeded, but clipboard copy failed",
             )),
@@ -2136,10 +2195,10 @@ mod tests {
     }
 
     #[test]
-    fn remove_ignored_env_snapshot_root_rejects_unmanaged_paths() {
+    fn remove_recursive_ignored_file_snapshot_root_rejects_unmanaged_paths() {
         let snapshot_root = std::env::temp_dir().join(format!(
             "{}{}-{}",
-            super::IGNORED_ENV_SNAPSHOT_PREFIX,
+            super::RECURSIVE_IGNORED_FILE_SNAPSHOT_PREFIX,
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -2149,7 +2208,7 @@ mod tests {
         std::fs::create_dir_all(&snapshot_root).unwrap();
         std::fs::write(snapshot_root.join(".env"), "SECRET=value\n").unwrap();
 
-        let error = remove_ignored_env_snapshot_root(&snapshot_root)
+        let error = remove_recursive_ignored_file_snapshot_root(&snapshot_root)
             .expect_err("unmanaged snapshot root should not be deleted");
 
         assert!(error.to_string().contains("refusing to remove unmanaged"));
