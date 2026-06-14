@@ -95,6 +95,20 @@ wtk auxiliary-group add full-stack /absolute/path/to/api /absolute/path/to/web
 
 `wtk ag add` is a shorthand for `wtk auxiliary-group add`. Group creation resolves each repository path to a Git main worktree, derives the Auxiliary Repository Ref name from the repository directory name, creates or reuses `[auxiliaries.<name>]`, and writes `[groups.<group-name>]` in `$(git rev-parse --git-common-dir)/wtk/config.toml`. WTK still reads the legacy `.wtk/config.toml` path when the private file is absent.
 
+Inspect configured groups:
+
+```bash
+wtk ag list
+```
+
+Remove a group definition:
+
+```bash
+wtk ag remove full-stack
+```
+
+Removing a group also prunes any Auxiliary Repository Ref entries that are no longer referenced by any remaining group.
+
 The generated config shape is:
 
 ```toml

@@ -46,6 +46,10 @@ enum Parsed {
         group_name: String,
         repository_paths: Vec<String>,
     },
+    AuxiliaryGroupList,
+    AuxiliaryGroupRemove {
+        group_name: String,
+    },
     Upgrade,
     Completion(String),
     HiddenComplete(Vec<String>),
@@ -180,6 +184,41 @@ where
             output::success(session.out, &format!("added Auxiliary Group {group_name}"))?;
             Ok(())
         }),
+        Parsed::AuxiliaryGroupList => execute_worktree(stdout, stderr, true, |session| {
+            let repo = resolve(&session.git, &session.cwd)?;
+            let groups =
+                auxiliary::list_groups(&session.git, &repo.main_root, &repo.git_common_dir)?;
+            if groups.is_empty() {
+                writeln!(session.out, "No Auxiliary Groups configured.")?;
+                return Ok(());
+            }
+            for (index, group) in groups.iter().enumerate() {
+                if index > 0 {
+                    writeln!(session.out)?;
+                }
+                writeln!(session.out, "{}:", group.name)?;
+                for auxiliary in &group.auxiliaries {
+                    writeln!(
+                        session.out,
+                        "  {}: {}",
+                        auxiliary.name,
+                        auxiliary.repository.display()
+                    )?;
+                }
+            }
+            Ok(())
+        }),
+        Parsed::AuxiliaryGroupRemove { group_name } => {
+            execute_worktree(stdout, stderr, true, |session| {
+                let repo = resolve(&session.git, &session.cwd)?;
+                auxiliary::remove_group(&repo.main_root, &repo.git_common_dir, &group_name)?;
+                output::success(
+                    session.out,
+                    &format!("removed Auxiliary Group {group_name}"),
+                )?;
+                Ok(())
+            })
+        }
         Parsed::Upgrade => match upgrade::run(stdout) {
             Ok(()) => Ok(()),
             Err(error) => {
@@ -264,7 +303,10 @@ fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
 fn parse_auxiliary_group(args: &[String]) -> Result<Parsed, UsageError> {
     let usage = command_help(args[0].as_str());
     if args.len() == 1 {
-        return Err(UsageError::new("missing required subcommand: add", usage));
+        return Err(UsageError::new(
+            "missing required subcommand: add, list, or remove",
+            usage,
+        ));
     }
     match args[1].as_str() {
         "add" => {
@@ -281,6 +323,33 @@ fn parse_auxiliary_group(args: &[String]) -> Result<Parsed, UsageError> {
             } else {
                 Err(UsageError::new(
                     "missing required argument: repository-path",
+                    usage,
+                ))
+            }
+        }
+        "list" => {
+            if args.len() == 2 {
+                Ok(Parsed::AuxiliaryGroupList)
+            } else {
+                Err(UsageError::new(
+                    format!("unexpected argument: {}", args[2]),
+                    usage,
+                ))
+            }
+        }
+        "remove" => {
+            if args.len() == 3 {
+                Ok(Parsed::AuxiliaryGroupRemove {
+                    group_name: args[2].clone(),
+                })
+            } else if args.len() == 2 {
+                Err(UsageError::new(
+                    "missing required argument: group-name",
+                    usage,
+                ))
+            } else {
+                Err(UsageError::new(
+                    format!("unexpected argument: {}", args[3]),
                     usage,
                 ))
             }
@@ -732,9 +801,11 @@ fn command_help(command: &str) -> &'static str {
             "      --no-clipboard\n",
         ),
         "auxiliary-group" | "ag" => concat!(
-            "Usage: wtk auxiliary-group add <group-name> <repository-path>...\n\n",
+            "Usage: wtk auxiliary-group <subcommand>\n\n",
             "Subcommands:\n",
-            "  add <group-name> <repo-path>...  Create an Auxiliary Group\n\n",
+            "  add <group-name> <repo-path>...  Create an Auxiliary Group\n",
+            "  list                            List configured Auxiliary Groups\n",
+            "  remove <group-name>             Remove an Auxiliary Group\n\n",
             "Flags:\n",
             "  -h, --help\n",
         ),
@@ -785,6 +856,14 @@ fn dynamic_candidates(cwd: PathBuf, args: &[String]) -> Vec<String> {
     match command {
         "" => filter_prefix(TOP_LEVEL_COMMANDS, to_complete),
         "completion" => filter_prefix(SHELLS, to_complete),
+        "auxiliary-group" | "ag" => match args.get(1).map(String::as_str) {
+            None => filter_prefix(&["add", "list", "remove"], to_complete),
+            Some("remove") if args.len() <= 3 => current_group_names(&cwd, to_complete),
+            Some(subcommand) if args.len() == 2 => {
+                filter_prefix(&["add", "list", "remove"], subcommand)
+            }
+            _ => Vec::new(),
+        },
         "remove" => git_lines(&cwd, ["worktree", "list", "--porcelain"])
             .map(|lines| {
                 let mut paths = lines
@@ -817,6 +896,19 @@ fn dynamic_candidates(cwd: PathBuf, args: &[String]) -> Vec<String> {
             .unwrap_or_default(),
         _ => Vec::new(),
     }
+}
+
+fn current_group_names(cwd: &Path, prefix: &str) -> Vec<String> {
+    let git = Git;
+    let repo = match resolve(&git, cwd) {
+        Ok(repo) => repo,
+        Err(_) => return Vec::new(),
+    };
+    let groups = match auxiliary::list_groups(&git, &repo.main_root, &repo.git_common_dir) {
+        Ok(groups) => groups,
+        Err(_) => return Vec::new(),
+    };
+    filter_prefix_owned(groups.into_iter().map(|group| group.name).collect(), prefix)
 }
 
 fn git_lines<I, S>(cwd: &Path, args: I) -> Option<Vec<String>>
@@ -1042,6 +1134,29 @@ mod tests {
     }
 
     #[test]
+    fn parses_auxiliary_group_list() {
+        let parsed =
+            parse_args(&["wtk".to_string(), "ag".to_string(), "list".to_string()]).unwrap();
+        assert!(matches!(parsed, Parsed::AuxiliaryGroupList));
+    }
+
+    #[test]
+    fn parses_auxiliary_group_remove() {
+        let parsed = parse_args(&[
+            "wtk".to_string(),
+            "ag".to_string(),
+            "remove".to_string(),
+            "full-stack".to_string(),
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            parsed,
+            Parsed::AuxiliaryGroupRemove { group_name } if group_name == "full-stack"
+        ));
+    }
+
+    #[test]
     fn parses_new_auxiliary_group_flags() {
         let parsed = parse_args(&[
             "wtk".to_string(),
@@ -1067,7 +1182,9 @@ mod tests {
     #[test]
     fn auxiliary_group_help_mentions_add() {
         let help = command_help("auxiliary-group");
-        assert!(help.contains("auxiliary-group add"));
+        assert!(help.contains("Usage: wtk auxiliary-group <subcommand>"));
         assert!(help.contains("add <group-name> <repo-path>..."));
+        assert!(help.contains("list"));
+        assert!(help.contains("remove <group-name>"));
     }
 }
