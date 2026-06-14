@@ -123,6 +123,7 @@ def test_repo_mode_new_with_explicit_base_from_current_and_dirty_failures(run_wt
     run_wtk("new", "feature/new", "--base", "trunk", "--no-clipboard", cwd=repo)
     linked = linked_worktree_path(repo, "feature/new")
     assert linked.exists()
+    assert not linked.joinpath("WTK-AUXILIARY.md").exists()
     run_git(repo, "worktree", "remove", str(linked))
 
     run_git(repo, "switch", "-c", "feature/base")
