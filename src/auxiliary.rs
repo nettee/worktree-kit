@@ -169,7 +169,7 @@ pub fn add_group(
             auxiliaries: group_refs,
         },
     );
-    write_config(&private_config_path(git_common_dir), &config)
+    write_config(&primary_config_path(primary_root), &config)
 }
 
 pub fn expand_groups(
@@ -319,7 +319,7 @@ pub fn remove_group(primary_root: &Path, git_common_dir: &Path, group_name: &str
         }
     }
 
-    write_config(&private_config_path(git_common_dir), &config)
+    write_config(&primary_config_path(primary_root), &config)
 }
 
 pub fn read_state(primary_root: &Path, git_common_dir: &Path) -> AppResult<WorktreesState> {
@@ -351,8 +351,8 @@ pub fn read_state(primary_root: &Path, git_common_dir: &Path) -> AppResult<Workt
     Ok(state)
 }
 
-pub fn write_state(git_common_dir: &Path, state: &WorktreesState) -> AppResult<()> {
-    let path = private_state_path(git_common_dir);
+pub fn write_state(primary_root: &Path, state: &WorktreesState) -> AppResult<()> {
+    let path = primary_state_path(primary_root);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -643,20 +643,20 @@ pub fn read_auxiliary_marker(
 }
 
 pub fn state_path(primary_root: &Path, git_common_dir: &Path) -> PathBuf {
-    let private = private_state_path(git_common_dir);
-    if private.exists() {
-        private
+    let primary = primary_state_path(primary_root);
+    if primary.exists() {
+        primary
     } else {
-        legacy_state_path(primary_root)
+        legacy_state_path(git_common_dir)
     }
 }
 
 fn read_config_path(primary_root: &Path, git_common_dir: &Path) -> PathBuf {
-    let private = private_config_path(git_common_dir);
-    if private.exists() {
-        private
+    let primary = primary_config_path(primary_root);
+    if primary.exists() {
+        primary
     } else {
-        legacy_config_path(primary_root)
+        legacy_config_path(git_common_dir)
     }
 }
 
@@ -704,19 +704,19 @@ fn write_config(path: &Path, config: &Config) -> AppResult<()> {
     })
 }
 
-fn private_state_path(git_common_dir: &Path) -> PathBuf {
+fn legacy_state_path(git_common_dir: &Path) -> PathBuf {
     git_common_dir.join("wtk").join("worktrees.json")
 }
 
-fn legacy_state_path(primary_root: &Path) -> PathBuf {
+fn primary_state_path(primary_root: &Path) -> PathBuf {
     primary_root.join(".wtk").join("worktrees.json")
 }
 
-fn private_config_path(git_common_dir: &Path) -> PathBuf {
+fn legacy_config_path(git_common_dir: &Path) -> PathBuf {
     git_common_dir.join("wtk").join("config.toml")
 }
 
-fn legacy_config_path(primary_root: &Path) -> PathBuf {
+fn primary_config_path(primary_root: &Path) -> PathBuf {
     primary_root.join(".wtk").join("config.toml")
 }
 

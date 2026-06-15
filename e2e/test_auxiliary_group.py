@@ -9,7 +9,7 @@ def test_auxiliary_group_new_status_list_and_remove(run_wtk, repo_factory) -> No
     primary = repo_factory.init_repo("primary")
     api = repo_factory.init_repo("api")
     web = repo_factory.init_repo("web")
-    wtk_dir = git_common_dir(primary) / "wtk"
+    wtk_dir = primary / ".wtk"
 
     run_wtk("auxiliary-group", "add", "full-stack", str(api), str(web), cwd=primary)
 
@@ -17,7 +17,7 @@ def test_auxiliary_group_new_status_list_and_remove(run_wtk, repo_factory) -> No
     assert "[auxiliaries.api]" in config_text
     assert "[auxiliaries.web]" in config_text
     assert "[groups.full-stack]" in config_text
-    assert run_git(primary, "status", "--porcelain", "--untracked-files=normal").stdout == ""
+    assert run_git(primary, "status", "--porcelain", "--untracked-files=normal").stdout == "?? .wtk/\n"
 
     out = run_wtk(
         "new",
@@ -59,13 +59,17 @@ def test_auxiliary_group_new_status_list_and_remove(run_wtk, repo_factory) -> No
     assert run_git(primary_linked, "diff", "--cached", "--name-only").stdout == ""
     (primary / "refs").mkdir()
     (primary / "refs" / "api").write_text("real ref\n", encoding="utf-8")
-    assert run_git(primary, "status", "--porcelain", "--untracked-files=all").stdout == ""
+    assert set(
+        run_git(primary, "status", "--porcelain", "--untracked-files=all").stdout.splitlines()
+    ) == {"?? .wtk/config.toml", "?? .wtk/worktrees.json"}
 
     state = json.loads((wtk_dir / "worktrees.json").read_text(encoding="utf-8"))
     entry = state["worktrees"][str(primary_linked.resolve())]
     assert entry["branch"] == "feature/aux"
     assert set(entry["auxiliaries"]) == {"api", "web"}
-    assert run_git(primary, "status", "--porcelain", "--untracked-files=all").stdout == ""
+    assert set(
+        run_git(primary, "status", "--porcelain", "--untracked-files=all").stdout.splitlines()
+    ) == {"?? .wtk/config.toml", "?? .wtk/worktrees.json"}
 
     status = parse_yaml(run_wtk("status", cwd=primary_linked).stdout)
     assert status["mode"] == "coordinated"
@@ -87,7 +91,9 @@ def test_auxiliary_group_new_status_list_and_remove(run_wtk, repo_factory) -> No
     assert not primary_linked.exists()
     assert not api_linked.exists()
     assert not web_linked.exists()
-    assert run_git(primary, "status", "--porcelain", "--untracked-files=all").stdout == ""
+    assert set(
+        run_git(primary, "status", "--porcelain", "--untracked-files=all").stdout.splitlines()
+    ) == {"?? .wtk/config.toml", "?? .wtk/worktrees.json"}
     assert "feature/aux" not in run_git(primary, "branch", "--list", "feature/aux").stdout
     assert "feature/aux" not in run_git(api, "branch", "--list", "feature/aux").stdout
     assert "feature/aux" not in run_git(web, "branch", "--list", "feature/aux").stdout
@@ -97,7 +103,7 @@ def test_auxiliary_group_list_and_remove_manage_config(run_wtk, repo_factory) ->
     primary = repo_factory.init_repo("primary")
     api = repo_factory.init_repo("api")
     web = repo_factory.init_repo("web")
-    wtk_dir = git_common_dir(primary) / "wtk"
+    wtk_dir = primary / ".wtk"
 
     run_wtk("ag", "add", "full-stack", str(api), str(web), cwd=primary)
     run_wtk("ag", "add", "backend", str(api), cwd=primary)
@@ -448,7 +454,7 @@ def test_auxiliary_group_remove_rejects_auxiliary_side_removal(run_wtk, repo_fac
     removed.assert_failure()
     assert "remove is not supported for worktrees with auxiliary state" in removed.output
     assert api_linked.exists()
-    state = json.loads((git_common_dir(primary) / "wtk" / "worktrees.json").read_text(encoding="utf-8"))
+    state = json.loads((primary / ".wtk" / "worktrees.json").read_text(encoding="utf-8"))
     assert str(primary_linked.resolve()) in state["worktrees"]
 
 
@@ -656,9 +662,7 @@ def test_auxiliary_group_remove_preflights_locked_auxiliaries(run_wtk, repo_fact
     assert api_linked.exists()
     assert web_linked.exists()
 
-    state = json.loads(
-        ((git_common_dir(primary) / "wtk") / "worktrees.json").read_text(encoding="utf-8")
-    )
+    state = json.loads((primary / ".wtk" / "worktrees.json").read_text(encoding="utf-8"))
     assert str(primary_linked.resolve()) in state["worktrees"]
 
 
@@ -698,9 +702,7 @@ def test_auxiliary_group_remove_preflights_branch_delete_failure(
     assert primary_linked.exists()
     assert api_linked.exists()
 
-    state = json.loads(
-        ((git_common_dir(primary) / "wtk") / "worktrees.json").read_text(encoding="utf-8")
-    )
+    state = json.loads((primary / ".wtk" / "worktrees.json").read_text(encoding="utf-8"))
     assert str(primary_linked.resolve()) in state["worktrees"]
 
 
@@ -741,9 +743,7 @@ def test_auxiliary_group_remove_preflights_locked_primary(run_wtk, repo_factory)
     assert api_linked.exists()
     assert web_linked.exists()
 
-    state = json.loads(
-        ((git_common_dir(primary) / "wtk") / "worktrees.json").read_text(encoding="utf-8")
-    )
+    state = json.loads((primary / ".wtk" / "worktrees.json").read_text(encoding="utf-8"))
     assert str(primary_linked.resolve()) in state["worktrees"]
 
 
@@ -807,4 +807,88 @@ def test_auxiliary_group_add_rejects_duplicate_repository(run_wtk, repo_factory)
 
     result.assert_failure()
     assert "duplicate auxiliary repository" in result.output
-    assert not ((git_common_dir(primary) / "wtk") / "config.toml").exists()
+    assert not ((primary / ".wtk") / "config.toml").exists()
+
+
+def test_auxiliary_group_reads_legacy_git_common_dir_config_when_primary_config_missing(
+    run_wtk, repo_factory
+) -> None:
+    primary = repo_factory.init_repo("primary")
+    api = repo_factory.init_repo("api")
+    legacy_dir = git_common_dir(primary) / "wtk"
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "config.toml").write_text(
+        f"""
+[auxiliaries.api]
+repository = "{api.resolve()}"
+
+[groups.backend]
+auxiliaries = ["api"]
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    listed = run_wtk("ag", "list", cwd=primary).stdout
+
+    assert "backend:" in listed
+    assert f"  api: {api.resolve()}" in listed
+    assert not (primary / ".wtk" / "config.toml").exists()
+
+
+def test_auxiliary_group_writes_primary_config_even_when_legacy_config_exists(
+    run_wtk, repo_factory
+) -> None:
+    primary = repo_factory.init_repo("primary")
+    api = repo_factory.init_repo("api")
+    web = repo_factory.init_repo("web")
+    legacy_dir = git_common_dir(primary) / "wtk"
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "config.toml").write_text(
+        f"""
+[auxiliaries.api]
+repository = "{api.resolve()}"
+
+[groups.backend]
+auxiliaries = ["api"]
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    run_wtk("ag", "add", "frontend", str(web), cwd=primary)
+
+    primary_config = (primary / ".wtk" / "config.toml").read_text(encoding="utf-8")
+    legacy_config = (legacy_dir / "config.toml").read_text(encoding="utf-8")
+    assert "[groups.backend]" in primary_config
+    assert "[groups.frontend]" in primary_config
+    assert "[auxiliaries.web]" in primary_config
+    assert "[groups.frontend]" not in legacy_config
+
+
+def test_auxiliary_group_reads_legacy_git_common_dir_state_when_primary_state_missing(
+    run_wtk, repo_factory
+) -> None:
+    primary = repo_factory.init_repo("primary")
+    api = repo_factory.init_repo("api")
+
+    run_wtk("ag", "add", "backend", str(api), cwd=primary)
+    run_wtk(
+        "new",
+        "feature/aux",
+        "--base",
+        "main",
+        "--ag",
+        "backend",
+        "--no-clipboard",
+        cwd=primary,
+    )
+    primary_linked = linked_worktree_path(primary, "feature/aux")
+    primary_state = primary / ".wtk" / "worktrees.json"
+    legacy_dir = git_common_dir(primary) / "wtk"
+    legacy_dir.mkdir(parents=True, exist_ok=True)
+    (legacy_dir / "worktrees.json").write_text(primary_state.read_text(encoding="utf-8"), encoding="utf-8")
+    primary_state.unlink()
+
+    status = parse_yaml(run_wtk("status", cwd=primary_linked).stdout)
+
+    assert status["mode"] == "coordinated"
+    assert status["primary_worktree"] == str(primary_linked.resolve())
