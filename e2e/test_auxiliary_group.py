@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 from conftest import git_common_dir, linked_worktree_path, parse_yaml, run_git
 
@@ -957,3 +958,42 @@ def test_remove_migrates_legacy_state_and_installs_wtk_exclude(run_wtk, repo_fac
     assert not primary_linked.exists()
     assert "/.wtk/" in exclude_path.read_text(encoding="utf-8")
     assert run_git(primary, "status", "--porcelain", "--untracked-files=all").stdout == ""
+
+
+def test_remove_prefers_newer_legacy_state_when_primary_state_is_stale(
+    run_wtk, repo_factory
+) -> None:
+    primary = repo_factory.init_repo("primary")
+    api = repo_factory.init_repo("api")
+
+    run_wtk("ag", "add", "backend", str(api), cwd=primary)
+    run_wtk(
+        "new",
+        "feature/aux",
+        "--base",
+        "main",
+        "--ag",
+        "backend",
+        "--no-clipboard",
+        cwd=primary,
+    )
+    primary_linked = linked_worktree_path(primary, "feature/aux")
+    api_linked = linked_worktree_path(api, "feature/aux")
+    primary_state = primary / ".wtk" / "worktrees.json"
+    legacy_dir = git_common_dir(primary) / "wtk"
+    legacy_dir.mkdir(parents=True, exist_ok=True)
+    legacy_state = legacy_dir / "worktrees.json"
+    real_state = primary_state.read_text(encoding="utf-8")
+
+    stale_state = {"version": 1, "worktrees": {}}
+    primary_state.write_text(json.dumps(stale_state, indent=2) + "\n", encoding="utf-8")
+    stale_mtime = primary_state.stat().st_mtime - 10
+    os.utime(primary_state, (stale_mtime, stale_mtime))
+    legacy_state.write_text(real_state, encoding="utf-8")
+
+    run_wtk("remove", str(primary_linked), "--delete-branch", "--no-clipboard", cwd=primary)
+
+    assert not primary_linked.exists()
+    assert not api_linked.exists()
+    assert "feature/aux" not in run_git(primary, "branch", "--list", "feature/aux").stdout
+    assert "feature/aux" not in run_git(api, "branch", "--list", "feature/aux").stdout

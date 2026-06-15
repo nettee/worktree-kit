@@ -418,7 +418,7 @@ pub fn status(session: &mut Session<'_>) -> AppResult<()> {
             primary_main_worktree: repo.main_root.clone(),
             branch: entry.branch.clone(),
             current_is_main: repo.current_is_main,
-            state: auxiliary::state_path(&repo.main_root, &repo.git_common_dir),
+            state: auxiliary::state_path(&repo.main_root, &repo.git_common_dir)?,
             auxiliaries: auxiliary_status_entries(&repo.current_root, entry, &refs),
         };
         serde_yaml::to_writer(&mut *session.out, &payload).map_err(|error| {
@@ -566,7 +566,7 @@ fn remove_with_auxiliaries(
             if let Err(error) = delete_branch(session, &auxiliary.repository, &entry.branch) {
                 return Err(Error::message(format!(
                     "coordinated worktrees removed, but auxiliary branch deletion failed; coordinated state remains in {}: {}",
-                    auxiliary::state_path(&repo.main_root, &repo.git_common_dir).display(),
+                    auxiliary::state_path(&repo.main_root, &repo.git_common_dir)?.display(),
                     error
                 )));
             }
@@ -579,7 +579,7 @@ fn remove_with_auxiliaries(
         if let Err(error) = delete_branch(session, &repo.main_root, &worktree.branch) {
             return Err(Error::message(format!(
                 "coordinated worktrees removed, but primary branch deletion failed; coordinated state remains in {}: {}",
-                auxiliary::state_path(&repo.main_root, &repo.git_common_dir).display(),
+                auxiliary::state_path(&repo.main_root, &repo.git_common_dir)?.display(),
                 error
             )));
         }

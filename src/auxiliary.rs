@@ -330,7 +330,7 @@ pub fn remove_group(
 }
 
 pub fn read_state(primary_root: &Path, git_common_dir: &Path) -> AppResult<WorktreesState> {
-    let path = state_path(primary_root, git_common_dir);
+    let path = state_path(primary_root, git_common_dir)?;
     if !path.exists() {
         return Ok(WorktreesState::default());
     }
@@ -563,7 +563,9 @@ pub fn install_ref_excludes(
 }
 
 fn install_generated_excludes(git: &Git, primary_worktree: &Path) -> AppResult<()> {
-    let exclude_path = common_git_dir(git, primary_worktree)?.join("info").join("exclude");
+    let exclude_path = common_git_dir(git, primary_worktree)?
+        .join("info")
+        .join("exclude");
     if let Some(parent) = exclude_path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -652,12 +654,14 @@ pub fn read_auxiliary_marker(
     Ok(Some(marker))
 }
 
-pub fn state_path(primary_root: &Path, git_common_dir: &Path) -> PathBuf {
+pub fn state_path(primary_root: &Path, git_common_dir: &Path) -> AppResult<PathBuf> {
     let primary = primary_state_path(primary_root);
-    if primary.exists() {
-        primary
-    } else {
-        legacy_state_path(git_common_dir)
+    let legacy = legacy_state_path(git_common_dir);
+    match (primary.exists(), legacy.exists()) {
+        (true, true) => newer_path(primary, legacy),
+        (true, false) => Ok(primary),
+        (false, true) => Ok(legacy),
+        (false, false) => Ok(primary),
     }
 }
 
@@ -720,6 +724,35 @@ fn legacy_state_path(git_common_dir: &Path) -> PathBuf {
 
 fn primary_state_path(primary_root: &Path) -> PathBuf {
     primary_root.join(".wtk").join("worktrees.json")
+}
+
+fn newer_path(left: PathBuf, right: PathBuf) -> AppResult<PathBuf> {
+    let left_modified = file_modified(&left)?;
+    let right_modified = file_modified(&right)?;
+    if left_modified >= right_modified {
+        Ok(left)
+    } else {
+        Ok(right)
+    }
+}
+
+fn file_modified(path: &Path) -> AppResult<std::time::SystemTime> {
+    fs::metadata(path)
+        .map_err(|error| {
+            Error::message(format!(
+                "failed to read metadata for {}: {}",
+                path.display(),
+                error
+            ))
+        })?
+        .modified()
+        .map_err(|error| {
+            Error::message(format!(
+                "failed to read modified time for {}: {}",
+                path.display(),
+                error
+            ))
+        })
 }
 
 fn legacy_config_path(git_common_dir: &Path) -> PathBuf {
