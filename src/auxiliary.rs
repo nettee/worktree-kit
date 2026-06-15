@@ -309,6 +309,7 @@ pub fn remove_group(
 
     let config_path = read_config_path(primary_root, git_common_dir);
     let primary_config = primary_config_path(primary_root);
+    let legacy_config = legacy_config_path(git_common_dir);
     let mut config = read_config_or_default(&config_path)?;
     let removed = config
         .groups
@@ -325,14 +326,15 @@ pub fn remove_group(
             config.auxiliaries.remove(&auxiliary_name);
         }
     }
+    let remove_legacy = config.groups.is_empty() && config.auxiliaries.is_empty();
 
     install_generated_excludes(git, primary_root)?;
     write_config(&primary_config, &config)?;
-    if config_path != primary_config && config_path.exists() {
-        fs::remove_file(&config_path).map_err(|error| {
+    if legacy_config.exists() && (config_path != primary_config || remove_legacy) {
+        fs::remove_file(&legacy_config).map_err(|error| {
             Error::message(format!(
                 "failed to remove legacy WTK config {}: {}",
-                config_path.display(),
+                legacy_config.display(),
                 error
             ))
         })?;

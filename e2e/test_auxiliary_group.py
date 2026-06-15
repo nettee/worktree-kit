@@ -890,6 +890,40 @@ auxiliaries = ["api"]
     assert run_git(primary, "status", "--porcelain", "--untracked-files=all").stdout == ""
 
 
+def test_auxiliary_group_remove_deletes_stale_legacy_config_when_primary_is_emptied(
+    run_wtk, repo_factory
+) -> None:
+    primary = repo_factory.init_repo("primary")
+    api = repo_factory.init_repo("api")
+    web = repo_factory.init_repo("web")
+    legacy_dir = git_common_dir(primary) / "wtk"
+    legacy_dir.mkdir(parents=True, exist_ok=True)
+    legacy_config = legacy_dir / "config.toml"
+    legacy_config.write_text(
+        f"""
+[auxiliaries.api]
+repository = "{api.resolve()}"
+
+[groups.backend]
+auxiliaries = ["api"]
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    run_wtk("ag", "add", "frontend", str(web), cwd=primary)
+
+    assert (primary / ".wtk" / "config.toml").exists()
+    assert legacy_config.exists()
+
+    run_wtk("ag", "remove", "frontend", cwd=primary)
+    run_wtk("ag", "remove", "backend", cwd=primary)
+
+    assert not legacy_config.exists()
+    assert not (primary / ".wtk" / "config.toml").exists()
+    assert run_wtk("ag", "list", cwd=primary).stdout == "No Auxiliary Groups configured.\n"
+    assert run_git(primary, "status", "--porcelain", "--untracked-files=all").stdout == ""
+
+
 def test_auxiliary_group_reads_legacy_git_common_dir_state_when_primary_state_missing(
     run_wtk, repo_factory
 ) -> None:
