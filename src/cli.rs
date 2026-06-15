@@ -211,7 +211,12 @@ where
         Parsed::AuxiliaryGroupRemove { group_name } => {
             execute_worktree(stdout, stderr, true, |session| {
                 let repo = resolve(&session.git, &session.cwd)?;
-                auxiliary::remove_group(&repo.main_root, &repo.git_common_dir, &group_name)?;
+                auxiliary::remove_group(
+                    &session.git,
+                    &repo.main_root,
+                    &repo.git_common_dir,
+                    &group_name,
+                )?;
                 output::success(
                     session.out,
                     &format!("removed Auxiliary Group {group_name}"),

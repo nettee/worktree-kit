@@ -299,7 +299,12 @@ pub fn list_groups(
     Ok(groups)
 }
 
-pub fn remove_group(primary_root: &Path, git_common_dir: &Path, group_name: &str) -> AppResult<()> {
+pub fn remove_group(
+    git: &Git,
+    primary_root: &Path,
+    git_common_dir: &Path,
+    group_name: &str,
+) -> AppResult<()> {
     validate_name(group_name, "auxiliary group name")?;
 
     let config_path = read_config_path(primary_root, git_common_dir);
@@ -320,6 +325,7 @@ pub fn remove_group(primary_root: &Path, git_common_dir: &Path, group_name: &str
         }
     }
 
+    install_generated_excludes(git, primary_root)?;
     write_config(&primary_config_path(primary_root), &config)
 }
 
@@ -352,8 +358,9 @@ pub fn read_state(primary_root: &Path, git_common_dir: &Path) -> AppResult<Workt
     Ok(state)
 }
 
-pub fn write_state(primary_root: &Path, state: &WorktreesState) -> AppResult<()> {
+pub fn write_state(git: &Git, primary_root: &Path, state: &WorktreesState) -> AppResult<()> {
     let path = primary_state_path(primary_root);
+    install_generated_excludes(git, primary_root)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }

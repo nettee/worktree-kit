@@ -861,6 +861,34 @@ auxiliaries = ["api"]
     assert "[groups.frontend]" not in legacy_config
 
 
+def test_auxiliary_group_remove_migrates_legacy_config_and_installs_wtk_exclude(
+    run_wtk, repo_factory
+) -> None:
+    primary = repo_factory.init_repo("primary")
+    api = repo_factory.init_repo("api")
+    legacy_dir = git_common_dir(primary) / "wtk"
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "config.toml").write_text(
+        f"""
+[auxiliaries.api]
+repository = "{api.resolve()}"
+
+[groups.backend]
+auxiliaries = ["api"]
+""".lstrip(),
+        encoding="utf-8",
+    )
+    exclude_path = git_common_dir(primary) / "info" / "exclude"
+    exclude_path.parent.mkdir(parents=True, exist_ok=True)
+    exclude_path.write_text("", encoding="utf-8")
+
+    run_wtk("ag", "remove", "backend", cwd=primary)
+
+    assert (primary / ".wtk" / "config.toml").exists()
+    assert "/.wtk/" in exclude_path.read_text(encoding="utf-8")
+    assert run_git(primary, "status", "--porcelain", "--untracked-files=all").stdout == ""
+
+
 def test_auxiliary_group_reads_legacy_git_common_dir_state_when_primary_state_missing(
     run_wtk, repo_factory
 ) -> None:
@@ -889,3 +917,43 @@ def test_auxiliary_group_reads_legacy_git_common_dir_state_when_primary_state_mi
 
     assert status["mode"] == "coordinated"
     assert status["primary_worktree"] == str(primary_linked.resolve())
+
+
+def test_remove_migrates_legacy_state_and_installs_wtk_exclude(run_wtk, repo_factory) -> None:
+    primary = repo_factory.init_repo("primary")
+    api = repo_factory.init_repo("api")
+
+    run_wtk("ag", "add", "backend", str(api), cwd=primary)
+    run_wtk(
+        "new",
+        "feature/aux",
+        "--base",
+        "main",
+        "--ag",
+        "backend",
+        "--no-clipboard",
+        cwd=primary,
+    )
+    primary_linked = linked_worktree_path(primary, "feature/aux")
+    primary_state = primary / ".wtk" / "worktrees.json"
+    legacy_dir = git_common_dir(primary) / "wtk"
+    legacy_dir.mkdir(parents=True, exist_ok=True)
+    (legacy_dir / "worktrees.json").write_text(
+        primary_state.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    primary_state.unlink()
+    exclude_path = git_common_dir(primary) / "info" / "exclude"
+    exclude_lines = [
+        line
+        for line in exclude_path.read_text(encoding="utf-8").splitlines()
+        if line != "/.wtk/"
+    ]
+    exclude_text = "\n".join(exclude_lines)
+    exclude_path.write_text(f"{exclude_text}\n" if exclude_lines else "", encoding="utf-8")
+
+    run_wtk("remove", str(primary_linked), "--delete-branch", "--no-clipboard", cwd=primary)
+
+    assert not primary_linked.exists()
+    assert "/.wtk/" in exclude_path.read_text(encoding="utf-8")
+    assert run_git(primary, "status", "--porcelain", "--untracked-files=all").stdout == ""
