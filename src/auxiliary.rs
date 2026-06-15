@@ -169,6 +169,7 @@ pub fn add_group(
             auxiliaries: group_refs,
         },
     );
+    install_generated_excludes(git, primary_root)?;
     write_config(&primary_config_path(primary_root), &config)
 }
 
@@ -450,8 +451,8 @@ pub fn ignored_ref_paths(entry: &WorktreeEntry) -> BTreeSet<String> {
         .collect()
 }
 
-fn generated_exclude_patterns() -> [&'static str; 2] {
-    ["/refs/", "/WTK-AUXILIARY.md"]
+fn generated_exclude_patterns() -> [&'static str; 3] {
+    ["/.wtk/", "/refs/", "/WTK-AUXILIARY.md"]
 }
 
 pub fn write_guidance(primary_worktree: &Path, entry: &WorktreeEntry) -> AppResult<()> {
@@ -551,9 +552,11 @@ pub fn install_ref_excludes(
     primary_worktree: &Path,
     _entry: &WorktreeEntry,
 ) -> AppResult<()> {
-    let exclude_path = common_git_dir(git, primary_worktree)?
-        .join("info")
-        .join("exclude");
+    install_generated_excludes(git, primary_worktree)
+}
+
+fn install_generated_excludes(git: &Git, primary_worktree: &Path) -> AppResult<()> {
+    let exclude_path = common_git_dir(git, primary_worktree)?.join("info").join("exclude");
     if let Some(parent) = exclude_path.parent() {
         fs::create_dir_all(parent)?;
     }
