@@ -169,7 +169,8 @@ pub fn add_group(
             auxiliaries: group_refs,
         },
     );
-    write_config(&private_config_path(git_common_dir), &config)
+    install_generated_excludes(git, primary_root)?;
+    write_config(&primary_config_path(primary_root), &config)
 }
 
 pub fn expand_groups(
@@ -298,7 +299,12 @@ pub fn list_groups(
     Ok(groups)
 }
 
-pub fn remove_group(primary_root: &Path, git_common_dir: &Path, group_name: &str) -> AppResult<()> {
+pub fn remove_group(
+    git: &Git,
+    primary_root: &Path,
+    git_common_dir: &Path,
+    group_name: &str,
+) -> AppResult<()> {
     validate_name(group_name, "auxiliary group name")?;
 
     let config_path = read_config_path(primary_root, git_common_dir);
@@ -319,7 +325,8 @@ pub fn remove_group(primary_root: &Path, git_common_dir: &Path, group_name: &str
         }
     }
 
-    write_config(&private_config_path(git_common_dir), &config)
+    install_generated_excludes(git, primary_root)?;
+    write_config(&primary_config_path(primary_root), &config)
 }
 
 pub fn read_state(primary_root: &Path, git_common_dir: &Path) -> AppResult<WorktreesState> {
@@ -351,8 +358,9 @@ pub fn read_state(primary_root: &Path, git_common_dir: &Path) -> AppResult<Workt
     Ok(state)
 }
 
-pub fn write_state(git_common_dir: &Path, state: &WorktreesState) -> AppResult<()> {
-    let path = private_state_path(git_common_dir);
+pub fn write_state(git: &Git, primary_root: &Path, state: &WorktreesState) -> AppResult<()> {
+    let path = primary_state_path(primary_root);
+    install_generated_excludes(git, primary_root)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -450,8 +458,8 @@ pub fn ignored_ref_paths(entry: &WorktreeEntry) -> BTreeSet<String> {
         .collect()
 }
 
-fn generated_exclude_patterns() -> [&'static str; 2] {
-    ["/refs/", "/WTK-AUXILIARY.md"]
+fn generated_exclude_patterns() -> [&'static str; 3] {
+    ["/.wtk/", "/refs/", "/WTK-AUXILIARY.md"]
 }
 
 pub fn write_guidance(primary_worktree: &Path, entry: &WorktreeEntry) -> AppResult<()> {
@@ -551,9 +559,11 @@ pub fn install_ref_excludes(
     primary_worktree: &Path,
     _entry: &WorktreeEntry,
 ) -> AppResult<()> {
-    let exclude_path = common_git_dir(git, primary_worktree)?
-        .join("info")
-        .join("exclude");
+    install_generated_excludes(git, primary_worktree)
+}
+
+fn install_generated_excludes(git: &Git, primary_worktree: &Path) -> AppResult<()> {
+    let exclude_path = common_git_dir(git, primary_worktree)?.join("info").join("exclude");
     if let Some(parent) = exclude_path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -643,20 +653,20 @@ pub fn read_auxiliary_marker(
 }
 
 pub fn state_path(primary_root: &Path, git_common_dir: &Path) -> PathBuf {
-    let private = private_state_path(git_common_dir);
-    if private.exists() {
-        private
+    let primary = primary_state_path(primary_root);
+    if primary.exists() {
+        primary
     } else {
-        legacy_state_path(primary_root)
+        legacy_state_path(git_common_dir)
     }
 }
 
 fn read_config_path(primary_root: &Path, git_common_dir: &Path) -> PathBuf {
-    let private = private_config_path(git_common_dir);
-    if private.exists() {
-        private
+    let primary = primary_config_path(primary_root);
+    if primary.exists() {
+        primary
     } else {
-        legacy_config_path(primary_root)
+        legacy_config_path(git_common_dir)
     }
 }
 
@@ -704,19 +714,19 @@ fn write_config(path: &Path, config: &Config) -> AppResult<()> {
     })
 }
 
-fn private_state_path(git_common_dir: &Path) -> PathBuf {
+fn legacy_state_path(git_common_dir: &Path) -> PathBuf {
     git_common_dir.join("wtk").join("worktrees.json")
 }
 
-fn legacy_state_path(primary_root: &Path) -> PathBuf {
+fn primary_state_path(primary_root: &Path) -> PathBuf {
     primary_root.join(".wtk").join("worktrees.json")
 }
 
-fn private_config_path(git_common_dir: &Path) -> PathBuf {
+fn legacy_config_path(git_common_dir: &Path) -> PathBuf {
     git_common_dir.join("wtk").join("config.toml")
 }
 
-fn legacy_config_path(primary_root: &Path) -> PathBuf {
+fn primary_config_path(primary_root: &Path) -> PathBuf {
     primary_root.join(".wtk").join("config.toml")
 }
 

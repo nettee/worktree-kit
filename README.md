@@ -15,7 +15,7 @@
 
 The Primary Repository is the repository an agent opens directly for a task. By default, `wtk new` creates a standalone linked worktree for that repository using the Sibling Layout: sibling directories named `<repo>-wt-<branch-slug>`.
 
-For coordinated changes, a Primary Repository can store local Auxiliary Groups in its shared Git common dir at `$(git rev-parse --git-common-dir)/wtk/config.toml`. `wtk new --ag <group>` expands those groups, creates matching Auxiliary Repository worktrees, writes generated `refs/<auxiliary-name>` entries in the Primary worktree, and records fixed expanded state in `$(git rev-parse --git-common-dir)/wtk/worktrees.json`.
+For coordinated changes, a Primary Repository stores local Auxiliary Groups in `.wtk/config.toml`. `wtk new --ag <group>` expands those groups, creates matching Auxiliary Repository worktrees, writes generated `refs/<auxiliary-name>` entries in the Primary worktree, and records fixed expanded state in `.wtk/worktrees.json`.
 
 ## Install
 
@@ -93,7 +93,7 @@ Create a local Auxiliary Group from the Primary Repository:
 wtk auxiliary-group add full-stack /absolute/path/to/api /absolute/path/to/web
 ```
 
-`wtk ag add` is a shorthand for `wtk auxiliary-group add`. Group creation resolves each repository path to a Git main worktree, derives the Auxiliary Repository Ref name from the repository directory name, creates or reuses `[auxiliaries.<name>]`, and writes `[groups.<group-name>]` in `$(git rev-parse --git-common-dir)/wtk/config.toml`. WTK still reads the legacy `.wtk/config.toml` path when the private file is absent.
+`wtk ag add` is a shorthand for `wtk auxiliary-group add`. Group creation resolves each repository path to a Git main worktree, derives the Auxiliary Repository Ref name from the repository directory name, creates or reuses `[auxiliaries.<name>]`, and writes `[groups.<group-name>]` in `.wtk/config.toml`. For backward compatibility, WTK still reads the legacy `$(git rev-parse --git-common-dir)/wtk/config.toml` file when `.wtk/config.toml` is absent.
 
 Inspect configured groups:
 
@@ -129,7 +129,7 @@ wtk new feature/full-stack --ag full-stack
 wtk new feature/full-stack --auxiliary-group full-stack
 ```
 
-No selected Auxiliary Groups is the standalone case. With selected groups, `wtk new` creates the Primary Repository worktree plus matching Auxiliary Repository worktrees for the same branch. The Primary worktree receives generated `refs/<auxiliary-name>` entries pointing to the Auxiliary Repository worktrees. `$(git rev-parse --git-common-dir)/wtk/worktrees.json` stores the expanded Auxiliary Repository state by absolute Primary worktree path; changing the config later does not mutate existing worktrees.
+No selected Auxiliary Groups is the standalone case. With selected groups, `wtk new` creates the Primary Repository worktree plus matching Auxiliary Repository worktrees for the same branch. The Primary worktree receives generated `refs/<auxiliary-name>` entries pointing to the Auxiliary Repository worktrees. `.wtk/worktrees.json` stores the expanded Auxiliary Repository state by absolute Primary worktree path; changing the config later does not mutate existing worktrees. For backward compatibility, WTK still reads the legacy `$(git rev-parse --git-common-dir)/wtk/worktrees.json` file when `.wtk/worktrees.json` is absent.
 
 Coordinated Primary worktrees also receive a generated `WTK-AUXILIARY.md` file that lists the concrete Auxiliary Repository refs and targets for agents. WTK keeps both `/refs/` and `/WTK-AUXILIARY.md` ignored through `.git/info/exclude`.
 
