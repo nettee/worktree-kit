@@ -309,21 +309,10 @@ pub fn remove_group(
 
     let config_path = read_config_path(primary_root, git_common_dir);
     let mut config = read_config_or_default(&config_path)?;
-    let removed = config
+    config
         .groups
         .remove(group_name)
         .ok_or_else(|| Error::message(format!("unknown auxiliary group: {group_name}")))?;
-
-    let referenced = config
-        .groups
-        .values()
-        .flat_map(|group| group.auxiliaries.iter().cloned())
-        .collect::<BTreeSet<_>>();
-    for auxiliary_name in removed.auxiliaries {
-        if !referenced.contains(&auxiliary_name) {
-            config.auxiliaries.remove(&auxiliary_name);
-        }
-    }
 
     install_generated_excludes(git, primary_root)?;
     write_config(&primary_config_path(primary_root), &config)

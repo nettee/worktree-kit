@@ -116,7 +116,7 @@ def test_auxiliary_group_list_and_remove_manage_config(run_wtk, repo_factory) ->
     assert "[groups.full-stack]" not in config_text
     assert "[groups.backend]" in config_text
     assert "[auxiliaries.api]" in config_text
-    assert "[auxiliaries.web]" not in config_text
+    assert "[auxiliaries.web]" in config_text
 
     listed = run_wtk("ag", "list", cwd=primary).stdout
     assert "full-stack:" not in listed
@@ -124,7 +124,10 @@ def test_auxiliary_group_list_and_remove_manage_config(run_wtk, repo_factory) ->
     assert f"  api: {api.resolve()}" in listed
 
     run_wtk("ag", "remove", "backend", cwd=primary)
-    assert (wtk_dir / "config.toml").read_text(encoding="utf-8").strip() == ""
+    config_text = (wtk_dir / "config.toml").read_text(encoding="utf-8")
+    assert "[groups.backend]" not in config_text
+    assert "[auxiliaries.api]" in config_text
+    assert "[auxiliaries.web]" in config_text
     assert run_wtk("ag", "list", cwd=primary).stdout == "No Auxiliary Groups configured.\n"
 
 
@@ -884,7 +887,9 @@ auxiliaries = ["api"]
 
     run_wtk("ag", "remove", "backend", cwd=primary)
 
-    assert (primary / ".wtk" / "config.toml").exists()
+    config_text = (primary / ".wtk" / "config.toml").read_text(encoding="utf-8")
+    assert "[groups.backend]" not in config_text
+    assert "[auxiliaries.api]" in config_text
     assert "/.wtk/" in exclude_path.read_text(encoding="utf-8")
     assert run_git(primary, "status", "--porcelain", "--untracked-files=all").stdout == ""
 
