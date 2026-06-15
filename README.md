@@ -93,7 +93,7 @@ Create a local Auxiliary Group from the Primary Repository:
 wtk auxiliary-group add full-stack /absolute/path/to/api /absolute/path/to/web
 ```
 
-`wtk ag add` is a shorthand for `wtk auxiliary-group add`. Group creation resolves each repository path to a Git main worktree, derives the Auxiliary Repository Ref name from the repository directory name, creates or reuses `[auxiliaries.<name>]`, and writes `[groups.<group-name>]` in `.wtk/config.toml`. For backward compatibility, WTK still reads the legacy `$(git rev-parse --git-common-dir)/wtk/config.toml` file when `.wtk/config.toml` is absent.
+`wtk ag add` is a shorthand for `wtk auxiliary-group add`. Group creation resolves each repository path to a Git main worktree, derives the Auxiliary Repository Ref name from the repository directory name, creates or reuses `[auxiliaries.<name>]`, and writes `[auxiliary-groups.<group-name>]` in `.wtk/config.toml`. For backward compatibility, WTK still reads the legacy `$(git rev-parse --git-common-dir)/wtk/config.toml` file when `.wtk/config.toml` is absent, and it also accepts the legacy `[groups.<group-name>]` key in existing config files.
 
 Inspect configured groups:
 
@@ -118,7 +118,7 @@ repository = "/absolute/path/to/api"
 [auxiliaries.web]
 repository = "/absolute/path/to/web"
 
-[groups.full-stack]
+[auxiliary-groups.full-stack]
 auxiliaries = ["api", "web"]
 ```
 

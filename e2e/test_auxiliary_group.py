@@ -16,7 +16,7 @@ def test_auxiliary_group_new_status_list_and_remove(run_wtk, repo_factory) -> No
     config_text = (wtk_dir / "config.toml").read_text(encoding="utf-8")
     assert "[auxiliaries.api]" in config_text
     assert "[auxiliaries.web]" in config_text
-    assert "[groups.full-stack]" in config_text
+    assert "[auxiliary-groups.full-stack]" in config_text
     exclude_text = (git_common_dir(primary) / "info" / "exclude").read_text(encoding="utf-8")
     assert "/.wtk/" in exclude_text
     assert run_git(primary, "status", "--porcelain", "--untracked-files=normal").stdout == ""
@@ -113,8 +113,8 @@ def test_auxiliary_group_list_and_remove_manage_config(run_wtk, repo_factory) ->
 
     run_wtk("ag", "remove", "full-stack", cwd=primary)
     config_text = (wtk_dir / "config.toml").read_text(encoding="utf-8")
-    assert "[groups.full-stack]" not in config_text
-    assert "[groups.backend]" in config_text
+    assert "[auxiliary-groups.full-stack]" not in config_text
+    assert "[auxiliary-groups.backend]" in config_text
     assert "[auxiliaries.api]" in config_text
     assert "[auxiliaries.web]" in config_text
 
@@ -125,7 +125,7 @@ def test_auxiliary_group_list_and_remove_manage_config(run_wtk, repo_factory) ->
 
     run_wtk("ag", "remove", "backend", cwd=primary)
     config_text = (wtk_dir / "config.toml").read_text(encoding="utf-8")
-    assert "[groups.backend]" not in config_text
+    assert "[auxiliary-groups.backend]" not in config_text
     assert "[auxiliaries.api]" in config_text
     assert "[auxiliaries.web]" in config_text
     assert run_wtk("ag", "list", cwd=primary).stdout == "No Auxiliary Groups configured.\n"
@@ -858,8 +858,8 @@ auxiliaries = ["api"]
 
     primary_config = (primary / ".wtk" / "config.toml").read_text(encoding="utf-8")
     legacy_config = (legacy_dir / "config.toml").read_text(encoding="utf-8")
-    assert "[groups.backend]" in primary_config
-    assert "[groups.frontend]" in primary_config
+    assert "[auxiliary-groups.backend]" in primary_config
+    assert "[auxiliary-groups.frontend]" in primary_config
     assert "[auxiliaries.web]" in primary_config
     assert "[groups.frontend]" not in legacy_config
 
@@ -888,7 +888,7 @@ auxiliaries = ["api"]
     run_wtk("ag", "remove", "backend", cwd=primary)
 
     config_text = (primary / ".wtk" / "config.toml").read_text(encoding="utf-8")
-    assert "[groups.backend]" not in config_text
+    assert "[auxiliary-groups.backend]" not in config_text
     assert "[auxiliaries.api]" in config_text
     assert "/.wtk/" in exclude_path.read_text(encoding="utf-8")
     assert run_git(primary, "status", "--porcelain", "--untracked-files=all").stdout == ""

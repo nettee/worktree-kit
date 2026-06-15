@@ -13,7 +13,7 @@ const AUXILIARY_REPOSITORIES_PLACEHOLDER: &str = "{{AUXILIARY_REPOSITORIES}}";
 pub struct Config {
     #[serde(default)]
     pub auxiliaries: BTreeMap<String, AuxiliaryRefConfig>,
-    #[serde(default)]
+    #[serde(default, rename = "auxiliary-groups", alias = "groups")]
     pub groups: BTreeMap<String, AuxiliaryGroupConfig>,
 }
 
