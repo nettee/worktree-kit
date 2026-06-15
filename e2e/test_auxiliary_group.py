@@ -124,7 +124,7 @@ def test_auxiliary_group_list_and_remove_manage_config(run_wtk, repo_factory) ->
     assert f"  api: {api.resolve()}" in listed
 
     run_wtk("ag", "remove", "backend", cwd=primary)
-    assert (wtk_dir / "config.toml").read_text(encoding="utf-8").strip() == ""
+    assert not (wtk_dir / "config.toml").exists()
     assert run_wtk("ag", "list", cwd=primary).stdout == "No Auxiliary Groups configured.\n"
 
 
@@ -884,7 +884,8 @@ auxiliaries = ["api"]
 
     run_wtk("ag", "remove", "backend", cwd=primary)
 
-    assert (primary / ".wtk" / "config.toml").exists()
+    assert not (legacy_dir / "config.toml").exists()
+    assert not (primary / ".wtk" / "config.toml").exists()
     assert "/.wtk/" in exclude_path.read_text(encoding="utf-8")
     assert run_git(primary, "status", "--porcelain", "--untracked-files=all").stdout == ""
 

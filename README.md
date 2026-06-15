@@ -108,6 +108,7 @@ wtk ag remove full-stack
 ```
 
 Removing a group also prunes any Auxiliary Repository Ref entries that are no longer referenced by any remaining group.
+If no Auxiliary Groups remain, WTK removes the now-empty config file instead of leaving behind an empty stub, including when migrating from the legacy git-common-dir config path.
 
 The generated config shape is:
 

@@ -308,6 +308,7 @@ pub fn remove_group(
     validate_name(group_name, "auxiliary group name")?;
 
     let config_path = read_config_path(primary_root, git_common_dir);
+    let primary_config = primary_config_path(primary_root);
     let mut config = read_config_or_default(&config_path)?;
     let removed = config
         .groups
@@ -326,7 +327,17 @@ pub fn remove_group(
     }
 
     install_generated_excludes(git, primary_root)?;
-    write_config(&primary_config_path(primary_root), &config)
+    write_config(&primary_config, &config)?;
+    if config_path != primary_config && config_path.exists() {
+        fs::remove_file(&config_path).map_err(|error| {
+            Error::message(format!(
+                "failed to remove legacy WTK config {}: {}",
+                config_path.display(),
+                error
+            ))
+        })?;
+    }
+    Ok(())
 }
 
 pub fn read_state(primary_root: &Path, git_common_dir: &Path) -> AppResult<WorktreesState> {
@@ -563,7 +574,9 @@ pub fn install_ref_excludes(
 }
 
 fn install_generated_excludes(git: &Git, primary_worktree: &Path) -> AppResult<()> {
-    let exclude_path = common_git_dir(git, primary_worktree)?.join("info").join("exclude");
+    let exclude_path = common_git_dir(git, primary_worktree)?
+        .join("info")
+        .join("exclude");
     if let Some(parent) = exclude_path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -696,15 +709,24 @@ fn read_config(path: &Path) -> AppResult<Config> {
 }
 
 fn write_config(path: &Path, config: &Config) -> AppResult<()> {
+    if config.auxiliaries.is_empty() && config.groups.is_empty() {
+        if path.exists() {
+            fs::remove_file(path).map_err(|error| {
+                Error::message(format!(
+                    "failed to remove empty WTK config {}: {}",
+                    path.display(),
+                    error
+                ))
+            })?;
+        }
+        return Ok(());
+    }
+
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let text = if config.auxiliaries.is_empty() && config.groups.is_empty() {
-        String::new()
-    } else {
-        toml::to_string_pretty(config)
-            .map_err(|error| Error::message(format!("failed to serialize WTK config: {error}")))?
-    };
+    let text = toml::to_string_pretty(config)
+        .map_err(|error| Error::message(format!("failed to serialize WTK config: {error}")))?;
     fs::write(path, text).map_err(|error| {
         Error::message(format!(
             "failed to write WTK config {}: {}",
