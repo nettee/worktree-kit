@@ -53,7 +53,9 @@ By default, `wtk` uses the Sibling Layout: a repository's linked worktrees live 
 
 Commands that create linked worktrees copy ignored files named exactly `.env` or `secrets.auto.tfvars` from the main worktree into the new worktree at the same Git-root-relative paths. Files such as `.env.local`, `.env.example`, `.envrc`, and `secrets.auto.tfvars.json` are not copied. When matching ignored files are copied, `wtk` prints one line per file, such as `copied ignored .env: <path>` or `copied ignored secrets.auto.tfvars: <path>`.
 
-If the new worktree looks like a pnpm repo (`pnpm-lock.yaml` or `pnpm-workspace.yaml` at the root), `wtk` then runs `pnpm install` inside the new worktree before reporting success.
+For standalone `wtk new`, success is reported before asynchronous worktree initialization finishes copying ignored files into the new worktree. `wtk` prints info lines when that background initialization starts and where its temporary log file is written.
+
+If a new worktree looks like a pnpm repo (`pnpm-lock.yaml` or `pnpm-workspace.yaml` at the root), `wtk new` starts `pnpm install` after the success message instead of waiting for it to finish first. Standalone `wtk new` does that from the asynchronous initializer, and coordinated `wtk new --ag ...` starts asynchronous installs for the primary and auxiliary worktrees after the coordinated worktree is created. Wait for the reported log file to finish before assuming ignored files or dependencies are ready.
 
 ### Listing and status
 
