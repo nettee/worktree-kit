@@ -38,6 +38,31 @@ def test_repo_mode_create_remove_send_out_bring_in_and_completion(run_wtk, repo_
         assert "wtk" in run_wtk("completion", shell, cwd=repo).stdout
 
 
+def test_send_out_copies_configured_exact_files(run_wtk, repo_factory) -> None:
+    repo = repo_factory.init_repo("repo")
+    repo_factory.commit_files(
+        repo,
+        {
+            ".gitignore": "specs/change/active\n",
+            ".wtk/config.toml": """
+[copy]
+recursive = []
+exact = ["specs/change/active"]
+""".lstrip(),
+        },
+        "configure exact copy",
+    )
+    (repo / "specs" / "change").mkdir(parents=True)
+    (repo / "specs" / "change" / "active").write_text("ACTIVE\n", encoding="utf-8")
+    run_git(repo, "switch", "-c", "feature/send-spec")
+
+    out = run_wtk("send-out", "--no-clipboard", cwd=repo).output
+    linked = linked_worktree_path(repo, "feature/send-spec")
+
+    assert linked.joinpath("specs/change/active").read_text(encoding="utf-8") == "ACTIVE\n"
+    assert "copied ignored file: specs/change/active" in out
+
+
 def test_repo_mode_status_and_list_readable(run_wtk, repo_factory) -> None:
     repo = repo_factory.init_repo("repo")
     run_git(repo, "branch", "feature/status")

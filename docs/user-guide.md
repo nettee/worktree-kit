@@ -46,7 +46,15 @@ wtk checkout feature/existing
 
 By default, `wtk` uses the Sibling Layout: a repository's linked worktrees live next to the main worktree using names like `<repo>-wt-<branch-slug>`.
 
-Commands that create linked worktrees copy ignored files named exactly `.env` or `secrets.auto.tfvars` from the main worktree into the new worktree at the same Git-root-relative paths. Files such as `.env.local`, `.env.example`, `.envrc`, and `secrets.auto.tfvars.json` are not copied. When matching ignored files are copied, `wtk` prints one line per file, such as `copied ignored .env: <path>` or `copied ignored secrets.auto.tfvars: <path>`.
+Commands that create linked worktrees copy configured ignored files from the main worktree into the new worktree at the same Git-root-relative paths. The default recursive file-name list is `.env` and `secrets.auto.tfvars`, and the default exact-path list is `specs/change/active`. Recursive matching is still exact-name based, so files such as `.env.local`, `.env.example`, `.envrc`, and `secrets.auto.tfvars.json` are not copied unless configured explicitly. When matching ignored files are copied, `wtk` prints one line per file, such as `copied ignored .env: <path>` or `copied ignored file: specs/change/active`.
+
+Copy behavior can be configured in either repo-local `.wtk/config.toml` or global `~/.wtk/config.toml`. Repo-local config overrides global config for each configured list. The shape is:
+
+```toml
+[copy]
+recursive = [".env", "secrets.auto.tfvars"]
+exact = ["specs/change/active"]
+```
 
 For standalone `wtk new`, success is reported before asynchronous worktree initialization finishes copying ignored files into the new worktree. `wtk` prints info lines when that background initialization starts and where its temporary log file is written.
 
@@ -150,7 +158,13 @@ Coordinated Primary Repository worktrees also receive a generated `WTK-AUXILIARY
 
 `wtk list` shows ordinary and coordinated Primary Repository worktrees together and summarizes Auxiliary Ref health, such as `refs 2/2 ok` or `refs 1/2 broken`. `wtk remove` removes the coordinated set. `wtk remove --delete-branch` removes primary and auxiliary worktrees and branches after preflight checks.
 
-For backward compatibility, WTK still reads the legacy `$(git rev-parse --git-common-dir)/wtk/config.toml` file when `.wtk/config.toml` is absent, accepts the legacy `[groups.<group-name>]` key in existing config files, and reads the legacy `$(git rev-parse --git-common-dir)/wtk/worktrees.json` file when `.wtk/worktrees.json` is absent.
+WTK loads config with this precedence:
+
+1. Legacy repo config at `$(git rev-parse --git-common-dir)/wtk/config.toml` when repo-local `.wtk/config.toml` is absent
+2. Global config at `~/.wtk/config.toml`
+3. Repo-local config at `.wtk/config.toml`
+
+Repo-local config overrides global config when both set the same `copy` list. For backward compatibility, WTK still accepts the legacy `[groups.<group-name>]` key in existing config files, and reads the legacy `$(git rev-parse --git-common-dir)/wtk/worktrees.json` file when `.wtk/worktrees.json` is absent.
 
 ### Base branch selection
 

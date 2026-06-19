@@ -18,28 +18,25 @@ use std::os::unix::fs as unix_fs;
 use std::os::unix::fs::OpenOptionsExt;
 #[cfg(windows)]
 use std::os::windows::fs as windows_fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const RECURSIVE_IGNORED_FILE_SNAPSHOT_PREFIX: &str = "wtk-init-worktree-snapshot-";
 const RECURSIVE_IGNORED_FILE_SNAPSHOT_MARKER: &str = ".wtk-recursive-ignored-files-snapshot";
-const IGNORED_SEND_OUT_ACTIVE_SPEC_PATH: &str = "specs/change/active";
-const RECURSIVE_IGNORED_FILE_SPECS: &[RecursiveIgnoredFileSpec] = &[
-    RecursiveIgnoredFileSpec {
-        file_name: ".env",
-        copy_label: "copied ignored .env",
-    },
-    RecursiveIgnoredFileSpec {
-        file_name: "secrets.auto.tfvars",
-        copy_label: "copied ignored secrets.auto.tfvars",
-    },
-];
+const DEFAULT_RECURSIVE_IGNORED_FILE_NAMES: &[&str] = &[".env", "secrets.auto.tfvars"];
+const DEFAULT_EXACT_IGNORED_FILE_PATHS: &[&str] = &["specs/change/active"];
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone)]
+struct CopiedIgnoredFiles {
+    recursive: Vec<RecursiveIgnoredFileSpec>,
+    exact: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
 struct RecursiveIgnoredFileSpec {
-    file_name: &'static str,
-    copy_label: &'static str,
+    file_name: String,
+    copy_label: String,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -125,7 +122,7 @@ pub(crate) enum SnapshotFileKind {
 
 pub struct SendOutWorktreeInit {
     recursive_ignored_files: Vec<SnapshotFile>,
-    ignored_active_spec: Option<SnapshotFile>,
+    exact_ignored_files: Vec<SnapshotFile>,
 }
 
 pub enum AsyncPnpmInstall {
@@ -144,6 +141,7 @@ pub fn create(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
 
     let path = create_target_path(&repo, &opts.branch, &opts.path)?;
     let base = prepare_create_base(session, &repo, &opts)?;
+    let copied_files = copied_ignored_files(session, &repo.main_root)?;
     let args = vec![
         "worktree".to_string(),
         "add".to_string(),
@@ -156,14 +154,26 @@ pub fn create(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
     session
         .git
         .run(&repo.main_root, args.iter().map(String::as_str))?;
-    let recursive_ignored_files = snapshot_recursive_ignored_files(session, &repo.main_root)
-        .map_err(|error| {
-            Error::message(format!(
-                "worktree created, but failed to snapshot ignored recursive files: {error}"
-            ))
-        })?;
-    let ignored_snapshot_root =
-        write_recursive_ignored_file_snapshot(&recursive_ignored_files, &path)?;
+    let recursive_ignored_files =
+        snapshot_recursive_ignored_files(session, &repo.main_root, &copied_files.recursive)
+            .map_err(|error| {
+                Error::message(format!(
+                    "worktree created, but failed to snapshot ignored recursive files: {error}"
+                ))
+            })?;
+    let exact_ignored_files =
+        snapshot_exact_ignored_files(session, &repo.main_root, &copied_files.exact).map_err(
+            |error| {
+                Error::message(format!(
+                    "worktree created, but failed to snapshot ignored exact files: {error}"
+                ))
+            },
+        )?;
+    let ignored_snapshot_root = write_recursive_ignored_file_snapshot(
+        &recursive_ignored_files,
+        &exact_ignored_files,
+        &path,
+    )?;
     cleanup_recursive_ignored_file_snapshot_on_error(
         finish(
             session,
@@ -296,10 +306,20 @@ fn create_with_auxiliaries(session: &mut Session<'_>, opts: Options) -> AppResul
             )?;
         }
 
-        let primary_ignored = snapshot_recursive_ignored_files(session, &repo.main_root)?;
+        let copied_files = copied_ignored_files(session, &repo.main_root)?;
+        let primary_ignored =
+            snapshot_recursive_ignored_files(session, &repo.main_root, &copied_files.recursive)?;
+        let primary_exact =
+            snapshot_exact_ignored_files(session, &repo.main_root, &copied_files.exact)?;
         print_copied_recursive_ignored_files(
             session,
+            &copied_files.recursive,
             copy_snapshot_files(&primary_ignored, &primary_path)?,
+        )?;
+        print_copied_ignored_files(
+            session,
+            "copied ignored file",
+            copy_snapshot_files(&primary_exact, &primary_path)?,
         )?;
         for selection in &selections {
             let path = auxiliary_paths
@@ -372,7 +392,11 @@ pub fn checkout(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
     }
 
     let path = create_target_path(&repo, &opts.branch, &opts.path)?;
-    let ignored_files = snapshot_recursive_ignored_files(session, &repo.main_root)?;
+    let copied_files = copied_ignored_files(session, &repo.main_root)?;
+    let ignored_files =
+        snapshot_recursive_ignored_files(session, &repo.main_root, &copied_files.recursive)?;
+    let exact_ignored_files =
+        snapshot_exact_ignored_files(session, &repo.main_root, &copied_files.exact)?;
     let args = vec![
         "worktree".to_string(),
         "add".to_string(),
@@ -385,9 +409,19 @@ pub fn checkout(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
         .run(&repo.main_root, args.iter().map(String::as_str))?;
     print_copied_recursive_ignored_files(
         session,
+        &copied_files.recursive,
         copy_snapshot_files(&ignored_files, &path).map_err(|error| {
             Error::message(format!(
                 "worktree created, but ignored recursive file copy failed: {error}"
+            ))
+        })?,
+    )?;
+    print_copied_ignored_files(
+        session,
+        "copied ignored file",
+        copy_snapshot_files(&exact_ignored_files, &path).map_err(|error| {
+            Error::message(format!(
+                "worktree created, but ignored file copy failed: {error}"
             ))
         })?,
     )?;
@@ -513,10 +547,20 @@ fn worktree_init_without_pnpm(
     source_root: &Path,
     worktree_path: &Path,
 ) -> AppResult<()> {
-    let ignored_files = snapshot_recursive_ignored_files(session, source_root)?;
+    let copied_files = copied_ignored_files(session, source_root)?;
+    let ignored_files =
+        snapshot_recursive_ignored_files(session, source_root, &copied_files.recursive)?;
+    let exact_ignored_files =
+        snapshot_exact_ignored_files(session, source_root, &copied_files.exact)?;
     print_copied_recursive_ignored_files(
         session,
+        &copied_files.recursive,
         copy_snapshot_files(&ignored_files, worktree_path)?,
+    )?;
+    print_copied_ignored_files(
+        session,
+        "copied ignored file",
+        copy_snapshot_files(&exact_ignored_files, worktree_path)?,
     )
 }
 
@@ -713,6 +757,7 @@ fn copy_recursive_ignored_files_for_init(
     worktree_path: &Path,
     ignored_snapshot_root: Option<&Path>,
 ) -> AppResult<()> {
+    let copied_files = copied_ignored_files(session, source_root)?;
     let (ignored_files, snapshot_root) = match ignored_snapshot_root {
         Some(snapshot_root) => match snapshot_recursive_ignored_files_from_root(snapshot_root) {
             Ok(ignored_files) => (ignored_files, Some(snapshot_root)),
@@ -726,13 +771,25 @@ fn copy_recursive_ignored_files_for_init(
             }
         },
         None => (
-            snapshot_recursive_ignored_files(session, source_root)?,
+            {
+                let mut ignored = snapshot_recursive_ignored_files(
+                    session,
+                    source_root,
+                    &copied_files.recursive,
+                )?;
+                ignored.extend(snapshot_exact_ignored_files(
+                    session,
+                    source_root,
+                    &copied_files.exact,
+                )?);
+                ignored
+            },
             None,
         ),
     };
     let copy_result = copy_snapshot_files(&ignored_files, worktree_path)
-        .map_err(|error| Error::message(format!("ignored recursive file copy failed: {error}")))
-        .and_then(|copied| print_copied_recursive_ignored_files(session, copied));
+        .map_err(|error| Error::message(format!("ignored file copy failed: {error}")))
+        .and_then(|copied| print_copied_files(session, &copied_files, copied));
     let cleanup_result = snapshot_root.map_or(Ok(()), remove_recursive_ignored_file_snapshot_root);
     match (copy_result, cleanup_result) {
         (Ok(()), Ok(())) => Ok(()),
@@ -867,8 +924,11 @@ pub fn send_out(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
     let path = create_target_path(&repo, branch.trim(), &opts.path)?;
     ensure_creatable_parent(&path)?;
 
-    let ignored_files = snapshot_recursive_ignored_files(session, &repo.main_root)?;
-    let ignored_active_spec = snapshot_ignored_send_out_active_spec(session, &repo.main_root)?;
+    let copied_files = copied_ignored_files(session, &repo.main_root)?;
+    let ignored_files =
+        snapshot_recursive_ignored_files(session, &repo.main_root, &copied_files.recursive)?;
+    let exact_ignored_files =
+        snapshot_exact_ignored_files(session, &repo.main_root, &copied_files.exact)?;
 
     let switch_args = vec!["switch".to_string(), base.clone()];
     output::git(session.out, &repo.main_root, &switch_args)?;
@@ -897,23 +957,22 @@ pub fn send_out(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
     }
     print_copied_recursive_ignored_files(
         session,
+        &copied_files.recursive,
         copy_snapshot_files(&ignored_files, &path).map_err(|error| {
             Error::message(format!(
                 "main worktree switched to {base} and linked worktree created, but ignored recursive file copy failed: {error}"
             ))
         })?,
     )?;
-    if let Some(active_spec) = ignored_active_spec {
-        print_copied_ignored_files(
-            session,
-            "copied ignored file",
-            copy_snapshot_files(&[active_spec], &path).map_err(|error| {
-                Error::message(format!(
-                    "main worktree switched to {base} and linked worktree created, but ignored file copy failed: {error}"
-                ))
-            })?,
-        )?;
-    }
+    print_copied_ignored_files(
+        session,
+        "copied ignored file",
+        copy_snapshot_files(&exact_ignored_files, &path).map_err(|error| {
+            Error::message(format!(
+                "main worktree switched to {base} and linked worktree created, but ignored file copy failed: {error}"
+            ))
+        })?,
+    )?;
     finish(
         session,
         opts.no_clipboard,
@@ -1505,12 +1564,86 @@ fn copy_snapshot_files(
     Ok(copied)
 }
 
+fn copied_ignored_files(session: &Session<'_>, main_root: &Path) -> AppResult<CopiedIgnoredFiles> {
+    let repo = resolve(&session.git, main_root)?;
+    let config = auxiliary::load_effective_config(&repo.main_root, &repo.git_common_dir)?;
+    let recursive = match config.copy.recursive {
+        Some(file_names) => file_names
+            .into_iter()
+            .map(|file_name| {
+                validate_recursive_ignored_file_name(&file_name)?;
+                Ok(RecursiveIgnoredFileSpec {
+                    copy_label: format!("copied ignored {file_name}"),
+                    file_name,
+                })
+            })
+            .collect::<AppResult<Vec<_>>>()?,
+        None => DEFAULT_RECURSIVE_IGNORED_FILE_NAMES
+            .iter()
+            .map(|file_name| RecursiveIgnoredFileSpec {
+                copy_label: format!("copied ignored {file_name}"),
+                file_name: (*file_name).to_string(),
+            })
+            .collect(),
+    };
+    let exact = match config.copy.exact {
+        Some(paths) => paths
+            .into_iter()
+            .map(|path| {
+                validate_exact_ignored_file_path(&path)?;
+                Ok(path)
+            })
+            .collect::<AppResult<Vec<_>>>()?,
+        None => DEFAULT_EXACT_IGNORED_FILE_PATHS
+            .iter()
+            .map(PathBuf::from)
+            .collect(),
+    };
+    Ok(CopiedIgnoredFiles { recursive, exact })
+}
+
+fn validate_recursive_ignored_file_name(file_name: &str) -> AppResult<()> {
+    if file_name.is_empty() {
+        return Err(Error::message("copy.recursive entries must not be empty"));
+    }
+    let path = Path::new(file_name);
+    match path.components().next() {
+        Some(Component::Normal(_)) if path.components().count() == 1 => Ok(()),
+        _ => Err(Error::message(format!(
+            "copy.recursive entries must be file names, not paths: {file_name}"
+        ))),
+    }
+}
+
+fn validate_exact_ignored_file_path(path: &Path) -> AppResult<()> {
+    if path.as_os_str().is_empty() {
+        return Err(Error::message("copy.exact entries must not be empty"));
+    }
+    if path.is_absolute() {
+        return Err(Error::message(format!(
+            "copy.exact entries must be relative paths: {}",
+            path.display()
+        )));
+    }
+    if path
+        .components()
+        .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(Error::message(format!(
+            "copy.exact entries must contain only normal path components: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
 fn snapshot_recursive_ignored_files(
     session: &Session<'_>,
     main_root: &Path,
+    specs: &[RecursiveIgnoredFileSpec],
 ) -> AppResult<Vec<SnapshotFile>> {
     let mut ignored = Vec::new();
-    for relative in recursive_ignored_files(session, main_root)? {
+    for relative in recursive_ignored_files(session, main_root, specs)? {
         if let Some(snapshot) = snapshot_file(main_root, relative)? {
             ignored.push(snapshot);
         }
@@ -1518,20 +1651,32 @@ fn snapshot_recursive_ignored_files(
     Ok(ignored)
 }
 
-fn snapshot_ignored_send_out_active_spec(
+fn snapshot_exact_ignored_files(
     session: &Session<'_>,
     main_root: &Path,
-) -> AppResult<Option<SnapshotFile>> {
-    snapshot_ignored_exact_file(session, main_root, IGNORED_SEND_OUT_ACTIVE_SPEC_PATH)
+    exact_paths: &[PathBuf],
+) -> AppResult<Vec<SnapshotFile>> {
+    let mut ignored = Vec::new();
+    for relative in exact_paths {
+        if let Some(snapshot) = snapshot_ignored_exact_file(session, main_root, relative)? {
+            ignored.push(snapshot);
+        }
+    }
+    Ok(ignored)
 }
 
 pub fn snapshot_send_out_worktree_init(
     session: &Session<'_>,
     main_root: &Path,
 ) -> AppResult<SendOutWorktreeInit> {
+    let copied_files = copied_ignored_files(session, main_root)?;
     Ok(SendOutWorktreeInit {
-        recursive_ignored_files: snapshot_recursive_ignored_files(session, main_root)?,
-        ignored_active_spec: snapshot_ignored_send_out_active_spec(session, main_root)?,
+        recursive_ignored_files: snapshot_recursive_ignored_files(
+            session,
+            main_root,
+            &copied_files.recursive,
+        )?,
+        exact_ignored_files: snapshot_exact_ignored_files(session, main_root, &copied_files.exact)?,
     })
 }
 
@@ -1542,31 +1687,29 @@ pub fn apply_send_out_worktree_init(
 ) -> AppResult<()> {
     print_copied_recursive_ignored_files(
         session,
+        &copied_ignored_files(session, worktree_path)?.recursive,
         copy_snapshot_files(&init.recursive_ignored_files, worktree_path).map_err(|error| {
             Error::message(format!("ignored recursive file copy failed: {error}"))
         })?,
     )?;
-    if let Some(active_spec) = &init.ignored_active_spec {
-        print_copied_ignored_files(
-            session,
-            "copied ignored file",
-            copy_snapshot_files(std::slice::from_ref(active_spec), worktree_path)
-                .map_err(|error| Error::message(format!("ignored file copy failed: {error}")))?,
-        )?;
-    }
+    print_copied_ignored_files(
+        session,
+        "copied ignored file",
+        copy_snapshot_files(&init.exact_ignored_files, worktree_path)
+            .map_err(|error| Error::message(format!("ignored file copy failed: {error}")))?,
+    )?;
     Ok(())
 }
 
 fn snapshot_ignored_exact_file(
     session: &Session<'_>,
     main_root: &Path,
-    relative: &str,
+    relative: &Path,
 ) -> AppResult<Option<SnapshotFile>> {
-    let relative_path = PathBuf::from(relative);
     if !ignored_exact_file(session, main_root, relative)? {
         return Ok(None);
     }
-    snapshot_file(main_root, relative_path)
+    snapshot_file(main_root, relative.to_path_buf())
 }
 
 fn snapshot_recursive_ignored_files_from_root(root: &Path) -> AppResult<Vec<SnapshotFile>> {
@@ -1610,10 +1753,8 @@ fn collect_recursive_ignored_files_from_root(
             continue;
         }
 
-        if !path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(is_recursive_ignored_file_name)
+        if path.file_name().and_then(|name| name.to_str())
+            == Some(RECURSIVE_IGNORED_FILE_SNAPSHOT_MARKER)
         {
             continue;
         }
@@ -1685,7 +1826,11 @@ fn create_symlink(target: &Path, path: &Path) -> std::io::Result<()> {
     windows_fs::symlink_file(target, path)
 }
 
-fn recursive_ignored_files(session: &Session<'_>, main_root: &Path) -> AppResult<Vec<PathBuf>> {
+fn recursive_ignored_files(
+    session: &Session<'_>,
+    main_root: &Path,
+    specs: &[RecursiveIgnoredFileSpec],
+) -> AppResult<Vec<PathBuf>> {
     let mut args = vec![
         "ls-files".to_string(),
         "--others".to_string(),
@@ -1695,7 +1840,7 @@ fn recursive_ignored_files(session: &Session<'_>, main_root: &Path) -> AppResult
         "-z".to_string(),
         "--".to_string(),
     ];
-    for spec in RECURSIVE_IGNORED_FILE_SPECS {
+    for spec in specs {
         args.push(spec.file_name.to_string());
         args.push(format!(":(glob)**/{}", spec.file_name));
     }
@@ -1710,14 +1855,15 @@ fn recursive_ignored_files(session: &Session<'_>, main_root: &Path) -> AppResult
         .filter(|path| {
             path.file_name()
                 .and_then(|name| name.to_str())
-                .is_some_and(is_recursive_ignored_file_name)
+                .is_some_and(|file_name| specs.iter().any(|spec| spec.file_name == file_name))
         })
         .collect();
     ignored.sort();
     Ok(ignored)
 }
 
-fn ignored_exact_file(session: &Session<'_>, main_root: &Path, relative: &str) -> AppResult<bool> {
+fn ignored_exact_file(session: &Session<'_>, main_root: &Path, relative: &Path) -> AppResult<bool> {
+    let relative = relative.to_string_lossy().into_owned();
     let output = session.git.run_bytes(
         main_root,
         [
@@ -1728,7 +1874,7 @@ fn ignored_exact_file(session: &Session<'_>, main_root: &Path, relative: &str) -
             "--full-name",
             "-z",
             "--",
-            relative,
+            &relative,
         ],
     )?;
     Ok(output
@@ -1736,7 +1882,7 @@ fn ignored_exact_file(session: &Session<'_>, main_root: &Path, relative: &str) -
         .split(|byte| *byte == b'\0')
         .filter(|path| !path.is_empty())
         .map(path_buf_from_git_bytes)
-        .any(|path| path == Path::new(relative)))
+        .any(|path| path == Path::new(&relative)))
 }
 
 #[cfg(unix)]
@@ -1749,14 +1895,9 @@ fn path_buf_from_git_bytes(path: &[u8]) -> PathBuf {
     PathBuf::from(String::from_utf8_lossy(path).into_owned())
 }
 
-fn is_recursive_ignored_file_name(file_name: &str) -> bool {
-    RECURSIVE_IGNORED_FILE_SPECS
-        .iter()
-        .any(|spec| spec.file_name == file_name)
-}
-
 fn print_copied_recursive_ignored_files(
     session: &mut Session<'_>,
+    specs: &[RecursiveIgnoredFileSpec],
     copied: Vec<PathBuf>,
 ) -> AppResult<()> {
     for relative in copied {
@@ -1769,7 +1910,7 @@ fn print_copied_recursive_ignored_files(
                     relative.display()
                 ))
             })?;
-        let spec = RECURSIVE_IGNORED_FILE_SPECS
+        let spec = specs
             .iter()
             .find(|spec| spec.file_name == file_name)
             .ok_or_else(|| {
@@ -1781,6 +1922,33 @@ fn print_copied_recursive_ignored_files(
         writeln!(session.out, "{}: {}", spec.copy_label, relative.display())?;
     }
     Ok(())
+}
+
+fn print_copied_files(
+    session: &mut Session<'_>,
+    copied_files: &CopiedIgnoredFiles,
+    copied: Vec<PathBuf>,
+) -> AppResult<()> {
+    let mut recursive = Vec::new();
+    let mut exact = Vec::new();
+    for relative in copied {
+        let is_recursive = relative
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|file_name| {
+                copied_files
+                    .recursive
+                    .iter()
+                    .any(|spec| spec.file_name == file_name)
+            });
+        if is_recursive {
+            recursive.push(relative);
+        } else {
+            exact.push(relative);
+        }
+    }
+    print_copied_recursive_ignored_files(session, &copied_files.recursive, recursive)?;
+    print_copied_ignored_files(session, "copied ignored file", exact)
 }
 
 fn print_copied_ignored_files(
@@ -1839,7 +2007,8 @@ fn start_async_init_worktree(
 }
 
 fn write_recursive_ignored_file_snapshot(
-    ignored_files: &[SnapshotFile],
+    recursive_ignored_files: &[SnapshotFile],
+    exact_ignored_files: &[SnapshotFile],
     worktree_path: &Path,
 ) -> AppResult<PathBuf> {
     let nonce = SystemTime::now()
@@ -1864,11 +2033,13 @@ fn write_recursive_ignored_file_snapshot(
         ))
     })?;
     write_recursive_ignored_file_snapshot_marker(&snapshot_root)?;
+    let mut ignored_files = recursive_ignored_files.to_vec();
+    ignored_files.extend_from_slice(exact_ignored_files);
     cleanup_recursive_ignored_file_snapshot_on_error(
-        copy_snapshot_files(ignored_files, &snapshot_root)
+        copy_snapshot_files(&ignored_files, &snapshot_root)
             .map_err(|error| {
                 Error::message(format!(
-                    "worktree created, but failed to snapshot ignored recursive files in {}: {error}",
+                    "worktree created, but failed to snapshot ignored files in {}: {error}",
                     snapshot_root.display()
                 ))
             })
