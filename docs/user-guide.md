@@ -122,7 +122,7 @@ Remove a group definition:
 wtk ag remove full-stack
 ```
 
-Removing a group also prunes any Auxiliary Repository Ref entries that are no longer referenced by any remaining group.
+Removing a group deletes that group's `[auxiliary-groups.<group-name>]` entry from `.wtk/config.toml`. Existing `[auxiliaries.*]` entries remain in the config and may be reused by other groups later.
 
 The generated config shape is:
 
