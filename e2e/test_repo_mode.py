@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
-
+import os
 import time
+
+import pytest
 
 from conftest import linked_worktree_path, parse_yaml, run_git
 
@@ -61,6 +63,37 @@ exact = ["specs/change/active"]
 
     assert linked.joinpath("specs/change/active").read_text(encoding="utf-8") == "ACTIVE\n"
     assert "copied ignored file: specs/change/active" in out
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires unix symlink semantics")
+def test_checkout_dedupes_recursive_and_exact_symlink_copy(
+    run_wtk, repo_factory, tmp_path
+) -> None:
+    repo = repo_factory.init_repo("repo")
+    repo_factory.commit_files(
+        repo,
+        {
+            ".gitignore": "apps/web/.env\n",
+            ".wtk/config.toml": """
+[copy]
+exact = ["apps/web/.env"]
+""".lstrip(),
+            "apps/web/keep.txt": "web\n",
+        },
+        "configure duplicate checkout copy",
+    )
+
+    shared_env = tmp_path / "shared.env"
+    shared_env.write_text("WEB=value\n", encoding="utf-8")
+    os.symlink(shared_env, repo / "apps" / "web" / ".env")
+
+    run_git(repo, "branch", "feature/deduped-checkout")
+    out = run_wtk("checkout", "feature/deduped-checkout", "--no-clipboard", cwd=repo).output
+    linked = linked_worktree_path(repo, "feature/deduped-checkout")
+
+    assert linked.joinpath("apps/web/.env").is_symlink()
+    assert linked.joinpath("apps/web/.env").resolve() == shared_env.resolve()
+    assert out.count("apps/web/.env") == 1
 
 
 def test_repo_mode_status_and_list_readable(run_wtk, repo_factory) -> None:

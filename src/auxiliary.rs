@@ -139,12 +139,13 @@ pub fn add_group(
         ));
     }
 
-    let mut config = load_effective_config_for_write(primary_root, git_common_dir)?;
-    if config.groups.contains_key(group_name) {
+    let effective_config = load_effective_config(primary_root, git_common_dir)?;
+    if effective_config.groups.contains_key(group_name) {
         return Err(Error::message(format!(
             "auxiliary group already exists: {group_name}"
         )));
     }
+    let mut config = load_repo_config(primary_root, git_common_dir)?;
 
     let mut seen_repositories = Vec::<PathBuf>::new();
     let mut seen_names = BTreeMap::<String, PathBuf>::new();
@@ -177,7 +178,7 @@ pub fn add_group(
                 )));
             }
         }
-        if let Some(existing) = config.auxiliaries.get(&name) {
+        if let Some(existing) = effective_config.auxiliaries.get(&name) {
             let existing_repo = resolve(git, &existing.repository)?;
             if !same_path(&existing_repo.main_root, &repo.main_root) {
                 return Err(Error::message(format!(
@@ -186,7 +187,7 @@ pub fn add_group(
                     repo.main_root.display()
                 )));
             }
-        } else {
+        } else if !config.auxiliaries.contains_key(&name) {
             config.auxiliaries.insert(
                 name.clone(),
                 AuxiliaryRefConfig {
@@ -341,7 +342,7 @@ pub fn remove_group(
 ) -> AppResult<()> {
     validate_name(group_name, "auxiliary group name")?;
 
-    let mut config = load_effective_config_for_write(primary_root, git_common_dir)?;
+    let mut config = load_repo_config(primary_root, git_common_dir)?;
     config
         .groups
         .remove(group_name)
@@ -692,15 +693,6 @@ pub fn load_effective_config(primary_root: &Path, git_common_dir: &Path) -> AppR
             config.merge_from(read_config(&path)?);
         }
     }
-    Ok(config)
-}
-
-fn load_effective_config_for_write(
-    primary_root: &Path,
-    git_common_dir: &Path,
-) -> AppResult<Config> {
-    let mut config = load_effective_config(primary_root, git_common_dir)?;
-    config.copy = load_repo_config(primary_root, git_common_dir)?.copy;
     Ok(config)
 }
 

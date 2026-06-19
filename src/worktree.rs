@@ -397,6 +397,9 @@ pub fn checkout(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
         snapshot_recursive_ignored_files(session, &repo.main_root, &copied_files.recursive)?;
     let exact_ignored_files =
         snapshot_exact_ignored_files(session, &repo.main_root, &copied_files.exact)?;
+    let mut ignored_files_to_copy = ignored_files.clone();
+    ignored_files_to_copy.extend_from_slice(&exact_ignored_files);
+    let ignored_files_to_copy = dedupe_snapshot_files(ignored_files_to_copy);
     let args = vec![
         "worktree".to_string(),
         "add".to_string(),
@@ -407,19 +410,10 @@ pub fn checkout(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
     session
         .git
         .run(&repo.main_root, args.iter().map(String::as_str))?;
-    print_copied_recursive_ignored_files(
+    print_copied_files(
         session,
-        &copied_files.recursive,
-        copy_snapshot_files(&ignored_files, &path).map_err(|error| {
-            Error::message(format!(
-                "worktree created, but ignored recursive file copy failed: {error}"
-            ))
-        })?,
-    )?;
-    print_copied_ignored_files(
-        session,
-        "copied ignored file",
-        copy_snapshot_files(&exact_ignored_files, &path).map_err(|error| {
+        &copied_files,
+        copy_snapshot_files(&ignored_files_to_copy, &path).map_err(|error| {
             Error::message(format!(
                 "worktree created, but ignored file copy failed: {error}"
             ))
