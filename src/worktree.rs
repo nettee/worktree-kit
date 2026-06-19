@@ -311,15 +311,12 @@ fn create_with_auxiliaries(session: &mut Session<'_>, opts: Options) -> AppResul
             snapshot_recursive_ignored_files(session, &repo.main_root, &copied_files.recursive)?;
         let primary_exact =
             snapshot_exact_ignored_files(session, &repo.main_root, &copied_files.exact)?;
-        print_copied_recursive_ignored_files(
+        let ignored_files_to_copy =
+            dedupe_snapshot_files(merge_snapshot_files(&primary_ignored, &primary_exact));
+        print_copied_files(
             session,
-            &copied_files.recursive,
-            copy_snapshot_files(&primary_ignored, &primary_path)?,
-        )?;
-        print_copied_ignored_files(
-            session,
-            "copied ignored file",
-            copy_snapshot_files(&primary_exact, &primary_path)?,
+            &copied_files,
+            copy_snapshot_files(&ignored_files_to_copy, &primary_path)?,
         )?;
         for selection in &selections {
             let path = auxiliary_paths
