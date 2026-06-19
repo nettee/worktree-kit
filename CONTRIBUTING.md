@@ -1,14 +1,39 @@
-# Development
+# Contributing
+
+`wtk` is a Rust CLI.
+
+## Local development
+
+Build locally:
+
+```bash
+cargo build --release --bin wtk
+```
+
+Run the Rust test suite:
+
+```bash
+cargo test
+```
+
+Run the full verification suite before changes that affect install, release, or end-to-end behavior:
+
+```bash
+cargo test
+uv run --project e2e pytest e2e tests/test_release.py
+sh scripts/test-install.sh
+sh scripts/test-install-local.sh
+```
+
+Documentation changes should keep the README focused on project orientation, keep the User Guide as the complete user-facing reference, and preserve the canonical Primary/Auxiliary terminology from `CONTEXT.md`.
 
 ## Release flow
 
-Releases are prepared through a release PR. Do not create or push release tags
-manually while the PR is still open.
+Releases are prepared through a release PR. Do not create or push release tags manually while the PR is still open.
 
 ### 1. Prepare the release PR
 
-Run the release script from a clean `main` branch. You can pass either an
-explicit version or a semantic bump shortcut:
+Run the release script from a clean `main` branch. You can pass either an explicit version or a semantic bump shortcut:
 
 ```bash
 python3 scripts/release.py 0.1.0
@@ -21,8 +46,7 @@ The script will:
 
 1. Verify required commands are available: `git`, `cargo`, and `gh`.
 2. Verify the working tree is clean and the current branch is `main`.
-3. Resolve the target version from the explicit argument or the current
-   `Cargo.toml` version plus the requested semantic bump.
+3. Resolve the target version from the explicit argument or the current `Cargo.toml` version plus the requested semantic bump.
 4. Fetch tags and verify the target version is greater than both:
    - the current `Cargo.toml` version
    - the latest existing release tag
@@ -41,8 +65,7 @@ python3 scripts/release.py 0.1.0 --skip-tests
 
 ### 2. Review and merge the release PR
 
-The PR must keep the `release` label. When the labeled PR is merged into
-`main`, `.github/workflows/tag-release-pr.yml` runs automatically.
+The PR must keep the `release` label. When the labeled PR is merged into `main`, `.github/workflows/tag-release-pr.yml` runs automatically.
 
 The workflow will:
 
@@ -54,8 +77,7 @@ The workflow will:
 
 ### 3. GitHub Release assets
 
-Pushing the release tag triggers `.github/workflows/release.yml`, which builds
-and uploads:
+Pushing the release tag triggers `.github/workflows/release.yml`, which builds and uploads:
 
 ```text
 wtk_<version>_darwin_amd64.tar.gz
@@ -67,8 +89,7 @@ checksums.txt
 
 ### 4. Verify the release
 
-After the release workflow finishes, verify the release exists and the installer
-can install the new version:
+After the release workflow finishes, verify the release exists and the installer can install the new version:
 
 ```bash
 gh release view v0.1.0
@@ -83,5 +104,4 @@ wtk --version
 - Tags are created only after the release PR is merged into `main`.
 - Versions must increase; version rollback is rejected locally and in CI.
 - Release tags use `v<version>`, for example `v0.1.0`.
-- Asset versions do not include the leading `v`, for example
-  `wtk_0.1.0_linux_amd64.tar.gz`.
+- Asset versions do not include the leading `v`, for example `wtk_0.1.0_linux_amd64.tar.gz`.

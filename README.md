@@ -1,42 +1,17 @@
 # worktree-kit
 
-`worktree-kit` provides the `wtk` CLI for common Git worktree workflows:
+`wtk` is a CLI that smooths out everyday Git worktree workflows for agentic coding.
 
-- `wtk new` creates a new branch in a linked worktree.
-- `wtk checkout` checks out an existing branch or ref in a linked worktree.
-- `wtk status` prints current repository/worktree status in YAML format.
-- `wtk list` prints visible worktrees in a compact table.
-- `wtk remove` removes a linked worktree.
-- `wtk send-out` moves the current main-worktree branch to a linked worktree.
-- `wtk bring-in` moves a linked worktree branch back into the main worktree.
-- `wtk auxiliary-group add` creates a local group of Auxiliary Repositories for coordinated multi-repository worktrees.
+Agentic coding makes isolated worktrees more useful: one task can live in one branch, one experiment can stay out of the main checkout, and related repository changes can be kept side by side. Raw `git worktree` gives you the foundation, but the day-to-day workflow still leaves repetitive setup, branch movement, and multi-repository coordination to you.
 
-`wtk create` remains available as a compatibility alias for `wtk new`.
+`wtk` adds a thin workflow layer for those common cases.
 
-The Primary Repository is the repository an agent opens directly for a task. By default, `wtk new` creates a standalone linked worktree for that repository using the Sibling Layout: sibling directories named `<repo>-wt-<branch-slug>`.
+## Quick start
 
-For coordinated changes, a Primary Repository stores local Auxiliary Groups in `.wtk/config.toml`. `wtk new --ag <group>` expands those groups, creates matching Auxiliary Repository worktrees, writes generated `refs/<auxiliary-name>` entries in the Primary worktree, and records fixed expanded state in `.wtk/worktrees.json`.
-
-## Install
-
-One-click install:
+Install the latest release:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nettee/worktree-kit/main/scripts/install.sh | sh
-```
-
-The installer downloads the matching GitHub release asset, verifies its checksum, and installs `wtk` into `${WTK_INSTALL_DIR:-$HOME/.local/bin}`. It prints PATH and completion setup guidance after verifying `wtk --version`.
-
-Upgrade an existing release install in place:
-
-```bash
-wtk upgrade
-```
-
-Local source install for development machines:
-
-```bash
-sh scripts/install-local.sh
 ```
 
 Check the installed version:
@@ -45,127 +20,85 @@ Check the installed version:
 wtk --version
 ```
 
-## Development
-
-`wtk` is now a Rust CLI.
-
-Build locally:
+Create a linked worktree for a new branch:
 
 ```bash
-cargo build --release --bin wtk
+wtk new feature/login
 ```
 
-Run the full test suite:
+List visible worktrees:
 
 ```bash
-cargo test
-uv run --project e2e pytest e2e tests/test_release.py
-sh scripts/test-install.sh
-sh scripts/test-install-local.sh
-```
-
-## Usage
-
-```bash
-wtk new feature/foo
-wtk new feature/from-current --from-current
-wtk checkout feature/existing
-wtk status
 wtk list
-wtk list --json
-wtk remove ../repo-wt-feature-foo
+```
+
+See the [User Guide](docs/user-guide.md) for upgrades, alternate installs, full workflows, and the command reference.
+
+## Why wtk
+
+`git worktree` is a good primitive for parallel coding work, but the useful workflow around it is usually bigger than one Git command:
+
+- New worktrees often need local config, secrets, and project setup before they are ready.
+- Work often starts in the main worktree before you decide it should move to a linked worktree.
+- Multi-repository tasks need matching branches and stable paths across repositories.
+
+`wtk` keeps those workflows close to Git while removing the repeated manual steps.
+
+## Common workflows
+
+### Create worktrees that are ready to use
+
+Use `wtk new` for a new branch, or `wtk checkout` for an existing branch or ref:
+
+```bash
+wtk new feature/login
+wtk checkout feature/existing
+```
+
+By default, `wtk` creates sibling worktree directories named like `<repo>-wt-<branch-slug>`. It also copies ignored local config and secret files that usually need to exist before the worktree is usable, and it runs `pnpm install` for pnpm repositories.
+
+### Move work out after you already started
+
+Sometimes work begins in the main worktree and only later needs to move into its own linked worktree. `wtk send-out` moves the current main-worktree branch out:
+
+```bash
 wtk send-out
-wtk bring-in feature/foo
-wtk auxiliary-group add full-stack /absolute/path/to/api /absolute/path/to/web
-wtk new feature/full-stack --ag full-stack
-wtk upgrade
 ```
 
-`wtk list` is optimized for scanning. The default output is a compact table with the worktree directory name, branch, relative HEAD commit time, state labels, and short HEAD. It does not print absolute paths by default. Rows are sorted by the current HEAD commit's committer time, newest first; dirty state is shown as a label but does not affect sorting.
+When the branch should come back, use `wtk bring-in`:
 
-Use `wtk list --json` for machine-readable output. JSON includes absolute paths, full HEADs, timestamps, labels, diagnostics, and Auxiliary Ref details.
+```bash
+wtk bring-in feature/login
+```
 
-## Auxiliary Groups
+### Coordinate related repositories
 
-Create a local Auxiliary Group from the Primary Repository:
+For tasks that span repositories, define an Auxiliary Group from the Primary Repository, the repository you open directly for the task:
 
 ```bash
 wtk auxiliary-group add full-stack /absolute/path/to/api /absolute/path/to/web
 ```
 
-`wtk ag add` is a shorthand for `wtk auxiliary-group add`. Group creation resolves each repository path to a Git main worktree, derives the Auxiliary Repository Ref name from the repository directory name, creates or reuses `[auxiliaries.<name>]`, and writes `[auxiliary-groups.<group-name>]` in `.wtk/config.toml`. For backward compatibility, WTK still reads the legacy `$(git rev-parse --git-common-dir)/wtk/config.toml` file when `.wtk/config.toml` is absent, and it also accepts the legacy `[groups.<group-name>]` key in existing config files.
-
-Inspect configured groups:
-
-```bash
-wtk ag list
-```
-
-Remove a group definition:
-
-```bash
-wtk ag remove full-stack
-```
-
-Removing a group also prunes any Auxiliary Repository Ref entries that are no longer referenced by any remaining group.
-
-The generated config shape is:
-
-```toml
-[auxiliaries.api]
-repository = "/absolute/path/to/api"
-
-[auxiliaries.web]
-repository = "/absolute/path/to/web"
-
-[auxiliary-groups.full-stack]
-auxiliaries = ["api", "web"]
-```
-
-Create a coordinated worktree by selecting one or more groups:
+Then create a coordinated worktree by selecting that group:
 
 ```bash
 wtk new feature/full-stack --ag full-stack
-wtk new feature/full-stack --auxiliary-group full-stack
 ```
 
-No selected Auxiliary Groups is the standalone case. With selected groups, `wtk new` creates the Primary Repository worktree plus matching Auxiliary Repository worktrees for the same branch. The Primary worktree receives generated `refs/<auxiliary-name>` entries pointing to the Auxiliary Repository worktrees. `.wtk/worktrees.json` stores the expanded Auxiliary Repository state by absolute Primary worktree path; changing the config later does not mutate existing worktrees. For backward compatibility, WTK still reads the legacy `$(git rev-parse --git-common-dir)/wtk/worktrees.json` file when `.wtk/worktrees.json` is absent.
+`wtk` creates matching worktrees for the selected Auxiliary Repositories and exposes them from the Primary Repository worktree through stable generated refs.
 
-Coordinated Primary worktrees also receive a generated `WTK-AUXILIARY.md` file that lists the concrete Auxiliary Repository refs and targets for agents. WTK keeps both `/refs/` and `/WTK-AUXILIARY.md` ignored through `.git/info/exclude`.
+## User Guide
 
-`wtk status` validates generated refs for the current Primary worktree when auxiliary state is recorded. `wtk list` shows ordinary and coordinated Primary worktrees together and summarizes Auxiliary Ref health, such as `refs 2/2 ok` or `refs 1/2 broken`. `wtk remove` removes the coordinated set. `wtk send-out` and `wtk bring-in` reject worktrees with auxiliary state because those commands do not define an atomic multi-repository move.
+The [User Guide](docs/user-guide.md) has the full workflow guide and command reference, including:
 
-Every command prints the underlying `git` commands it runs. Successful commands copy the useful path or branch payload to the clipboard. Use `--no-clipboard` in CI or headless environments.
+- install, upgrade, and local source install
+- creating, checking out, listing, and removing worktrees
+- `send-out` and `bring-in`
+- Auxiliary Groups and coordinated worktrees
+- base branch selection
+- shell completion
+- failure behavior and generated files
 
-Commands that create linked worktrees also copy ignored files named exactly `.env` from the main worktree into the new worktree at the same Git-root-relative paths. Files such as `.env.local`, `.env.example`, and `.envrc` are not copied. When matching ignored `.env` files are copied, `wtk` prints one `copied ignored .env: <path>` line per file; when none are found, it prints nothing for this step.
+## Contributing
 
-If the new worktree looks like a pnpm repo (`pnpm-lock.yaml` or `pnpm-workspace.yaml` at the root), `wtk` then runs `pnpm install` inside the new worktree before reporting success.
-
-## Create base selection
-
-`wtk new` selects the base for the new branch by this precedence:
-
-1. `--base`
-2. `--from-current` / `-C`, which uses the branch checked out in the current worktree
-3. `git config worktree-kit.mainBranch`
-4. `origin/HEAD`
-5. one unambiguous local branch among `main`, `master`, `trunk`, `develop`
-
-Set an explicit default when needed:
-
-```bash
-git config worktree-kit.mainBranch trunk
-```
-
-## Completion
-
-```bash
-wtk completion bash > /usr/local/etc/bash_completion.d/wtk
-wtk completion zsh > "${fpath[1]}/_wtk"
-wtk completion fish > ~/.config/fish/completions/wtk.fish
-wtk completion powershell > wtk.ps1
-```
-
-## Failure behavior
-
-Dirty worktrees, malformed Auxiliary Group config or worktree state, missing generated refs, branch mismatches, ambiguous main branch detection, missing Git context, failed Git commands, ignored `.env` copy failures, and clipboard failures are reported directly. If Git succeeds and a later required step fails, `wtk` exits non-zero so the partial failure is visible.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for local development, verification, and release flow.
