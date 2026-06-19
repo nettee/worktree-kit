@@ -139,13 +139,12 @@ pub fn add_group(
         ));
     }
 
-    let effective_config = load_effective_config(primary_root, git_common_dir)?;
-    if effective_config.groups.contains_key(group_name) {
+    let mut config = load_repo_config(primary_root, git_common_dir)?;
+    if config.groups.contains_key(group_name) {
         return Err(Error::message(format!(
             "auxiliary group already exists: {group_name}"
         )));
     }
-    let mut config = load_repo_config(primary_root, git_common_dir)?;
 
     let mut seen_repositories = Vec::<PathBuf>::new();
     let mut seen_names = BTreeMap::<String, PathBuf>::new();

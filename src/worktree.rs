@@ -546,10 +546,8 @@ fn worktree_init_without_pnpm(
         snapshot_recursive_ignored_files(session, source_root, &copied_files.recursive)?;
     let exact_ignored_files =
         snapshot_exact_ignored_files(session, source_root, &copied_files.exact)?;
-    let ignored_files_to_copy = dedupe_snapshot_files(merge_snapshot_files(
-        &ignored_files,
-        &exact_ignored_files,
-    ));
+    let ignored_files_to_copy =
+        dedupe_snapshot_files(merge_snapshot_files(&ignored_files, &exact_ignored_files));
     print_copied_files(
         session,
         &copied_files,
@@ -948,10 +946,8 @@ pub fn send_out(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
             error
         )));
     }
-    let ignored_files_to_copy = dedupe_snapshot_files(merge_snapshot_files(
-        &ignored_files,
-        &exact_ignored_files,
-    ));
+    let ignored_files_to_copy =
+        dedupe_snapshot_files(merge_snapshot_files(&ignored_files, &exact_ignored_files));
     print_copied_files(
         session,
         &copied_files,
@@ -1826,6 +1822,9 @@ fn recursive_ignored_files(
     main_root: &Path,
     specs: &[RecursiveIgnoredFileSpec],
 ) -> AppResult<Vec<PathBuf>> {
+    if specs.is_empty() {
+        return Ok(Vec::new());
+    }
     let mut args = vec![
         "ls-files".to_string(),
         "--others".to_string(),
@@ -2028,8 +2027,10 @@ fn write_recursive_ignored_file_snapshot(
         ))
     })?;
     write_recursive_ignored_file_snapshot_marker(&snapshot_root)?;
-    let ignored_files =
-        dedupe_snapshot_files(merge_snapshot_files(recursive_ignored_files, exact_ignored_files));
+    let ignored_files = dedupe_snapshot_files(merge_snapshot_files(
+        recursive_ignored_files,
+        exact_ignored_files,
+    ));
     cleanup_recursive_ignored_file_snapshot_on_error(
         copy_snapshot_files(&ignored_files, &snapshot_root)
             .map_err(|error| {
@@ -2311,7 +2312,7 @@ mod tests {
     use std::io;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     struct FailingClipboard;
 
@@ -2505,5 +2506,17 @@ mod tests {
         assert!(should_run_pnpm_install(&pnpm_workspace));
 
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn recursive_ignored_files_short_circuits_when_specs_are_empty() {
+        let mut out = io::sink();
+        let mut clipboard = FailingClipboard;
+        let session = super::Session::new(PathBuf::from("."), &mut out, &mut clipboard, false);
+
+        let ignored = super::recursive_ignored_files(&session, Path::new("missing-directory"), &[])
+            .expect("empty recursive specs should not invoke git");
+
+        assert!(ignored.is_empty());
     }
 }
