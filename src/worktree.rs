@@ -6,7 +6,7 @@ use crate::output;
 use crate::paths::default_path;
 use crate::{AppResult, Error};
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
@@ -782,7 +782,7 @@ fn copy_recursive_ignored_files_for_init(
                     source_root,
                     &copied_files.exact,
                 )?);
-                ignored
+                dedupe_snapshot_files(ignored)
             },
             None,
         ),
@@ -2035,6 +2035,7 @@ fn write_recursive_ignored_file_snapshot(
     write_recursive_ignored_file_snapshot_marker(&snapshot_root)?;
     let mut ignored_files = recursive_ignored_files.to_vec();
     ignored_files.extend_from_slice(exact_ignored_files);
+    let ignored_files = dedupe_snapshot_files(ignored_files);
     cleanup_recursive_ignored_file_snapshot_on_error(
         copy_snapshot_files(&ignored_files, &snapshot_root)
             .map_err(|error| {
@@ -2047,6 +2048,17 @@ fn write_recursive_ignored_file_snapshot(
         &snapshot_root,
     )?;
     Ok(snapshot_root)
+}
+
+fn dedupe_snapshot_files(files: Vec<SnapshotFile>) -> Vec<SnapshotFile> {
+    let mut seen = BTreeSet::new();
+    let mut deduped = Vec::with_capacity(files.len());
+    for file in files {
+        if seen.insert(file.relative.clone()) {
+            deduped.push(file);
+        }
+    }
+    deduped
 }
 
 fn write_recursive_ignored_file_snapshot_marker(snapshot_root: &Path) -> AppResult<()> {

@@ -15,7 +15,7 @@ pub struct Config {
     pub auxiliaries: BTreeMap<String, AuxiliaryRefConfig>,
     #[serde(default, rename = "auxiliary-groups", alias = "groups")]
     pub groups: BTreeMap<String, AuxiliaryGroupConfig>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "CopyConfig::is_empty")]
     pub copy: CopyConfig,
 }
 
@@ -139,7 +139,7 @@ pub fn add_group(
         ));
     }
 
-    let mut config = load_effective_config(primary_root, git_common_dir)?;
+    let mut config = load_effective_config_for_write(primary_root, git_common_dir)?;
     if config.groups.contains_key(group_name) {
         return Err(Error::message(format!(
             "auxiliary group already exists: {group_name}"
@@ -341,7 +341,7 @@ pub fn remove_group(
 ) -> AppResult<()> {
     validate_name(group_name, "auxiliary group name")?;
 
-    let mut config = load_effective_config(primary_root, git_common_dir)?;
+    let mut config = load_effective_config_for_write(primary_root, git_common_dir)?;
     config
         .groups
         .remove(group_name)
@@ -695,6 +695,15 @@ pub fn load_effective_config(primary_root: &Path, git_common_dir: &Path) -> AppR
     Ok(config)
 }
 
+fn load_effective_config_for_write(
+    primary_root: &Path,
+    git_common_dir: &Path,
+) -> AppResult<Config> {
+    let mut config = load_effective_config(primary_root, git_common_dir)?;
+    config.copy = load_repo_config(primary_root, git_common_dir)?.copy;
+    Ok(config)
+}
+
 fn read_config(path: &Path) -> AppResult<Config> {
     let text = fs::read_to_string(path).map_err(|error| {
         Error::message(format!(
@@ -745,6 +754,20 @@ fn legacy_config_path(git_common_dir: &Path) -> PathBuf {
 
 fn primary_config_path(primary_root: &Path) -> PathBuf {
     primary_root.join(".wtk").join("config.toml")
+}
+
+fn load_repo_config(primary_root: &Path, git_common_dir: &Path) -> AppResult<Config> {
+    let primary = primary_config_path(primary_root);
+    if primary.exists() {
+        return read_config(&primary);
+    }
+
+    let legacy = legacy_config_path(git_common_dir);
+    if legacy.exists() {
+        return read_config(&legacy);
+    }
+
+    Ok(Config::default())
 }
 
 fn config_paths_in_precedence_order(primary_root: &Path, git_common_dir: &Path) -> Vec<PathBuf> {

@@ -864,6 +864,32 @@ auxiliaries = ["api"]
     assert "[groups.frontend]" not in legacy_config
 
 
+def test_auxiliary_group_add_does_not_persist_inherited_global_copy_config(
+    run_wtk, repo_factory, tmp_path
+) -> None:
+    primary = repo_factory.init_repo("primary")
+    api = repo_factory.init_repo("api")
+    home = tmp_path / "home"
+    (home / ".wtk").mkdir(parents=True)
+    (home / ".wtk" / "config.toml").write_text(
+        """
+[copy]
+recursive = [".env.local"]
+exact = ["specs/change/active"]
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    run_wtk("ag", "add", "backend", str(api), cwd=primary, env={"HOME": str(home)})
+
+    config_text = (primary / ".wtk" / "config.toml").read_text(encoding="utf-8")
+    assert "[auxiliary-groups.backend]" in config_text
+    assert "[auxiliaries.api]" in config_text
+    assert "[copy]" not in config_text
+    assert ".env.local" not in config_text
+    assert "specs/change/active" not in config_text
+
+
 def test_auxiliary_group_remove_migrates_legacy_config_and_installs_wtk_exclude(
     run_wtk, repo_factory
 ) -> None:

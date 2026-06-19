@@ -271,3 +271,47 @@ exact = []
     assert linked.joinpath(".env").read_text(encoding="utf-8") == "DEFAULT=value\n"
     assert not linked.joinpath(".env.local").exists()
     assert not linked.joinpath("specs/change/active").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires unix symlink semantics")
+def test_exact_copy_config_dedupes_recursive_symlink_snapshot(
+    run_wtk, repo_factory, tmp_path
+) -> None:
+    repo = repo_factory.init_repo("repo")
+    repo_factory.commit_files(
+        repo,
+        {
+            ".gitignore": "apps/web/.env\n",
+            "apps/web/keep.txt": "web\n",
+        },
+        "add duplicate snapshot fixture",
+    )
+
+    shared_env = tmp_path / "shared.env"
+    shared_env.write_text("WEB=value\n", encoding="utf-8")
+    os.symlink(shared_env, repo / "apps" / "web" / ".env")
+
+    home = tmp_path / "home"
+    (home / ".wtk").mkdir(parents=True)
+    (home / ".wtk" / "config.toml").write_text(
+        """
+[copy]
+exact = ["apps/web/.env"]
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    run_wtk(
+        "new",
+        "feature/deduped-symlink",
+        "--base",
+        "main",
+        "--no-clipboard",
+        cwd=repo,
+        env={"HOME": str(home)},
+    )
+    linked = linked_worktree_path(repo, "feature/deduped-symlink")
+    wait_until("deduped symlink copy", lambda: linked.joinpath("apps/web/.env").exists())
+
+    assert linked.joinpath("apps/web/.env").is_symlink()
+    assert linked.joinpath("apps/web/.env").resolve() == shared_env.resolve()
