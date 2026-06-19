@@ -1,13 +1,6 @@
 # User Guide
 
-This guide has two parts:
-
-- [Workflow guide](#workflow-guide) for the usual `wtk` flows.
-- [Command reference](#command-reference) for complete command forms and behavior notes.
-
-## Workflow guide
-
-### Installation and upgrades
+## Installation and upgrades
 
 Install the latest release:
 
@@ -34,6 +27,8 @@ Check the installed version:
 ```bash
 wtk --version
 ```
+
+## Common Workflows
 
 ### Creating and checking out worktrees
 
