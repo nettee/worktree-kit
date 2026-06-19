@@ -178,7 +178,7 @@ pub fn add_group(
                 )));
             }
         }
-        if let Some(existing) = effective_config.auxiliaries.get(&name) {
+        if let Some(existing) = config.auxiliaries.get(&name) {
             let existing_repo = resolve(git, &existing.repository)?;
             if !same_path(&existing_repo.main_root, &repo.main_root) {
                 return Err(Error::message(format!(
@@ -187,7 +187,7 @@ pub fn add_group(
                     repo.main_root.display()
                 )));
             }
-        } else if !config.auxiliaries.contains_key(&name) {
+        } else {
             config.auxiliaries.insert(
                 name.clone(),
                 AuxiliaryRefConfig {

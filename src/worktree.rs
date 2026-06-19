@@ -546,15 +546,14 @@ fn worktree_init_without_pnpm(
         snapshot_recursive_ignored_files(session, source_root, &copied_files.recursive)?;
     let exact_ignored_files =
         snapshot_exact_ignored_files(session, source_root, &copied_files.exact)?;
-    print_copied_recursive_ignored_files(
+    let ignored_files_to_copy = dedupe_snapshot_files(merge_snapshot_files(
+        &ignored_files,
+        &exact_ignored_files,
+    ));
+    print_copied_files(
         session,
-        &copied_files.recursive,
-        copy_snapshot_files(&ignored_files, worktree_path)?,
-    )?;
-    print_copied_ignored_files(
-        session,
-        "copied ignored file",
-        copy_snapshot_files(&exact_ignored_files, worktree_path)?,
+        &copied_files,
+        copy_snapshot_files(&ignored_files_to_copy, worktree_path)?,
     )
 }
 
@@ -949,19 +948,14 @@ pub fn send_out(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
             error
         )));
     }
-    print_copied_recursive_ignored_files(
+    let ignored_files_to_copy = dedupe_snapshot_files(merge_snapshot_files(
+        &ignored_files,
+        &exact_ignored_files,
+    ));
+    print_copied_files(
         session,
-        &copied_files.recursive,
-        copy_snapshot_files(&ignored_files, &path).map_err(|error| {
-            Error::message(format!(
-                "main worktree switched to {base} and linked worktree created, but ignored recursive file copy failed: {error}"
-            ))
-        })?,
-    )?;
-    print_copied_ignored_files(
-        session,
-        "copied ignored file",
-        copy_snapshot_files(&exact_ignored_files, &path).map_err(|error| {
+        &copied_files,
+        copy_snapshot_files(&ignored_files_to_copy, &path).map_err(|error| {
             Error::message(format!(
                 "main worktree switched to {base} and linked worktree created, but ignored file copy failed: {error}"
             ))
@@ -1679,20 +1673,27 @@ pub fn apply_send_out_worktree_init(
     worktree_path: &Path,
     init: &SendOutWorktreeInit,
 ) -> AppResult<()> {
-    print_copied_recursive_ignored_files(
+    let copied_files = copied_ignored_files(session, worktree_path)?;
+    let ignored_files_to_copy = dedupe_snapshot_files(merge_snapshot_files(
+        &init.recursive_ignored_files,
+        &init.exact_ignored_files,
+    ));
+    print_copied_files(
         session,
-        &copied_ignored_files(session, worktree_path)?.recursive,
-        copy_snapshot_files(&init.recursive_ignored_files, worktree_path).map_err(|error| {
-            Error::message(format!("ignored recursive file copy failed: {error}"))
-        })?,
-    )?;
-    print_copied_ignored_files(
-        session,
-        "copied ignored file",
-        copy_snapshot_files(&init.exact_ignored_files, worktree_path)
+        &copied_files,
+        copy_snapshot_files(&ignored_files_to_copy, worktree_path)
             .map_err(|error| Error::message(format!("ignored file copy failed: {error}")))?,
     )?;
     Ok(())
+}
+
+fn merge_snapshot_files(
+    recursive_ignored_files: &[SnapshotFile],
+    exact_ignored_files: &[SnapshotFile],
+) -> Vec<SnapshotFile> {
+    let mut ignored_files = recursive_ignored_files.to_vec();
+    ignored_files.extend_from_slice(exact_ignored_files);
+    ignored_files
 }
 
 fn snapshot_ignored_exact_file(
@@ -2027,9 +2028,8 @@ fn write_recursive_ignored_file_snapshot(
         ))
     })?;
     write_recursive_ignored_file_snapshot_marker(&snapshot_root)?;
-    let mut ignored_files = recursive_ignored_files.to_vec();
-    ignored_files.extend_from_slice(exact_ignored_files);
-    let ignored_files = dedupe_snapshot_files(ignored_files);
+    let ignored_files =
+        dedupe_snapshot_files(merge_snapshot_files(recursive_ignored_files, exact_ignored_files));
     cleanup_recursive_ignored_file_snapshot_on_error(
         copy_snapshot_files(&ignored_files, &snapshot_root)
             .map_err(|error| {

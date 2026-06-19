@@ -890,6 +890,34 @@ exact = ["specs/change/active"]
     assert "specs/change/active" not in config_text
 
 
+def test_auxiliary_group_add_allows_local_auxiliary_refs_to_shadow_global(
+    run_wtk, repo_factory, tmp_path
+) -> None:
+    primary = repo_factory.init_repo("primary")
+    (repo_factory.root / "global").mkdir()
+    (repo_factory.root / "local").mkdir()
+    global_api = repo_factory.init_repo("global/api")
+    local_api = repo_factory.init_repo("local/api")
+    home = tmp_path / "home"
+    (home / ".wtk").mkdir(parents=True)
+    (home / ".wtk" / "config.toml").write_text(
+        f"""
+[auxiliaries.api]
+repository = "{global_api.resolve()}"
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    run_wtk("ag", "add", "backend", str(local_api), cwd=primary, env={"HOME": str(home)})
+
+    config_text = (primary / ".wtk" / "config.toml").read_text(encoding="utf-8")
+    assert "[auxiliaries.api]" in config_text
+    assert f'repository = "{local_api.resolve()}"' in config_text
+    assert f'repository = "{global_api.resolve()}"' not in config_text
+    listed = run_wtk("ag", "list", cwd=primary, env={"HOME": str(home)}).stdout
+    assert f"  api: {local_api.resolve()}" in listed
+
+
 def test_auxiliary_group_remove_does_not_persist_inherited_global_groups(
     run_wtk, repo_factory, tmp_path
 ) -> None:
