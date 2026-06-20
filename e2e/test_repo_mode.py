@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
-
+import os
 import time
+
+import pytest
 
 from conftest import linked_worktree_path, parse_yaml, run_git
 
@@ -36,6 +38,93 @@ def test_repo_mode_create_remove_send_out_bring_in_and_completion(run_wtk, repo_
 
     for shell in ["bash", "zsh", "fish", "powershell"]:
         assert "wtk" in run_wtk("completion", shell, cwd=repo).stdout
+
+
+def test_send_out_copies_configured_exact_files(run_wtk, repo_factory) -> None:
+    repo = repo_factory.init_repo("repo")
+    repo_factory.commit_files(
+        repo,
+        {
+            ".gitignore": "specs/change/active\n",
+            ".wtk/config.toml": """
+[copy]
+recursive = []
+exact = ["specs/change/active"]
+""".lstrip(),
+        },
+        "configure exact copy",
+    )
+    (repo / "specs" / "change").mkdir(parents=True)
+    (repo / "specs" / "change" / "active").write_text("ACTIVE\n", encoding="utf-8")
+    run_git(repo, "switch", "-c", "feature/send-spec")
+
+    out = run_wtk("send-out", "--no-clipboard", cwd=repo).output
+    linked = linked_worktree_path(repo, "feature/send-spec")
+
+    assert linked.joinpath("specs/change/active").read_text(encoding="utf-8") == "ACTIVE\n"
+    assert "copied ignored file: specs/change/active" in out
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires unix symlink semantics")
+def test_send_out_dedupes_recursive_and_exact_symlink_copy(
+    run_wtk, repo_factory, tmp_path
+) -> None:
+    repo = repo_factory.init_repo("repo")
+    repo_factory.commit_files(
+        repo,
+        {
+            ".gitignore": "apps/web/.env\n",
+            ".wtk/config.toml": """
+[copy]
+exact = ["apps/web/.env"]
+""".lstrip(),
+            "apps/web/keep.txt": "web\n",
+        },
+        "configure duplicate send-out copy",
+    )
+
+    shared_env = tmp_path / "shared.env"
+    shared_env.write_text("WEB=value\n", encoding="utf-8")
+    os.symlink(shared_env, repo / "apps" / "web" / ".env")
+    run_git(repo, "switch", "-c", "feature/deduped-send-out")
+
+    out = run_wtk("send-out", "--no-clipboard", cwd=repo).output
+    linked = linked_worktree_path(repo, "feature/deduped-send-out")
+
+    assert linked.joinpath("apps/web/.env").is_symlink()
+    assert linked.joinpath("apps/web/.env").resolve() == shared_env.resolve()
+    assert out.count("apps/web/.env") == 1
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires unix symlink semantics")
+def test_checkout_dedupes_recursive_and_exact_symlink_copy(
+    run_wtk, repo_factory, tmp_path
+) -> None:
+    repo = repo_factory.init_repo("repo")
+    repo_factory.commit_files(
+        repo,
+        {
+            ".gitignore": "apps/web/.env\n",
+            ".wtk/config.toml": """
+[copy]
+exact = ["apps/web/.env"]
+""".lstrip(),
+            "apps/web/keep.txt": "web\n",
+        },
+        "configure duplicate checkout copy",
+    )
+
+    shared_env = tmp_path / "shared.env"
+    shared_env.write_text("WEB=value\n", encoding="utf-8")
+    os.symlink(shared_env, repo / "apps" / "web" / ".env")
+
+    run_git(repo, "branch", "feature/deduped-checkout")
+    out = run_wtk("checkout", "feature/deduped-checkout", "--no-clipboard", cwd=repo).output
+    linked = linked_worktree_path(repo, "feature/deduped-checkout")
+
+    assert linked.joinpath("apps/web/.env").is_symlink()
+    assert linked.joinpath("apps/web/.env").resolve() == shared_env.resolve()
+    assert out.count("apps/web/.env") == 1
 
 
 def test_repo_mode_status_and_list_readable(run_wtk, repo_factory) -> None:

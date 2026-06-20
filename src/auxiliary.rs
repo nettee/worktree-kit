@@ -15,6 +15,16 @@ pub struct Config {
     pub auxiliaries: BTreeMap<String, AuxiliaryRefConfig>,
     #[serde(default, rename = "auxiliary-groups", alias = "groups")]
     pub groups: BTreeMap<String, AuxiliaryGroupConfig>,
+    #[serde(default, skip_serializing_if = "CopyConfig::is_empty")]
+    pub copy: CopyConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CopyConfig {
+    #[serde(default)]
+    pub recursive: Option<Vec<String>>,
+    #[serde(default)]
+    pub exact: Option<Vec<PathBuf>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,6 +98,33 @@ pub struct AuxiliaryRefStatus {
     pub current_target: PathBuf,
 }
 
+impl Config {
+    fn merge_from(&mut self, other: Config) {
+        self.auxiliaries.extend(other.auxiliaries);
+        self.groups.extend(other.groups);
+        self.copy.merge_from(other.copy);
+    }
+
+    fn is_empty(&self) -> bool {
+        self.auxiliaries.is_empty() && self.groups.is_empty() && self.copy.is_empty()
+    }
+}
+
+impl CopyConfig {
+    fn merge_from(&mut self, other: CopyConfig) {
+        if other.recursive.is_some() {
+            self.recursive = other.recursive;
+        }
+        if other.exact.is_some() {
+            self.exact = other.exact;
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.recursive.is_none() && self.exact.is_none()
+    }
+}
+
 pub fn add_group(
     git: &Git,
     primary_root: &Path,
@@ -102,8 +139,7 @@ pub fn add_group(
         ));
     }
 
-    let config_path = read_config_path(primary_root, git_common_dir);
-    let mut config = read_config_or_default(&config_path)?;
+    let mut config = load_repo_config(primary_root, git_common_dir)?;
     if config.groups.contains_key(group_name) {
         return Err(Error::message(format!(
             "auxiliary group already exists: {group_name}"
@@ -182,8 +218,7 @@ pub fn expand_groups(
     if group_names.is_empty() {
         return Ok(Vec::new());
     }
-    let config_path = read_config_path(primary_root, git_common_dir);
-    let config = read_config(&config_path)?;
+    let config = load_effective_config(primary_root, git_common_dir)?;
     let mut selected_group_names = BTreeSet::new();
     let mut by_repository = Vec::<AuxiliarySelection>::new();
     let mut by_name = BTreeMap::<String, PathBuf>::new();
@@ -251,8 +286,7 @@ pub fn list_groups(
     primary_root: &Path,
     git_common_dir: &Path,
 ) -> AppResult<Vec<AuxiliaryGroupListing>> {
-    let config_path = read_config_path(primary_root, git_common_dir);
-    let config = read_config_or_default(&config_path)?;
+    let config = load_effective_config(primary_root, git_common_dir)?;
     let mut groups = Vec::new();
 
     for (group_name, group) in &config.groups {
@@ -307,8 +341,7 @@ pub fn remove_group(
 ) -> AppResult<()> {
     validate_name(group_name, "auxiliary group name")?;
 
-    let config_path = read_config_path(primary_root, git_common_dir);
-    let mut config = read_config_or_default(&config_path)?;
+    let mut config = load_repo_config(primary_root, git_common_dir)?;
     config
         .groups
         .remove(group_name)
@@ -552,7 +585,9 @@ pub fn install_ref_excludes(
 }
 
 fn install_generated_excludes(git: &Git, primary_worktree: &Path) -> AppResult<()> {
-    let exclude_path = common_git_dir(git, primary_worktree)?.join("info").join("exclude");
+    let exclude_path = common_git_dir(git, primary_worktree)?
+        .join("info")
+        .join("exclude");
     if let Some(parent) = exclude_path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -650,21 +685,14 @@ pub fn state_path(primary_root: &Path, git_common_dir: &Path) -> PathBuf {
     }
 }
 
-fn read_config_path(primary_root: &Path, git_common_dir: &Path) -> PathBuf {
-    let primary = primary_config_path(primary_root);
-    if primary.exists() {
-        primary
-    } else {
-        legacy_config_path(git_common_dir)
+pub fn load_effective_config(primary_root: &Path, git_common_dir: &Path) -> AppResult<Config> {
+    let mut config = Config::default();
+    for path in config_paths_in_precedence_order(primary_root, git_common_dir) {
+        if path.exists() {
+            config.merge_from(read_config(&path)?);
+        }
     }
-}
-
-fn read_config_or_default(path: &Path) -> AppResult<Config> {
-    if path.exists() {
-        read_config(path)
-    } else {
-        Ok(Config::default())
-    }
+    Ok(config)
 }
 
 fn read_config(path: &Path) -> AppResult<Config> {
@@ -688,7 +716,7 @@ fn write_config(path: &Path, config: &Config) -> AppResult<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let text = if config.auxiliaries.is_empty() && config.groups.is_empty() {
+    let text = if config.is_empty() {
         String::new()
     } else {
         toml::to_string_pretty(config)
@@ -717,6 +745,62 @@ fn legacy_config_path(git_common_dir: &Path) -> PathBuf {
 
 fn primary_config_path(primary_root: &Path) -> PathBuf {
     primary_root.join(".wtk").join("config.toml")
+}
+
+fn load_repo_config(primary_root: &Path, git_common_dir: &Path) -> AppResult<Config> {
+    let primary = primary_config_path(primary_root);
+    if primary.exists() {
+        return read_config(&primary);
+    }
+
+    let legacy = legacy_config_path(git_common_dir);
+    if legacy.exists() {
+        return read_config(&legacy);
+    }
+
+    Ok(Config::default())
+}
+
+fn config_paths_in_precedence_order(primary_root: &Path, git_common_dir: &Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    let legacy = legacy_config_path(git_common_dir);
+    let global = global_config_path();
+    let primary = primary_config_path(primary_root);
+
+    if !primary.exists() && legacy.exists() {
+        paths.push(legacy);
+    }
+    if let Some(global) = global {
+        paths.push(global);
+    }
+    if primary.exists() {
+        paths.push(primary);
+    }
+
+    paths
+}
+
+fn global_config_path() -> Option<PathBuf> {
+    home_dir().map(|home| home.join(".wtk").join("config.toml"))
+}
+
+fn home_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("USERPROFILE")
+            .map(PathBuf::from)
+            .or_else(|| {
+                let drive = std::env::var_os("HOMEDRIVE")?;
+                let path = std::env::var_os("HOMEPATH")?;
+                let mut home = PathBuf::from(drive);
+                home.push(path);
+                Some(home)
+            })
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var_os("HOME").map(PathBuf::from)
+    }
 }
 
 fn require_absolute(path: &Path, label: &str) -> AppResult<PathBuf> {

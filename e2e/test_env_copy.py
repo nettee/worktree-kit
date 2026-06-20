@@ -167,3 +167,151 @@ def test_similarly_named_tfvars_files_are_not_copied(run_wtk, repo_factory) -> N
     linked = linked_worktree_path(repo, "feature/named-tfvars")
     assert not linked.joinpath("secrets.auto.tfvars.json").exists()
     assert not linked.joinpath("config/secrets.auto.tfvars.tpl").exists()
+
+
+def test_global_copy_config_controls_recursive_and_exact_files(
+    run_wtk, repo_factory, tmp_path
+) -> None:
+    repo = repo_factory.init_repo("repo")
+    repo_factory.commit_files(
+        repo,
+        {
+            ".gitignore": ".env\n.env.local\nnotes/secret.txt\n",
+            "notes/keep.txt": "keep\n",
+        },
+        "add copy config fixtures",
+    )
+    (repo / ".env").write_text("DEFAULT=value\n", encoding="utf-8")
+    (repo / ".env.local").write_text("LOCAL=value\n", encoding="utf-8")
+    (repo / "notes" / "secret.txt").write_text("SECRET=value\n", encoding="utf-8")
+
+    home = tmp_path / "home"
+    (home / ".wtk").mkdir(parents=True)
+    (home / ".wtk" / "config.toml").write_text(
+        """
+[copy]
+recursive = [".env.local"]
+exact = ["notes/secret.txt"]
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    run_wtk(
+        "new",
+        "feature/global-config",
+        "--base",
+        "main",
+        "--no-clipboard",
+        cwd=repo,
+        env={"HOME": str(home)},
+    )
+    linked = linked_worktree_path(repo, "feature/global-config")
+    wait_until(
+        "global-config copied files",
+        lambda: linked.joinpath(".env.local").exists()
+        and linked.joinpath("notes/secret.txt").exists(),
+    )
+
+    assert not linked.joinpath(".env").exists()
+    assert linked.joinpath(".env.local").read_text(encoding="utf-8") == "LOCAL=value\n"
+    assert (
+        linked.joinpath("notes/secret.txt").read_text(encoding="utf-8")
+        == "SECRET=value\n"
+    )
+
+
+def test_repo_local_copy_config_overrides_global_copy_config(
+    run_wtk, repo_factory, tmp_path
+) -> None:
+    repo = repo_factory.init_repo("repo")
+    repo_factory.commit_files(
+        repo,
+        {
+            ".gitignore": ".env\n.env.local\nspecs/change/active\n",
+        },
+        "add override fixtures",
+    )
+    (repo / ".env").write_text("DEFAULT=value\n", encoding="utf-8")
+    (repo / ".env.local").write_text("GLOBAL=value\n", encoding="utf-8")
+    (repo / "specs" / "change").mkdir(parents=True)
+    (repo / "specs" / "change" / "active").write_text("ACTIVE\n", encoding="utf-8")
+
+    home = tmp_path / "home"
+    (home / ".wtk").mkdir(parents=True)
+    (home / ".wtk" / "config.toml").write_text(
+        """
+[copy]
+recursive = [".env.local"]
+exact = ["specs/change/active"]
+""".lstrip(),
+        encoding="utf-8",
+    )
+    (repo / ".wtk").mkdir()
+    (repo / ".wtk" / "config.toml").write_text(
+        """
+[copy]
+recursive = [".env"]
+exact = []
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    run_wtk(
+        "new",
+        "feature/local-override",
+        "--base",
+        "main",
+        "--no-clipboard",
+        cwd=repo,
+        env={"HOME": str(home)},
+    )
+    linked = linked_worktree_path(repo, "feature/local-override")
+    wait_until("local override recursive copy", lambda: linked.joinpath(".env").exists())
+
+    assert linked.joinpath(".env").read_text(encoding="utf-8") == "DEFAULT=value\n"
+    assert not linked.joinpath(".env.local").exists()
+    assert not linked.joinpath("specs/change/active").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires unix symlink semantics")
+def test_exact_copy_config_dedupes_recursive_symlink_snapshot(
+    run_wtk, repo_factory, tmp_path
+) -> None:
+    repo = repo_factory.init_repo("repo")
+    repo_factory.commit_files(
+        repo,
+        {
+            ".gitignore": "apps/web/.env\n",
+            "apps/web/keep.txt": "web\n",
+        },
+        "add duplicate snapshot fixture",
+    )
+
+    shared_env = tmp_path / "shared.env"
+    shared_env.write_text("WEB=value\n", encoding="utf-8")
+    os.symlink(shared_env, repo / "apps" / "web" / ".env")
+
+    home = tmp_path / "home"
+    (home / ".wtk").mkdir(parents=True)
+    (home / ".wtk" / "config.toml").write_text(
+        """
+[copy]
+exact = ["apps/web/.env"]
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    run_wtk(
+        "new",
+        "feature/deduped-symlink",
+        "--base",
+        "main",
+        "--no-clipboard",
+        cwd=repo,
+        env={"HOME": str(home)},
+    )
+    linked = linked_worktree_path(repo, "feature/deduped-symlink")
+    wait_until("deduped symlink copy", lambda: linked.joinpath("apps/web/.env").exists())
+
+    assert linked.joinpath("apps/web/.env").is_symlink()
+    assert linked.joinpath("apps/web/.env").resolve() == shared_env.resolve()

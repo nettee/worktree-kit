@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+
+import pytest
 
 from conftest import git_common_dir, linked_worktree_path, parse_yaml, run_git
 
@@ -376,6 +379,46 @@ def test_auxiliary_group_new_from_current_uses_primary_branch(run_wtk, repo_fact
     assert (primary_linked / "primary-release.txt").read_text(encoding="utf-8") == "primary release\n"
     assert (api_linked / "api-release.txt").read_text(encoding="utf-8") == "api release\n"
     assert run_git(api_linked, "branch", "--show-current").stdout.strip() == "feature/aux"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires unix symlink semantics")
+def test_auxiliary_group_new_dedupes_primary_recursive_and_exact_symlink_copy(
+    run_wtk, repo_factory, tmp_path
+) -> None:
+    primary = repo_factory.init_repo("primary")
+    api = repo_factory.init_repo("api")
+    repo_factory.commit_files(
+        primary,
+        {
+            ".gitignore": "apps/web/.env\n",
+            ".wtk/config.toml": """
+[copy]
+exact = ["apps/web/.env"]
+""".lstrip(),
+            "apps/web/keep.txt": "web\n",
+        },
+        "configure duplicate coordinated copy",
+    )
+    run_wtk("ag", "add", "backend", str(api), cwd=primary)
+
+    shared_env = tmp_path / "shared.env"
+    shared_env.write_text("WEB=value\n", encoding="utf-8")
+    os.symlink(shared_env, primary / "apps" / "web" / ".env")
+
+    out = run_wtk(
+        "new",
+        "feature/aux-deduped",
+        "--ag",
+        "backend",
+        "--from-current",
+        "--no-clipboard",
+        cwd=primary,
+    ).output
+    primary_linked = linked_worktree_path(primary, "feature/aux-deduped")
+
+    assert primary_linked.joinpath("apps/web/.env").is_symlink()
+    assert primary_linked.joinpath("apps/web/.env").resolve() == shared_env.resolve()
+    assert out.count("apps/web/.env") == 1
 
 
 def test_auxiliary_group_new_rejects_base_with_from_current(run_wtk, repo_factory) -> None:
@@ -862,6 +905,120 @@ auxiliaries = ["api"]
     assert "[auxiliary-groups.frontend]" in primary_config
     assert "[auxiliaries.web]" in primary_config
     assert "[groups.frontend]" not in legacy_config
+
+
+def test_auxiliary_group_add_does_not_persist_inherited_global_copy_config(
+    run_wtk, repo_factory, tmp_path
+) -> None:
+    primary = repo_factory.init_repo("primary")
+    api = repo_factory.init_repo("api")
+    home = tmp_path / "home"
+    (home / ".wtk").mkdir(parents=True)
+    (home / ".wtk" / "config.toml").write_text(
+        """
+[copy]
+recursive = [".env.local"]
+exact = ["specs/change/active"]
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    run_wtk("ag", "add", "backend", str(api), cwd=primary, env={"HOME": str(home)})
+
+    config_text = (primary / ".wtk" / "config.toml").read_text(encoding="utf-8")
+    assert "[auxiliary-groups.backend]" in config_text
+    assert "[auxiliaries.api]" in config_text
+    assert "[copy]" not in config_text
+    assert ".env.local" not in config_text
+    assert "specs/change/active" not in config_text
+
+
+def test_auxiliary_group_add_allows_local_auxiliary_refs_to_shadow_global(
+    run_wtk, repo_factory, tmp_path
+) -> None:
+    primary = repo_factory.init_repo("primary")
+    (repo_factory.root / "global").mkdir()
+    (repo_factory.root / "local").mkdir()
+    global_api = repo_factory.init_repo("global/api")
+    local_api = repo_factory.init_repo("local/api")
+    home = tmp_path / "home"
+    (home / ".wtk").mkdir(parents=True)
+    (home / ".wtk" / "config.toml").write_text(
+        f"""
+[auxiliaries.api]
+repository = "{global_api.resolve()}"
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    run_wtk("ag", "add", "backend", str(local_api), cwd=primary, env={"HOME": str(home)})
+
+    config_text = (primary / ".wtk" / "config.toml").read_text(encoding="utf-8")
+    assert "[auxiliaries.api]" in config_text
+    assert f'repository = "{local_api.resolve()}"' in config_text
+    assert f'repository = "{global_api.resolve()}"' not in config_text
+    listed = run_wtk("ag", "list", cwd=primary, env={"HOME": str(home)}).stdout
+    assert f"  api: {local_api.resolve()}" in listed
+
+
+def test_auxiliary_group_add_allows_local_groups_to_shadow_global(
+    run_wtk, repo_factory, tmp_path
+) -> None:
+    primary = repo_factory.init_repo("primary")
+    (repo_factory.root / "global").mkdir()
+    (repo_factory.root / "local").mkdir()
+    global_api = repo_factory.init_repo("global/api")
+    local_api = repo_factory.init_repo("local/api")
+    home = tmp_path / "home"
+    (home / ".wtk").mkdir(parents=True)
+    (home / ".wtk" / "config.toml").write_text(
+        f"""
+[auxiliaries.api]
+repository = "{global_api.resolve()}"
+
+[auxiliary-groups.backend]
+auxiliaries = ["api"]
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    run_wtk("ag", "add", "backend", str(local_api), cwd=primary, env={"HOME": str(home)})
+
+    config_text = (primary / ".wtk" / "config.toml").read_text(encoding="utf-8")
+    assert "[auxiliary-groups.backend]" in config_text
+    assert "[auxiliaries.api]" in config_text
+    assert f'repository = "{local_api.resolve()}"' in config_text
+    assert f'repository = "{global_api.resolve()}"' not in config_text
+    listed = run_wtk("ag", "list", cwd=primary, env={"HOME": str(home)}).stdout
+    assert "backend:" in listed
+    assert f"  api: {local_api.resolve()}" in listed
+
+
+def test_auxiliary_group_remove_does_not_persist_inherited_global_groups(
+    run_wtk, repo_factory, tmp_path
+) -> None:
+    primary = repo_factory.init_repo("primary")
+    api = repo_factory.init_repo("api")
+    web = repo_factory.init_repo("web")
+    home = tmp_path / "home"
+    (home / ".wtk").mkdir(parents=True)
+    (home / ".wtk" / "config.toml").write_text(
+        f"""
+[auxiliaries.api]
+repository = "{api.resolve()}"
+
+[auxiliary-groups.backend]
+auxiliaries = ["api"]
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    run_wtk("ag", "add", "frontend", str(web), cwd=primary, env={"HOME": str(home)})
+    run_wtk("ag", "remove", "frontend", cwd=primary, env={"HOME": str(home)})
+
+    config_text = (primary / ".wtk" / "config.toml").read_text(encoding="utf-8")
+    assert "[auxiliary-groups.backend]" not in config_text
+    assert f'repository = "{api.resolve()}"' not in config_text
 
 
 def test_auxiliary_group_remove_migrates_legacy_config_and_installs_wtk_exclude(
