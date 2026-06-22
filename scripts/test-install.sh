@@ -58,7 +58,7 @@ assert_contains "$output" "Installed wtk at $install_dir/wtk"
 assert_contains "$output" "Created WTK config at $home_dir/.wtk/config.toml"
 assert_contains "$output" "Add $install_dir to PATH:"
 assert_contains "$output" "Shell completion examples:"
-assert_contains "$(cat "$home_dir/.wtk/config.toml")" "recursive = [\".env\", \"secrets.auto.tfvars\"]"
+[ ! -s "$home_dir/.wtk/config.toml" ] || fail "installer should create an empty global WTK config"
 
 printf 'custom config\n' >"$home_dir/.wtk/config.toml"
 

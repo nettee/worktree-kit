@@ -46,7 +46,7 @@ assert_contains "$version_output" "built="
 assert_contains "$output" "Installed wtk at $install_dir/wtk"
 assert_contains "$output" "Created WTK config at $home_dir/.wtk/config.toml"
 assert_contains "$output" "Version:"
-assert_contains "$(cat "$home_dir/.wtk/config.toml")" "exact = [\"specs/change/active\"]"
+[ ! -s "$home_dir/.wtk/config.toml" ] || fail "local installer should create an empty global WTK config"
 
 printf 'custom config\n' >"$home_dir/.wtk/config.toml"
 

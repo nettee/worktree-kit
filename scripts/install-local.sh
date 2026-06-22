@@ -32,11 +32,7 @@ install_global_config() {
     return 0
   fi
 
-  cat >"$config_path" <<'EOF' || fail "failed to create WTK config: $config_path"
-[copy]
-recursive = [".env", "secrets.auto.tfvars"]
-exact = ["specs/change/active"]
-EOF
+  : >"$config_path" || fail "failed to create WTK config: $config_path"
   info "Created WTK config at $config_path"
 }
 
@@ -50,8 +46,6 @@ require_command date
 require_command mkdir
 require_command chmod
 require_command cp
-require_command cat
-
 install_dir=${WTK_INSTALL_DIR:-$(default_install_dir)}
 [ -n "$install_dir" ] || fail 'WTK_INSTALL_DIR must not be empty'
 
