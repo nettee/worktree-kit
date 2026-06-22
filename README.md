@@ -55,7 +55,7 @@ wtk new feature/login
 wtk checkout feature/existing
 ```
 
-By default, `wtk` creates sibling worktree directories named like `<repo>-wt-<branch-slug>`. It also copies ignored local config and secret files that usually need to exist before the worktree is usable, and it runs `pnpm install` for pnpm repositories. Copy behavior can be customized in repo-local `.wtk/config.toml` or global `~/.wtk/config.toml`.
+By default, `wtk` creates sibling worktree directories named like `<repo>-wt-<branch-slug>`. It also copies ignored local config files that usually need to exist before the worktree is usable, including `.env` files by exact name and ignored descendants under `.agents/`, and it runs `pnpm install` for pnpm repositories. Copy behavior can be customized in repo-local `.wtk/config.toml` or global `~/.wtk/config.toml`.
 
 ### Move work out after you already started
 

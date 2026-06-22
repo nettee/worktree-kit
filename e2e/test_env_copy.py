@@ -34,7 +34,9 @@ def test_root_and_nested_ignored_env_files_copy(run_wtk, repo_factory) -> None:
     assert "initializing worktree asynchronously" in out
 
 
-def test_root_and_nested_ignored_secrets_auto_tfvars_copy(run_wtk, repo_factory) -> None:
+def test_root_and_nested_ignored_secrets_auto_tfvars_copy(
+    run_wtk, repo_factory, tmp_path
+) -> None:
     repo = repo_factory.init_repo("repo")
     repo_factory.commit_files(
         repo,
@@ -52,8 +54,26 @@ def test_root_and_nested_ignored_secrets_auto_tfvars_copy(run_wtk, repo_factory)
     (repo / "services" / "api" / "secrets.auto.tfvars").write_text(
         'api_secret = "API"\n', encoding="utf-8"
     )
+    home = tmp_path / "home"
+    (home / ".wtk").mkdir(parents=True)
+    (home / ".wtk" / "config.toml").write_text(
+        """
+[copy]
+recursive = ["secrets.auto.tfvars"]
+exact = []
+""".lstrip(),
+        encoding="utf-8",
+    )
 
-    out = run_wtk("new", "feature/tfvars", "--base", "main", "--no-clipboard", cwd=repo).output
+    out = run_wtk(
+        "new",
+        "feature/tfvars",
+        "--base",
+        "main",
+        "--no-clipboard",
+        cwd=repo,
+        env={"HOME": str(home)},
+    ).output
     linked = linked_worktree_path(repo, "feature/tfvars")
     wait_until(
         "copied tfvars files",
@@ -218,6 +238,91 @@ exact = ["notes/secret.txt"]
         linked.joinpath("notes/secret.txt").read_text(encoding="utf-8")
         == "SECRET=value\n"
     )
+
+
+def test_default_exact_agents_directory_skips_missing_directory(
+    run_wtk, repo_factory
+) -> None:
+    repo = repo_factory.init_repo("repo")
+    repo_factory.commit_files(repo, {".gitignore": ".env\n"}, "ignore env only")
+
+    out = run_wtk("new", "feature/missing-agents", "--base", "main", "--no-clipboard", cwd=repo).output
+    linked = linked_worktree_path(repo, "feature/missing-agents")
+
+    assert linked.exists()
+    assert not linked.joinpath(".agents").exists()
+    assert "copied ignored file:" not in out
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires unix symlink semantics")
+def test_default_exact_agents_directory_copies_ignored_files_and_symlinks(
+    run_wtk, repo_factory, tmp_path
+) -> None:
+    repo = repo_factory.init_repo("repo")
+    repo_factory.commit_files(
+        repo,
+        {
+            ".gitignore": ".agents/\n",
+        },
+        "ignore agents directory",
+    )
+    (repo / ".agents").mkdir()
+    (repo / ".agents" / "instructions.md").write_text("LOCAL=1\n", encoding="utf-8")
+    shared = tmp_path / "shared-agents.txt"
+    shared.write_text("SHARED=1\n", encoding="utf-8")
+    os.symlink(shared, repo / ".agents" / "shared.txt")
+
+    out = run_wtk("new", "feature/agents-dir", "--base", "main", "--no-clipboard", cwd=repo).output
+    linked = linked_worktree_path(repo, "feature/agents-dir")
+    wait_until(
+        "agents directory copied",
+        lambda: linked.joinpath(".agents/instructions.md").exists()
+        and linked.joinpath(".agents/shared.txt").exists(),
+    )
+
+    assert linked.joinpath(".agents/instructions.md").read_text(encoding="utf-8") == "LOCAL=1\n"
+    assert linked.joinpath(".agents/shared.txt").is_symlink()
+    assert linked.joinpath(".agents/shared.txt").resolve() == shared.resolve()
+    assert "initializing worktree asynchronously" in out
+
+
+def test_default_exact_agents_directory_only_copies_ignored_descendants(
+    run_wtk, repo_factory
+) -> None:
+    repo = repo_factory.init_repo("repo")
+    repo_factory.commit_files(
+        repo,
+        {
+            ".gitignore": ".agents/local.md\n.agents/nested/\n",
+            ".agents/tracked.md": "TRACKED=1\n",
+            ".agents/committed.txt": "COMMITTED=1\n",
+        },
+        "add partially tracked agents directory",
+    )
+    (repo / ".agents" / "tracked.md").write_text("MODIFIED=1\n", encoding="utf-8")
+    (repo / ".agents" / "local.md").write_text("LOCAL=1\n", encoding="utf-8")
+    (repo / ".agents" / "nested").mkdir()
+    (repo / ".agents" / "nested" / "private.txt").write_text("PRIVATE=1\n", encoding="utf-8")
+
+    out = run_wtk("new", "feature/agents-partial", "--base", "main", "--no-clipboard", cwd=repo).output
+    linked = linked_worktree_path(repo, "feature/agents-partial")
+    wait_until(
+        "partial agents directory copied",
+        lambda: linked.joinpath(".agents/local.md").exists()
+        and linked.joinpath(".agents/nested/private.txt").exists(),
+    )
+
+    assert linked.joinpath(".agents/local.md").read_text(encoding="utf-8") == "LOCAL=1\n"
+    assert (
+        linked.joinpath(".agents/nested/private.txt").read_text(encoding="utf-8")
+        == "PRIVATE=1\n"
+    )
+    assert linked.joinpath(".agents/tracked.md").read_text(encoding="utf-8") == "TRACKED=1\n"
+    assert (
+        linked.joinpath(".agents/committed.txt").read_text(encoding="utf-8")
+        == "COMMITTED=1\n"
+    )
+    assert "initializing worktree asynchronously" in out
 
 
 def test_repo_local_copy_config_overrides_global_copy_config(

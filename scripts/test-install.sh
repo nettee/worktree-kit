@@ -58,7 +58,15 @@ assert_contains "$output" "Installed wtk at $install_dir/wtk"
 assert_contains "$output" "Created WTK config at $home_dir/.wtk/config.toml"
 assert_contains "$output" "Add $install_dir to PATH:"
 assert_contains "$output" "Shell completion examples:"
-[ ! -s "$home_dir/.wtk/config.toml" ] || fail "installer should create an empty global WTK config"
+cat >"$tmpdir/expected-config.toml" <<'EOF'
+[copy]
+# Recursively copy ignored files with these exact file names from the main worktree.
+recursive = [".env"]
+
+# Copy ignored files at these exact Git-root-relative paths.
+exact = [".agents"]
+EOF
+cmp -s "$home_dir/.wtk/config.toml" "$tmpdir/expected-config.toml" || fail "installer should create the default global WTK config template"
 
 printf 'custom config\n' >"$home_dir/.wtk/config.toml"
 
