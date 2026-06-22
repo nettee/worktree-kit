@@ -3,6 +3,13 @@ set -eu
 
 APP_NAME="wtk"
 DEFAULT_REPO="nettee/worktree-kit"
+DEFAULT_CONFIG_TEMPLATE='[copy]
+# Recursively copy ignored files with these exact file names from the main worktree.
+recursive = [".env"]
+
+# Copy ignored files at these exact Git-root-relative paths.
+exact = [".agents"]
+'
 
 fail() {
   printf 'wtk installer: %s\n' "$1" >&2
@@ -39,7 +46,7 @@ install_global_config() {
     return 0
   fi
 
-  if ! ( : >"$config_path" ); then
+  if ! printf '%s' "$DEFAULT_CONFIG_TEMPLATE" >"$config_path"; then
     info "Skipping WTK config creation because $config_path could not be created"
     return 0
   fi

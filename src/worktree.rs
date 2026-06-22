@@ -24,8 +24,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const RECURSIVE_IGNORED_FILE_SNAPSHOT_PREFIX: &str = "wtk-init-worktree-snapshot-";
 const RECURSIVE_IGNORED_FILE_SNAPSHOT_MARKER: &str = ".wtk-recursive-ignored-files-snapshot";
-const DEFAULT_RECURSIVE_IGNORED_FILE_NAMES: &[&str] = &[".env", "secrets.auto.tfvars"];
-const DEFAULT_EXACT_IGNORED_FILE_PATHS: &[&str] = &["specs/change/active"];
+const DEFAULT_RECURSIVE_IGNORED_FILE_NAMES: &[&str] = &[".env"];
+const DEFAULT_EXACT_IGNORED_FILE_PATHS: &[&str] = &[".agents"];
 
 #[derive(Debug, Clone)]
 struct CopiedIgnoredFiles {
@@ -1639,9 +1639,7 @@ fn snapshot_exact_ignored_files(
 ) -> AppResult<Vec<SnapshotFile>> {
     let mut ignored = Vec::new();
     for relative in exact_paths {
-        if let Some(snapshot) = snapshot_ignored_exact_file(session, main_root, relative)? {
-            ignored.push(snapshot);
-        }
+        ignored.extend(snapshot_ignored_exact_path(session, main_root, relative)?);
     }
     Ok(ignored)
 }
@@ -1689,15 +1687,18 @@ fn merge_snapshot_files(
     ignored_files
 }
 
-fn snapshot_ignored_exact_file(
+fn snapshot_ignored_exact_path(
     session: &Session<'_>,
     main_root: &Path,
     relative: &Path,
-) -> AppResult<Option<SnapshotFile>> {
-    if !ignored_exact_file(session, main_root, relative)? {
-        return Ok(None);
+) -> AppResult<Vec<SnapshotFile>> {
+    let mut ignored = Vec::new();
+    for path in ignored_exact_paths(session, main_root, relative)? {
+        if let Some(snapshot) = snapshot_file(main_root, path)? {
+            ignored.push(snapshot);
+        }
     }
-    snapshot_file(main_root, relative.to_path_buf())
+    Ok(ignored)
 }
 
 fn snapshot_recursive_ignored_files_from_root(root: &Path) -> AppResult<Vec<SnapshotFile>> {
@@ -1853,7 +1854,11 @@ fn recursive_ignored_files(
     Ok(ignored)
 }
 
-fn ignored_exact_file(session: &Session<'_>, main_root: &Path, relative: &Path) -> AppResult<bool> {
+fn ignored_exact_paths(
+    session: &Session<'_>,
+    main_root: &Path,
+    relative: &Path,
+) -> AppResult<Vec<PathBuf>> {
     let relative = relative.to_string_lossy().into_owned();
     let output = session.git.run_bytes(
         main_root,
@@ -1868,12 +1873,16 @@ fn ignored_exact_file(session: &Session<'_>, main_root: &Path, relative: &Path) 
             &relative,
         ],
     )?;
-    Ok(output
+    let mut ignored: Vec<_> = output
         .stdout
         .split(|byte| *byte == b'\0')
         .filter(|path| !path.is_empty())
         .map(path_buf_from_git_bytes)
-        .any(|path| path == Path::new(&relative)))
+        .filter(|path| path == Path::new(&relative) || path.starts_with(Path::new(&relative)))
+        .collect();
+    ignored.sort();
+    ignored.dedup();
+    Ok(ignored)
 }
 
 #[cfg(unix)]
