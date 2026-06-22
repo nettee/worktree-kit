@@ -107,4 +107,18 @@ set -e
 assert_contains "$no_home_output" "Installed wtk at $no_home_install_dir/wtk"
 assert_contains "$no_home_output" "Skipping WTK config creation because HOME is unset"
 
+bad_home_parent="$tmpdir/bad-home-parent"
+mkdir -p "$bad_home_parent"
+bad_home_file="$bad_home_parent/home-file"
+: >"$bad_home_file"
+bad_home_install_dir="$tmpdir/bad-home-bin"
+set +e
+bad_home_output=$(HOME="$bad_home_file" PATH="$PATH" RUSTUP_HOME="$RUSTUP_HOME" CARGO_HOME="$CARGO_HOME" WTK_INSTALL_DIR="$bad_home_install_dir" /bin/sh "$installer" 2>&1)
+bad_home_status=$?
+set -e
+[ "$bad_home_status" -eq 0 ] || fail "local installer failed when HOME could not hold config"
+[ -x "$bad_home_install_dir/wtk" ] || fail "wtk binary was not installed by local installer when HOME could not hold config"
+assert_contains "$bad_home_output" "Installed wtk at $bad_home_install_dir/wtk"
+assert_contains "$bad_home_output" "Skipping WTK config creation because $bad_home_file/.wtk could not be created"
+
 printf 'local installer test: ok\n'

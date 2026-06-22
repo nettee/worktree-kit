@@ -29,13 +29,19 @@ install_global_config() {
   config_dir="$HOME/.wtk"
   config_path="$config_dir/config.toml"
 
-  mkdir -p "$config_dir" || fail "failed to create WTK config directory: $config_dir"
+  if ! mkdir -p "$config_dir"; then
+    info "Skipping WTK config creation because $config_dir could not be created"
+    return 0
+  fi
   if [ -e "$config_path" ]; then
     info "WTK config already exists at $config_path"
     return 0
   fi
 
-  : >"$config_path" || fail "failed to create WTK config: $config_path"
+  if ! : >"$config_path"; then
+    info "Skipping WTK config creation because $config_path could not be created"
+    return 0
+  fi
   info "Created WTK config at $config_path"
 }
 
