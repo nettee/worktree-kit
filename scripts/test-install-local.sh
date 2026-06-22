@@ -97,4 +97,14 @@ set -e
 [ "$missing_status" -ne 0 ] || fail "local installer succeeded with cargo missing"
 assert_contains "$missing_output" "missing required command: cargo"
 
+no_home_install_dir="$tmpdir/no-home-bin"
+set +e
+no_home_output=$(env -u HOME PATH="$PATH" RUSTUP_HOME="$RUSTUP_HOME" CARGO_HOME="$CARGO_HOME" WTK_INSTALL_DIR="$no_home_install_dir" /bin/sh "$installer" 2>&1)
+no_home_status=$?
+set -e
+[ "$no_home_status" -eq 0 ] || fail "local installer failed with WTK_INSTALL_DIR set and HOME unset"
+[ -x "$no_home_install_dir/wtk" ] || fail "wtk binary was not installed by local installer when HOME was unset"
+assert_contains "$no_home_output" "Installed wtk at $no_home_install_dir/wtk"
+assert_contains "$no_home_output" "Skipping WTK config creation because HOME is unset"
+
 printf 'local installer test: ok\n'

@@ -94,4 +94,14 @@ set -e
 [ "$checksum_status" -ne 0 ] || fail "installer succeeded with checksum mismatch"
 assert_contains "$checksum_output" "checksum mismatch"
 
+no_home_install_dir="$tmpdir/no-home-bin"
+set +e
+no_home_output=$(env -u HOME PATH="$PATH" WTK_INSTALL_DIR="$no_home_install_dir" WTK_VERSION="0.0.1" WTK_OS="linux" WTK_ARCH="amd64" WTK_DOWNLOAD_BASE_URL="file://$fixture_dir" WTK_SKIP_PATH_UPDATE=1 /bin/sh "$installer" 2>&1)
+no_home_status=$?
+set -e
+[ "$no_home_status" -eq 0 ] || fail "installer failed with WTK_INSTALL_DIR set and HOME unset"
+[ -x "$no_home_install_dir/wtk" ] || fail "wtk binary was not installed when HOME was unset"
+assert_contains "$no_home_output" "Installed wtk at $no_home_install_dir/wtk"
+assert_contains "$no_home_output" "Skipping WTK config creation because HOME is unset"
+
 printf 'installer test: ok\n'

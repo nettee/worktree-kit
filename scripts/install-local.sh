@@ -22,7 +22,10 @@ default_install_dir() {
 }
 
 install_global_config() {
-  [ -n "${HOME:-}" ] || fail 'HOME is required to create ~/.wtk/config.toml'
+  if [ -z "${HOME:-}" ]; then
+    info 'Skipping WTK config creation because HOME is unset'
+    return 0
+  fi
   config_dir="$HOME/.wtk"
   config_path="$config_dir/config.toml"
 
