@@ -2,13 +2,6 @@
 set -eu
 
 APP_NAME="wtk"
-DEFAULT_CONFIG_TEMPLATE='[copy]
-# Recursively copy ignored files with these exact file names from the main worktree.
-recursive = [".env"]
-
-# Copy ignored files at these exact Git-root-relative paths.
-exact = [".agents"]
-'
 
 fail() {
   printf 'wtk local installer: %s\n' "$1" >&2
@@ -21,6 +14,22 @@ info() {
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "missing required command: $1"
+}
+
+script_dir() {
+  dir=${0%/*}
+  [ "$dir" != "$0" ] || dir=.
+  printf '%s\n' "$dir"
+}
+
+default_config_template_path() {
+  printf '%s/default-config.toml\n' "$(script_dir)"
+}
+
+write_default_config_template() {
+  dest=$1
+  cp "$(default_config_template_path)" "$dest"
+  return $?
 }
 
 default_install_dir() {
@@ -45,7 +54,7 @@ install_global_config() {
     return 0
   fi
 
-  if ! printf '%s' "$DEFAULT_CONFIG_TEMPLATE" >"$config_path"; then
+  if ! write_default_config_template "$config_path"; then
     info "Skipping WTK config creation because $config_path could not be created"
     return 0
   fi
