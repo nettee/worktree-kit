@@ -73,6 +73,17 @@ standalone_output=$(HOME="$standalone_home" WTK_INSTALL_DIR="$standalone_install
 assert_contains "$standalone_output" "Created WTK config at $standalone_home/.wtk/config.toml"
 cmp -s "$standalone_home/.wtk/config.toml" "$config_template" || fail "standalone installer should create the default global WTK config template"
 
+piped_installer_dir="$tmpdir/piped-installer"
+piped_install_dir="$tmpdir/piped-bin"
+piped_home="$tmpdir/piped-home"
+mkdir -p "$piped_installer_dir" "$piped_home"
+printf 'not the installer template\n' >"$piped_installer_dir/default-config.toml"
+piped_output=$(cd "$piped_installer_dir" && HOME="$piped_home" WTK_INSTALL_DIR="$piped_install_dir" WTK_VERSION="0.0.1" WTK_OS="linux" WTK_ARCH="amd64" WTK_DOWNLOAD_BASE_URL="file://$fixture_dir" WTK_CONFIG_TEMPLATE_URL="file://$config_template" WTK_SKIP_PATH_UPDATE=1 sh < "$installer")
+[ -x "$piped_install_dir/wtk" ] || fail "piped installer binary was not installed"
+[ -f "$piped_home/.wtk/config.toml" ] || fail "piped installer did not create global WTK config"
+assert_contains "$piped_output" "Created WTK config at $piped_home/.wtk/config.toml"
+cmp -s "$piped_home/.wtk/config.toml" "$config_template" || fail "piped installer should ignore a cwd default-config.toml and fetch the configured template"
+
 printf 'custom config\n' >"$home_dir/.wtk/config.toml"
 
 path_output=$(cd "$repo_root" && HOME="$home_dir" PATH="$install_dir:$PATH" WTK_INSTALL_DIR="$install_dir" WTK_VERSION="0.0.1" WTK_OS="linux" WTK_ARCH="amd64" WTK_DOWNLOAD_BASE_URL="file://$fixture_dir" WTK_SKIP_PATH_UPDATE=1 sh "$installer")

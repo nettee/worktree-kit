@@ -18,6 +18,10 @@ require_command() {
 }
 
 script_dir() {
+  case "$0" in
+    */*) ;;
+    *) return 1 ;;
+  esac
   dir=${0%/*}
   [ "$dir" != "$0" ] || dir=.
   printf '%s\n' "$dir"
@@ -41,8 +45,7 @@ write_default_config_template() {
   repo=$1
   dest=$2
 
-  local_template=$(local_default_config_template_path)
-  if [ -r "$local_template" ]; then
+  if local_template=$(local_default_config_template_path) && [ -r "$local_template" ]; then
     cp "$local_template" "$dest"
     return $?
   fi
