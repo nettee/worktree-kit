@@ -38,7 +38,7 @@ install_global_config() {
     return 0
   fi
 
-  if ! : >"$config_path"; then
+  if ! ( : >"$config_path" ); then
     info "Skipping WTK config creation because $config_path could not be created"
     return 0
   fi

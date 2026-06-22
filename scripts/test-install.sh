@@ -118,4 +118,17 @@ set -e
 assert_contains "$bad_home_output" "Installed wtk at $bad_home_install_dir/wtk"
 assert_contains "$bad_home_output" "Skipping WTK config creation because $bad_home_file/.wtk could not be created"
 
+redirect_home="$tmpdir/redirect-home"
+mkdir -p "$redirect_home/.wtk"
+ln -s "$tmpdir/missing-config-dir/config.toml" "$redirect_home/.wtk/config.toml"
+redirect_install_dir="$tmpdir/redirect-bin"
+set +e
+redirect_output=$(HOME="$redirect_home" PATH="$PATH" WTK_INSTALL_DIR="$redirect_install_dir" WTK_VERSION="0.0.1" WTK_OS="linux" WTK_ARCH="amd64" WTK_DOWNLOAD_BASE_URL="file://$fixture_dir" WTK_SKIP_PATH_UPDATE=1 /bin/sh "$installer" 2>&1)
+redirect_status=$?
+set -e
+[ "$redirect_status" -eq 0 ] || fail "installer failed when config redirection could not be opened"
+[ -x "$redirect_install_dir/wtk" ] || fail "wtk binary was not installed when config redirection could not be opened"
+assert_contains "$redirect_output" "Installed wtk at $redirect_install_dir/wtk"
+assert_contains "$redirect_output" "Skipping WTK config creation because $redirect_home/.wtk/config.toml could not be created"
+
 printf 'installer test: ok\n'
