@@ -51,14 +51,21 @@ fi
 
 output=$(cd "$repo_root" && HOME="$home_dir" WTK_INSTALL_DIR="$install_dir" WTK_VERSION="0.0.1" WTK_OS="linux" WTK_ARCH="amd64" WTK_DOWNLOAD_BASE_URL="file://$fixture_dir" WTK_SKIP_PATH_UPDATE=1 sh "$installer")
 [ -x "$install_dir/wtk" ] || fail "wtk binary was not installed"
+[ -f "$home_dir/.wtk/config.toml" ] || fail "global WTK config was not created"
 version_output=$("$install_dir/wtk" --version)
 assert_contains "$version_output" "0.0.1"
 assert_contains "$output" "Installed wtk at $install_dir/wtk"
+assert_contains "$output" "Created WTK config at $home_dir/.wtk/config.toml"
 assert_contains "$output" "Add $install_dir to PATH:"
 assert_contains "$output" "Shell completion examples:"
+assert_contains "$(cat "$home_dir/.wtk/config.toml")" "recursive = [\".env\", \"secrets.auto.tfvars\"]"
+
+printf 'custom config\n' >"$home_dir/.wtk/config.toml"
 
 path_output=$(cd "$repo_root" && HOME="$home_dir" PATH="$install_dir:$PATH" WTK_INSTALL_DIR="$install_dir" WTK_VERSION="0.0.1" WTK_OS="linux" WTK_ARCH="amd64" WTK_DOWNLOAD_BASE_URL="file://$fixture_dir" WTK_SKIP_PATH_UPDATE=1 sh "$installer")
 assert_contains "$path_output" "$install_dir is already in PATH"
+assert_contains "$path_output" "WTK config already exists at $home_dir/.wtk/config.toml"
+[ "$(cat "$home_dir/.wtk/config.toml")" = "custom config" ] || fail "installer overwrote existing global WTK config"
 
 missing_path="$tmpdir/missing-path"
 mkdir -p "$missing_path"

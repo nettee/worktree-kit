@@ -38,12 +38,17 @@ mkdir -p "$home_dir"
 [ -n "${CARGO_HOME:-}" ] || CARGO_HOME="$HOME/.cargo"
 output=$(cd "$repo_root" && HOME="$home_dir" RUSTUP_HOME="$RUSTUP_HOME" CARGO_HOME="$CARGO_HOME" CARGO_TARGET_DIR="$custom_target_dir" WTK_INSTALL_DIR="$install_dir" sh "$installer")
 [ -x "$install_dir/wtk" ] || fail "wtk binary was not installed as executable"
+[ -f "$home_dir/.wtk/config.toml" ] || fail "global WTK config was not created"
 [ ! -e "$custom_target_dir/release/wtk" ] || fail "installer unexpectedly used caller-provided CARGO_TARGET_DIR"
 version_output=$("$install_dir/wtk" --version)
 assert_contains "$version_output" "dev commit="
 assert_contains "$version_output" "built="
 assert_contains "$output" "Installed wtk at $install_dir/wtk"
+assert_contains "$output" "Created WTK config at $home_dir/.wtk/config.toml"
 assert_contains "$output" "Version:"
+assert_contains "$(cat "$home_dir/.wtk/config.toml")" "exact = [\"specs/change/active\"]"
+
+printf 'custom config\n' >"$home_dir/.wtk/config.toml"
 
 mkdir -p "$config_cargo_home"
 cat >"$config_cargo_home/config.toml" <<EOF
@@ -55,7 +60,9 @@ config_output=$(cd "$repo_root" && HOME="$home_dir" RUSTUP_HOME="$RUSTUP_HOME" C
 [ -x "$config_install_dir/wtk" ] || fail "wtk binary was not installed as executable with cargo config target-dir"
 [ ! -e "$config_target_dir/release/wtk" ] || fail "installer unexpectedly used cargo config target-dir"
 assert_contains "$config_output" "Installed wtk at $config_install_dir/wtk"
+assert_contains "$config_output" "WTK config already exists at $home_dir/.wtk/config.toml"
 assert_contains "$config_output" "Version:"
+[ "$(cat "$home_dir/.wtk/config.toml")" = "custom config" ] || fail "local installer overwrote existing global WTK config"
 
 mkdir -p "$wrapper_bin"
 real_cargo=$(command -v cargo) || fail 'required test command not found: cargo'

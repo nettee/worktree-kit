@@ -22,6 +22,25 @@ default_install_dir() {
   printf '%s/.local/bin\n' "$HOME"
 }
 
+install_global_config() {
+  [ -n "${HOME:-}" ] || fail 'HOME is required to create ~/.wtk/config.toml'
+  config_dir="$HOME/.wtk"
+  config_path="$config_dir/config.toml"
+
+  mkdir -p "$config_dir" || fail "failed to create WTK config directory: $config_dir"
+  if [ -e "$config_path" ]; then
+    info "WTK config already exists at $config_path"
+    return 0
+  fi
+
+  cat >"$config_path" <<'EOF' || fail "failed to create WTK config: $config_path"
+[copy]
+recursive = [".env", "secrets.auto.tfvars"]
+exact = ["specs/change/active"]
+EOF
+  info "Created WTK config at $config_path"
+}
+
 path_contains() {
   dir=$1
   old_ifs=$IFS
@@ -179,6 +198,7 @@ main() {
   require_command mkdir
   require_command chmod
   require_command cp
+  require_command cat
 
   checksum=$(checksum_tool)
 
@@ -230,6 +250,7 @@ main() {
   [ -x "$install_path" ] || fail "installed binary is not executable: $install_path"
 
   info "Installed $APP_NAME at $install_path"
+  install_global_config
 
   if path_contains "$install_dir"; then
     info "$install_dir is already in PATH"
