@@ -38,12 +38,17 @@ mkdir -p "$home_dir"
 [ -n "${CARGO_HOME:-}" ] || CARGO_HOME="$HOME/.cargo"
 output=$(cd "$repo_root" && HOME="$home_dir" RUSTUP_HOME="$RUSTUP_HOME" CARGO_HOME="$CARGO_HOME" CARGO_TARGET_DIR="$custom_target_dir" WTK_INSTALL_DIR="$install_dir" sh "$installer")
 [ -x "$install_dir/wtk" ] || fail "wtk binary was not installed as executable"
+[ -f "$home_dir/.wtk/config.toml" ] || fail "global WTK config was not created"
 [ ! -e "$custom_target_dir/release/wtk" ] || fail "installer unexpectedly used caller-provided CARGO_TARGET_DIR"
 version_output=$("$install_dir/wtk" --version)
 assert_contains "$version_output" "dev commit="
 assert_contains "$version_output" "built="
 assert_contains "$output" "Installed wtk at $install_dir/wtk"
+assert_contains "$output" "Created WTK config at $home_dir/.wtk/config.toml"
 assert_contains "$output" "Version:"
+[ ! -s "$home_dir/.wtk/config.toml" ] || fail "local installer should create an empty global WTK config"
+
+printf 'custom config\n' >"$home_dir/.wtk/config.toml"
 
 mkdir -p "$config_cargo_home"
 cat >"$config_cargo_home/config.toml" <<EOF
@@ -55,7 +60,9 @@ config_output=$(cd "$repo_root" && HOME="$home_dir" RUSTUP_HOME="$RUSTUP_HOME" C
 [ -x "$config_install_dir/wtk" ] || fail "wtk binary was not installed as executable with cargo config target-dir"
 [ ! -e "$config_target_dir/release/wtk" ] || fail "installer unexpectedly used cargo config target-dir"
 assert_contains "$config_output" "Installed wtk at $config_install_dir/wtk"
+assert_contains "$config_output" "WTK config already exists at $home_dir/.wtk/config.toml"
 assert_contains "$config_output" "Version:"
+[ "$(cat "$home_dir/.wtk/config.toml")" = "custom config" ] || fail "local installer overwrote existing global WTK config"
 
 mkdir -p "$wrapper_bin"
 real_cargo=$(command -v cargo) || fail 'required test command not found: cargo'
@@ -89,5 +96,42 @@ missing_status=$?
 set -e
 [ "$missing_status" -ne 0 ] || fail "local installer succeeded with cargo missing"
 assert_contains "$missing_output" "missing required command: cargo"
+
+no_home_install_dir="$tmpdir/no-home-bin"
+set +e
+no_home_output=$(env -u HOME PATH="$PATH" RUSTUP_HOME="$RUSTUP_HOME" CARGO_HOME="$CARGO_HOME" WTK_INSTALL_DIR="$no_home_install_dir" /bin/sh "$installer" 2>&1)
+no_home_status=$?
+set -e
+[ "$no_home_status" -eq 0 ] || fail "local installer failed with WTK_INSTALL_DIR set and HOME unset"
+[ -x "$no_home_install_dir/wtk" ] || fail "wtk binary was not installed by local installer when HOME was unset"
+assert_contains "$no_home_output" "Installed wtk at $no_home_install_dir/wtk"
+assert_contains "$no_home_output" "Skipping WTK config creation because HOME is unset"
+
+bad_home_parent="$tmpdir/bad-home-parent"
+mkdir -p "$bad_home_parent"
+bad_home_file="$bad_home_parent/home-file"
+: >"$bad_home_file"
+bad_home_install_dir="$tmpdir/bad-home-bin"
+set +e
+bad_home_output=$(HOME="$bad_home_file" PATH="$PATH" RUSTUP_HOME="$RUSTUP_HOME" CARGO_HOME="$CARGO_HOME" WTK_INSTALL_DIR="$bad_home_install_dir" /bin/sh "$installer" 2>&1)
+bad_home_status=$?
+set -e
+[ "$bad_home_status" -eq 0 ] || fail "local installer failed when HOME could not hold config"
+[ -x "$bad_home_install_dir/wtk" ] || fail "wtk binary was not installed by local installer when HOME could not hold config"
+assert_contains "$bad_home_output" "Installed wtk at $bad_home_install_dir/wtk"
+assert_contains "$bad_home_output" "Skipping WTK config creation because $bad_home_file/.wtk could not be created"
+
+redirect_home="$tmpdir/redirect-home"
+mkdir -p "$redirect_home/.wtk"
+ln -s "$tmpdir/missing-config-dir/config.toml" "$redirect_home/.wtk/config.toml"
+redirect_install_dir="$tmpdir/redirect-bin"
+set +e
+redirect_output=$(HOME="$redirect_home" PATH="$PATH" RUSTUP_HOME="$RUSTUP_HOME" CARGO_HOME="$CARGO_HOME" WTK_INSTALL_DIR="$redirect_install_dir" /bin/sh "$installer" 2>&1)
+redirect_status=$?
+set -e
+[ "$redirect_status" -eq 0 ] || fail "local installer failed when config redirection could not be opened"
+[ -x "$redirect_install_dir/wtk" ] || fail "wtk binary was not installed by local installer when config redirection could not be opened"
+assert_contains "$redirect_output" "Installed wtk at $redirect_install_dir/wtk"
+assert_contains "$redirect_output" "Skipping WTK config creation because $redirect_home/.wtk/config.toml could not be created"
 
 printf 'local installer test: ok\n'

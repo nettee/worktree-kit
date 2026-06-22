@@ -51,14 +51,21 @@ fi
 
 output=$(cd "$repo_root" && HOME="$home_dir" WTK_INSTALL_DIR="$install_dir" WTK_VERSION="0.0.1" WTK_OS="linux" WTK_ARCH="amd64" WTK_DOWNLOAD_BASE_URL="file://$fixture_dir" WTK_SKIP_PATH_UPDATE=1 sh "$installer")
 [ -x "$install_dir/wtk" ] || fail "wtk binary was not installed"
+[ -f "$home_dir/.wtk/config.toml" ] || fail "global WTK config was not created"
 version_output=$("$install_dir/wtk" --version)
 assert_contains "$version_output" "0.0.1"
 assert_contains "$output" "Installed wtk at $install_dir/wtk"
+assert_contains "$output" "Created WTK config at $home_dir/.wtk/config.toml"
 assert_contains "$output" "Add $install_dir to PATH:"
 assert_contains "$output" "Shell completion examples:"
+[ ! -s "$home_dir/.wtk/config.toml" ] || fail "installer should create an empty global WTK config"
+
+printf 'custom config\n' >"$home_dir/.wtk/config.toml"
 
 path_output=$(cd "$repo_root" && HOME="$home_dir" PATH="$install_dir:$PATH" WTK_INSTALL_DIR="$install_dir" WTK_VERSION="0.0.1" WTK_OS="linux" WTK_ARCH="amd64" WTK_DOWNLOAD_BASE_URL="file://$fixture_dir" WTK_SKIP_PATH_UPDATE=1 sh "$installer")
 assert_contains "$path_output" "$install_dir is already in PATH"
+assert_contains "$path_output" "WTK config already exists at $home_dir/.wtk/config.toml"
+[ "$(cat "$home_dir/.wtk/config.toml")" = "custom config" ] || fail "installer overwrote existing global WTK config"
 
 missing_path="$tmpdir/missing-path"
 mkdir -p "$missing_path"
@@ -86,5 +93,42 @@ checksum_status=$?
 set -e
 [ "$checksum_status" -ne 0 ] || fail "installer succeeded with checksum mismatch"
 assert_contains "$checksum_output" "checksum mismatch"
+
+no_home_install_dir="$tmpdir/no-home-bin"
+set +e
+no_home_output=$(env -u HOME PATH="$PATH" WTK_INSTALL_DIR="$no_home_install_dir" WTK_VERSION="0.0.1" WTK_OS="linux" WTK_ARCH="amd64" WTK_DOWNLOAD_BASE_URL="file://$fixture_dir" WTK_SKIP_PATH_UPDATE=1 /bin/sh "$installer" 2>&1)
+no_home_status=$?
+set -e
+[ "$no_home_status" -eq 0 ] || fail "installer failed with WTK_INSTALL_DIR set and HOME unset"
+[ -x "$no_home_install_dir/wtk" ] || fail "wtk binary was not installed when HOME was unset"
+assert_contains "$no_home_output" "Installed wtk at $no_home_install_dir/wtk"
+assert_contains "$no_home_output" "Skipping WTK config creation because HOME is unset"
+
+bad_home_parent="$tmpdir/bad-home-parent"
+mkdir -p "$bad_home_parent"
+bad_home_file="$bad_home_parent/home-file"
+: >"$bad_home_file"
+bad_home_install_dir="$tmpdir/bad-home-bin"
+set +e
+bad_home_output=$(HOME="$bad_home_file" PATH="$PATH" WTK_INSTALL_DIR="$bad_home_install_dir" WTK_VERSION="0.0.1" WTK_OS="linux" WTK_ARCH="amd64" WTK_DOWNLOAD_BASE_URL="file://$fixture_dir" WTK_SKIP_PATH_UPDATE=1 /bin/sh "$installer" 2>&1)
+bad_home_status=$?
+set -e
+[ "$bad_home_status" -eq 0 ] || fail "installer failed when HOME could not hold config"
+[ -x "$bad_home_install_dir/wtk" ] || fail "wtk binary was not installed when HOME could not hold config"
+assert_contains "$bad_home_output" "Installed wtk at $bad_home_install_dir/wtk"
+assert_contains "$bad_home_output" "Skipping WTK config creation because $bad_home_file/.wtk could not be created"
+
+redirect_home="$tmpdir/redirect-home"
+mkdir -p "$redirect_home/.wtk"
+ln -s "$tmpdir/missing-config-dir/config.toml" "$redirect_home/.wtk/config.toml"
+redirect_install_dir="$tmpdir/redirect-bin"
+set +e
+redirect_output=$(HOME="$redirect_home" PATH="$PATH" WTK_INSTALL_DIR="$redirect_install_dir" WTK_VERSION="0.0.1" WTK_OS="linux" WTK_ARCH="amd64" WTK_DOWNLOAD_BASE_URL="file://$fixture_dir" WTK_SKIP_PATH_UPDATE=1 /bin/sh "$installer" 2>&1)
+redirect_status=$?
+set -e
+[ "$redirect_status" -eq 0 ] || fail "installer failed when config redirection could not be opened"
+[ -x "$redirect_install_dir/wtk" ] || fail "wtk binary was not installed when config redirection could not be opened"
+assert_contains "$redirect_output" "Installed wtk at $redirect_install_dir/wtk"
+assert_contains "$redirect_output" "Skipping WTK config creation because $redirect_home/.wtk/config.toml could not be created"
 
 printf 'installer test: ok\n'

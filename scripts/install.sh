@@ -22,6 +22,30 @@ default_install_dir() {
   printf '%s/.local/bin\n' "$HOME"
 }
 
+install_global_config() {
+  if [ -z "${HOME:-}" ]; then
+    info 'Skipping WTK config creation because HOME is unset'
+    return 0
+  fi
+  config_dir="$HOME/.wtk"
+  config_path="$config_dir/config.toml"
+
+  if ! mkdir -p "$config_dir"; then
+    info "Skipping WTK config creation because $config_dir could not be created"
+    return 0
+  fi
+  if [ -e "$config_path" ]; then
+    info "WTK config already exists at $config_path"
+    return 0
+  fi
+
+  if ! ( : >"$config_path" ); then
+    info "Skipping WTK config creation because $config_path could not be created"
+    return 0
+  fi
+  info "Created WTK config at $config_path"
+}
+
 path_contains() {
   dir=$1
   old_ifs=$IFS
@@ -179,7 +203,6 @@ main() {
   require_command mkdir
   require_command chmod
   require_command cp
-
   checksum=$(checksum_tool)
 
   if [ "${WTK_REPO+x}" = x ]; then
@@ -230,6 +253,7 @@ main() {
   [ -x "$install_path" ] || fail "installed binary is not executable: $install_path"
 
   info "Installed $APP_NAME at $install_path"
+  install_global_config
 
   if path_contains "$install_dir"; then
     info "$install_dir is already in PATH"

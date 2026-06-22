@@ -21,6 +21,30 @@ default_install_dir() {
   printf '%s/.local/bin\n' "$HOME"
 }
 
+install_global_config() {
+  if [ -z "${HOME:-}" ]; then
+    info 'Skipping WTK config creation because HOME is unset'
+    return 0
+  fi
+  config_dir="$HOME/.wtk"
+  config_path="$config_dir/config.toml"
+
+  if ! mkdir -p "$config_dir"; then
+    info "Skipping WTK config creation because $config_dir could not be created"
+    return 0
+  fi
+  if [ -e "$config_path" ]; then
+    info "WTK config already exists at $config_path"
+    return 0
+  fi
+
+  if ! ( : >"$config_path" ); then
+    info "Skipping WTK config creation because $config_path could not be created"
+    return 0
+  fi
+  info "Created WTK config at $config_path"
+}
+
 script_dir=${0%/*}
 [ "$script_dir" != "$0" ] || script_dir=.
 repo_root=$(CDPATH= cd -- "$script_dir/.." && pwd) || fail 'failed to resolve repository root'
@@ -31,7 +55,6 @@ require_command date
 require_command mkdir
 require_command chmod
 require_command cp
-
 install_dir=${WTK_INSTALL_DIR:-$(default_install_dir)}
 [ -n "$install_dir" ] || fail 'WTK_INSTALL_DIR must not be empty'
 
@@ -63,4 +86,5 @@ case "$version_output" in
 esac
 
 info "Installed $APP_NAME at $install_dir/$APP_NAME"
+install_global_config
 info "Version: $version_output"

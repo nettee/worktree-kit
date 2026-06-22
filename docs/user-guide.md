@@ -8,7 +8,7 @@ Install the latest release:
 curl -fsSL https://raw.githubusercontent.com/nettee/worktree-kit/main/scripts/install.sh | sh
 ```
 
-The installer downloads the matching GitHub release asset, verifies its checksum, and installs `wtk` into `${WTK_INSTALL_DIR:-$HOME/.local/bin}`. It prints PATH and completion setup guidance after verifying `wtk --version`.
+The installer downloads the matching GitHub release asset, verifies its checksum, installs `wtk` into `${WTK_INSTALL_DIR:-$HOME/.local/bin}`, and creates `~/.wtk/config.toml` when it does not already exist. It prints PATH and completion setup guidance after verifying `wtk --version`.
 
 Upgrade an existing release install in place:
 
@@ -21,6 +21,8 @@ Local source install for development machines:
 ```bash
 sh scripts/install-local.sh
 ```
+
+The local installer also creates `~/.wtk/config.toml` when it does not already exist.
 
 Check the installed version:
 
