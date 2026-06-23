@@ -3,13 +3,6 @@ set -eu
 
 APP_NAME="wtk"
 DEFAULT_REPO="nettee/worktree-kit"
-DEFAULT_CONFIG_TEMPLATE='[copy]
-# Recursively copy ignored files with these exact file names from the main worktree.
-recursive = [".env"]
-
-# Copy ignored files at these exact Git-root-relative paths.
-exact = [".agents"]
-'
 
 fail() {
   printf 'wtk installer: %s\n' "$1" >&2
@@ -24,12 +17,50 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "missing required command: $1"
 }
 
+script_dir() {
+  case "$0" in
+    */*) ;;
+    *) return 1 ;;
+  esac
+  dir=${0%/*}
+  [ "$dir" != "$0" ] || dir=.
+  printf '%s\n' "$dir"
+}
+
+local_default_config_template_path() {
+  printf '%s/default-config.toml\n' "$(script_dir)"
+}
+
+default_config_template_url() {
+  repo=$1
+  if [ "${WTK_CONFIG_TEMPLATE_URL+x}" = x ]; then
+    [ -n "$WTK_CONFIG_TEMPLATE_URL" ] || fail 'WTK_CONFIG_TEMPLATE_URL must not be empty'
+    printf '%s\n' "$WTK_CONFIG_TEMPLATE_URL"
+    return 0
+  fi
+  printf 'https://raw.githubusercontent.com/%s/main/scripts/default-config.toml\n' "$repo"
+}
+
+write_default_config_template() {
+  repo=$1
+  dest=$2
+
+  if local_template=$(local_default_config_template_path) && [ -r "$local_template" ]; then
+    cp "$local_template" "$dest"
+    return $?
+  fi
+
+  template_url=$(default_config_template_url "$repo")
+  curl -fsSL "$template_url" -o "$dest"
+}
+
 default_install_dir() {
   [ -n "${HOME:-}" ] || fail 'HOME is required when WTK_INSTALL_DIR is unset'
   printf '%s/.local/bin\n' "$HOME"
 }
 
 install_global_config() {
+  repo=$1
   if [ -z "${HOME:-}" ]; then
     info 'Skipping WTK config creation because HOME is unset'
     return 0
@@ -46,7 +77,7 @@ install_global_config() {
     return 0
   fi
 
-  if ! printf '%s' "$DEFAULT_CONFIG_TEMPLATE" >"$config_path"; then
+  if ! write_default_config_template "$repo" "$config_path"; then
     info "Skipping WTK config creation because $config_path could not be created"
     return 0
   fi
@@ -260,7 +291,7 @@ main() {
   [ -x "$install_path" ] || fail "installed binary is not executable: $install_path"
 
   info "Installed $APP_NAME at $install_path"
-  install_global_config
+  install_global_config "$repo"
 
   if path_contains "$install_dir"; then
     info "$install_dir is already in PATH"

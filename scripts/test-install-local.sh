@@ -3,6 +3,7 @@ set -eu
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 installer="$repo_root/scripts/install-local.sh"
+config_template="$repo_root/scripts/default-config.toml"
 
 fail() {
   printf 'local installer test: %s\n' "$1" >&2
@@ -46,15 +47,7 @@ assert_contains "$version_output" "built="
 assert_contains "$output" "Installed wtk at $install_dir/wtk"
 assert_contains "$output" "Created WTK config at $home_dir/.wtk/config.toml"
 assert_contains "$output" "Version:"
-cat >"$tmpdir/expected-config.toml" <<'EOF'
-[copy]
-# Recursively copy ignored files with these exact file names from the main worktree.
-recursive = [".env"]
-
-# Copy ignored files at these exact Git-root-relative paths.
-exact = [".agents"]
-EOF
-cmp -s "$home_dir/.wtk/config.toml" "$tmpdir/expected-config.toml" || fail "local installer should create the default global WTK config template"
+cmp -s "$home_dir/.wtk/config.toml" "$config_template" || fail "local installer should create the default global WTK config template"
 
 printf 'custom config\n' >"$home_dir/.wtk/config.toml"
 

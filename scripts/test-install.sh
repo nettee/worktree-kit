@@ -3,6 +3,7 @@ set -eu
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 installer="$repo_root/scripts/install.sh"
+config_template="$repo_root/scripts/default-config.toml"
 
 fail() {
   printf 'installer test: %s\n' "$1" >&2
@@ -58,15 +59,30 @@ assert_contains "$output" "Installed wtk at $install_dir/wtk"
 assert_contains "$output" "Created WTK config at $home_dir/.wtk/config.toml"
 assert_contains "$output" "Add $install_dir to PATH:"
 assert_contains "$output" "Shell completion examples:"
-cat >"$tmpdir/expected-config.toml" <<'EOF'
-[copy]
-# Recursively copy ignored files with these exact file names from the main worktree.
-recursive = [".env"]
+cmp -s "$home_dir/.wtk/config.toml" "$config_template" || fail "installer should create the default global WTK config template"
 
-# Copy ignored files at these exact Git-root-relative paths.
-exact = [".agents"]
-EOF
-cmp -s "$home_dir/.wtk/config.toml" "$tmpdir/expected-config.toml" || fail "installer should create the default global WTK config template"
+standalone_installer_dir="$tmpdir/standalone-installer"
+standalone_installer="$standalone_installer_dir/install.sh"
+standalone_install_dir="$tmpdir/standalone-bin"
+standalone_home="$tmpdir/standalone-home"
+mkdir -p "$standalone_installer_dir" "$standalone_home"
+cp "$installer" "$standalone_installer"
+standalone_output=$(HOME="$standalone_home" WTK_INSTALL_DIR="$standalone_install_dir" WTK_VERSION="0.0.1" WTK_OS="linux" WTK_ARCH="amd64" WTK_DOWNLOAD_BASE_URL="file://$fixture_dir" WTK_CONFIG_TEMPLATE_URL="file://$config_template" WTK_SKIP_PATH_UPDATE=1 sh "$standalone_installer")
+[ -x "$standalone_install_dir/wtk" ] || fail "standalone installer binary was not installed"
+[ -f "$standalone_home/.wtk/config.toml" ] || fail "standalone installer did not create global WTK config"
+assert_contains "$standalone_output" "Created WTK config at $standalone_home/.wtk/config.toml"
+cmp -s "$standalone_home/.wtk/config.toml" "$config_template" || fail "standalone installer should create the default global WTK config template"
+
+piped_installer_dir="$tmpdir/piped-installer"
+piped_install_dir="$tmpdir/piped-bin"
+piped_home="$tmpdir/piped-home"
+mkdir -p "$piped_installer_dir" "$piped_home"
+printf 'not the installer template\n' >"$piped_installer_dir/default-config.toml"
+piped_output=$(cd "$piped_installer_dir" && HOME="$piped_home" WTK_INSTALL_DIR="$piped_install_dir" WTK_VERSION="0.0.1" WTK_OS="linux" WTK_ARCH="amd64" WTK_DOWNLOAD_BASE_URL="file://$fixture_dir" WTK_CONFIG_TEMPLATE_URL="file://$config_template" WTK_SKIP_PATH_UPDATE=1 sh < "$installer")
+[ -x "$piped_install_dir/wtk" ] || fail "piped installer binary was not installed"
+[ -f "$piped_home/.wtk/config.toml" ] || fail "piped installer did not create global WTK config"
+assert_contains "$piped_output" "Created WTK config at $piped_home/.wtk/config.toml"
+cmp -s "$piped_home/.wtk/config.toml" "$config_template" || fail "piped installer should ignore a cwd default-config.toml and fetch the configured template"
 
 printf 'custom config\n' >"$home_dir/.wtk/config.toml"
 
