@@ -5,6 +5,7 @@ use crate::list::{self, AuxiliaryRefDetail, AuxiliaryRefSummary, ListOptions};
 use crate::output;
 use crate::paths::default_path;
 use crate::{AppResult, Error};
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -24,19 +25,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const RECURSIVE_IGNORED_FILE_SNAPSHOT_PREFIX: &str = "wtk-init-worktree-snapshot-";
 const RECURSIVE_IGNORED_FILE_SNAPSHOT_MARKER: &str = ".wtk-recursive-ignored-files-snapshot";
-const DEFAULT_RECURSIVE_IGNORED_FILE_NAMES: &[&str] = &[".env"];
-const DEFAULT_EXACT_IGNORED_FILE_PATHS: &[&str] = &[".agents"];
 
 #[derive(Debug, Clone)]
 struct CopiedIgnoredFiles {
-    recursive: Vec<RecursiveIgnoredFileSpec>,
-    exact: Vec<PathBuf>,
-}
-
-#[derive(Debug, Clone)]
-struct RecursiveIgnoredFileSpec {
-    file_name: String,
-    copy_label: String,
+    patterns: Vec<String>,
+    matcher: CopyPatternMatcher,
+    pathspecs: Vec<String>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -121,8 +115,7 @@ pub(crate) enum SnapshotFileKind {
 }
 
 pub struct SendOutWorktreeInit {
-    recursive_ignored_files: Vec<SnapshotFile>,
-    exact_ignored_files: Vec<SnapshotFile>,
+    ignored_files: Vec<SnapshotFile>,
 }
 
 pub enum AsyncPnpmInstall {
@@ -154,26 +147,14 @@ pub fn create(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
     session
         .git
         .run(&repo.main_root, args.iter().map(String::as_str))?;
-    let recursive_ignored_files =
-        snapshot_recursive_ignored_files(session, &repo.main_root, &copied_files.recursive)
-            .map_err(|error| {
-                Error::message(format!(
-                    "worktree created, but failed to snapshot ignored recursive files: {error}"
-                ))
-            })?;
-    let exact_ignored_files =
-        snapshot_exact_ignored_files(session, &repo.main_root, &copied_files.exact).map_err(
-            |error| {
-                Error::message(format!(
-                    "worktree created, but failed to snapshot ignored exact files: {error}"
-                ))
-            },
-        )?;
-    let ignored_snapshot_root = write_recursive_ignored_file_snapshot(
-        &recursive_ignored_files,
-        &exact_ignored_files,
-        &path,
-    )?;
+    let ignored_files = snapshot_copy_pattern_files(session, &repo.main_root, &copied_files)
+        .map_err(|error| {
+            Error::message(format!(
+                "worktree created, but failed to snapshot ignored files: {error}"
+            ))
+        })?;
+    print_copied_file_count(session, ignored_files.len())?;
+    let ignored_snapshot_root = write_recursive_ignored_file_snapshot(&ignored_files, &path)?;
     cleanup_recursive_ignored_file_snapshot_on_error(
         finish(
             session,
@@ -307,12 +288,8 @@ fn create_with_auxiliaries(session: &mut Session<'_>, opts: Options) -> AppResul
         }
 
         let copied_files = copied_ignored_files(session, &repo.main_root)?;
-        let primary_ignored =
-            snapshot_recursive_ignored_files(session, &repo.main_root, &copied_files.recursive)?;
-        let primary_exact =
-            snapshot_exact_ignored_files(session, &repo.main_root, &copied_files.exact)?;
         let ignored_files_to_copy =
-            dedupe_snapshot_files(merge_snapshot_files(&primary_ignored, &primary_exact));
+            snapshot_copy_pattern_files(session, &repo.main_root, &copied_files)?;
         print_copied_files(
             session,
             &copied_files,
@@ -390,13 +367,8 @@ pub fn checkout(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
 
     let path = create_target_path(&repo, &opts.branch, &opts.path)?;
     let copied_files = copied_ignored_files(session, &repo.main_root)?;
-    let ignored_files =
-        snapshot_recursive_ignored_files(session, &repo.main_root, &copied_files.recursive)?;
-    let exact_ignored_files =
-        snapshot_exact_ignored_files(session, &repo.main_root, &copied_files.exact)?;
-    let mut ignored_files_to_copy = ignored_files.clone();
-    ignored_files_to_copy.extend_from_slice(&exact_ignored_files);
-    let ignored_files_to_copy = dedupe_snapshot_files(ignored_files_to_copy);
+    let ignored_files_to_copy =
+        snapshot_copy_pattern_files(session, &repo.main_root, &copied_files)?;
     let args = vec![
         "worktree".to_string(),
         "add".to_string(),
@@ -539,12 +511,7 @@ fn worktree_init_without_pnpm(
     worktree_path: &Path,
 ) -> AppResult<()> {
     let copied_files = copied_ignored_files(session, source_root)?;
-    let ignored_files =
-        snapshot_recursive_ignored_files(session, source_root, &copied_files.recursive)?;
-    let exact_ignored_files =
-        snapshot_exact_ignored_files(session, source_root, &copied_files.exact)?;
-    let ignored_files_to_copy =
-        dedupe_snapshot_files(merge_snapshot_files(&ignored_files, &exact_ignored_files));
+    let ignored_files_to_copy = snapshot_copy_pattern_files(session, source_root, &copied_files)?;
     print_copied_files(
         session,
         &copied_files,
@@ -759,19 +726,7 @@ fn copy_recursive_ignored_files_for_init(
             }
         },
         None => (
-            {
-                let mut ignored = snapshot_recursive_ignored_files(
-                    session,
-                    source_root,
-                    &copied_files.recursive,
-                )?;
-                ignored.extend(snapshot_exact_ignored_files(
-                    session,
-                    source_root,
-                    &copied_files.exact,
-                )?);
-                dedupe_snapshot_files(ignored)
-            },
+            { snapshot_copy_pattern_files(session, source_root, &copied_files)? },
             None,
         ),
     };
@@ -913,10 +868,7 @@ pub fn send_out(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
     ensure_creatable_parent(&path)?;
 
     let copied_files = copied_ignored_files(session, &repo.main_root)?;
-    let ignored_files =
-        snapshot_recursive_ignored_files(session, &repo.main_root, &copied_files.recursive)?;
-    let exact_ignored_files =
-        snapshot_exact_ignored_files(session, &repo.main_root, &copied_files.exact)?;
+    let ignored_files = snapshot_copy_pattern_files(session, &repo.main_root, &copied_files)?;
 
     let switch_args = vec!["switch".to_string(), base.clone()];
     output::git(session.out, &repo.main_root, &switch_args)?;
@@ -943,12 +895,10 @@ pub fn send_out(session: &mut Session<'_>, opts: Options) -> AppResult<()> {
             error
         )));
     }
-    let ignored_files_to_copy =
-        dedupe_snapshot_files(merge_snapshot_files(&ignored_files, &exact_ignored_files));
     print_copied_files(
         session,
         &copied_files,
-        copy_snapshot_files(&ignored_files_to_copy, &path).map_err(|error| {
+        copy_snapshot_files(&ignored_files, &path).map_err(|error| {
             Error::message(format!(
                 "main worktree switched to {base} and linked worktree created, but ignored file copy failed: {error}"
             ))
@@ -1548,100 +1498,58 @@ fn copy_snapshot_files(
 fn copied_ignored_files(session: &Session<'_>, main_root: &Path) -> AppResult<CopiedIgnoredFiles> {
     let repo = resolve(&session.git, main_root)?;
     let config = auxiliary::load_effective_config(&repo.main_root, &repo.git_common_dir)?;
-    let recursive = match config.copy.recursive {
-        Some(file_names) => file_names
-            .into_iter()
-            .map(|file_name| {
-                validate_recursive_ignored_file_name(&file_name)?;
-                Ok(RecursiveIgnoredFileSpec {
-                    copy_label: format!("copied ignored {file_name}"),
-                    file_name,
-                })
-            })
-            .collect::<AppResult<Vec<_>>>()?,
-        None => DEFAULT_RECURSIVE_IGNORED_FILE_NAMES
-            .iter()
-            .map(|file_name| RecursiveIgnoredFileSpec {
-                copy_label: format!("copied ignored {file_name}"),
-                file_name: (*file_name).to_string(),
-            })
-            .collect(),
-    };
-    let exact = match config.copy.exact {
-        Some(paths) => paths
-            .into_iter()
-            .map(|path| {
-                validate_exact_ignored_file_path(&path)?;
-                Ok(path)
-            })
-            .collect::<AppResult<Vec<_>>>()?,
-        None => DEFAULT_EXACT_IGNORED_FILE_PATHS
-            .iter()
-            .map(PathBuf::from)
-            .collect(),
-    };
-    Ok(CopiedIgnoredFiles { recursive, exact })
+    let patterns = config.copy.unwrap_or_default();
+    for pattern in &patterns {
+        validate_copy_pattern(pattern)?;
+    }
+    let matcher = CopyPatternMatcher::new(&patterns)?;
+    let pathspecs = copy_pattern_pathspecs(&patterns);
+    Ok(CopiedIgnoredFiles {
+        patterns,
+        matcher,
+        pathspecs,
+    })
 }
 
-fn validate_recursive_ignored_file_name(file_name: &str) -> AppResult<()> {
-    if file_name.is_empty() {
-        return Err(Error::message("copy.recursive entries must not be empty"));
+fn validate_copy_pattern(pattern: &str) -> AppResult<()> {
+    if pattern.is_empty() {
+        return Err(Error::message("copy entries must not be empty"));
     }
-    let path = Path::new(file_name);
-    match path.components().next() {
-        Some(Component::Normal(_)) if path.components().count() == 1 => Ok(()),
-        _ => Err(Error::message(format!(
-            "copy.recursive entries must be file names, not paths: {file_name}"
-        ))),
-    }
-}
-
-fn validate_exact_ignored_file_path(path: &Path) -> AppResult<()> {
-    if path.as_os_str().is_empty() {
-        return Err(Error::message("copy.exact entries must not be empty"));
-    }
-    if path.is_absolute() {
+    if pattern.starts_with('!') {
         return Err(Error::message(format!(
-            "copy.exact entries must be relative paths: {}",
-            path.display()
+            "copy entries do not support negation patterns: {pattern}"
         )));
     }
-    if path
-        .components()
-        .any(|component| !matches!(component, Component::Normal(_)))
-    {
+    if pattern.starts_with('/') || Path::new(pattern).is_absolute() {
         return Err(Error::message(format!(
-            "copy.exact entries must contain only normal path components: {}",
-            path.display()
+            "copy entries must be relative patterns: {pattern}"
+        )));
+    }
+    if Path::new(pattern).components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        return Err(Error::message(format!(
+            "copy entries must not traverse outside the repository: {pattern}"
         )));
     }
     Ok(())
 }
 
-fn snapshot_recursive_ignored_files(
+fn snapshot_copy_pattern_files(
     session: &Session<'_>,
     main_root: &Path,
-    specs: &[RecursiveIgnoredFileSpec],
+    copied_files: &CopiedIgnoredFiles,
 ) -> AppResult<Vec<SnapshotFile>> {
     let mut ignored = Vec::new();
-    for relative in recursive_ignored_files(session, main_root, specs)? {
+    for relative in copy_pattern_ignored_files(session, main_root, copied_files)? {
         if let Some(snapshot) = snapshot_file(main_root, relative)? {
             ignored.push(snapshot);
         }
     }
-    Ok(ignored)
-}
-
-fn snapshot_exact_ignored_files(
-    session: &Session<'_>,
-    main_root: &Path,
-    exact_paths: &[PathBuf],
-) -> AppResult<Vec<SnapshotFile>> {
-    let mut ignored = Vec::new();
-    for relative in exact_paths {
-        ignored.extend(snapshot_ignored_exact_path(session, main_root, relative)?);
-    }
-    Ok(ignored)
+    Ok(dedupe_snapshot_files(ignored))
 }
 
 pub fn snapshot_send_out_worktree_init(
@@ -1650,12 +1558,7 @@ pub fn snapshot_send_out_worktree_init(
 ) -> AppResult<SendOutWorktreeInit> {
     let copied_files = copied_ignored_files(session, main_root)?;
     Ok(SendOutWorktreeInit {
-        recursive_ignored_files: snapshot_recursive_ignored_files(
-            session,
-            main_root,
-            &copied_files.recursive,
-        )?,
-        exact_ignored_files: snapshot_exact_ignored_files(session, main_root, &copied_files.exact)?,
+        ignored_files: snapshot_copy_pattern_files(session, main_root, &copied_files)?,
     })
 }
 
@@ -1665,40 +1568,13 @@ pub fn apply_send_out_worktree_init(
     init: &SendOutWorktreeInit,
 ) -> AppResult<()> {
     let copied_files = copied_ignored_files(session, worktree_path)?;
-    let ignored_files_to_copy = dedupe_snapshot_files(merge_snapshot_files(
-        &init.recursive_ignored_files,
-        &init.exact_ignored_files,
-    ));
     print_copied_files(
         session,
         &copied_files,
-        copy_snapshot_files(&ignored_files_to_copy, worktree_path)
+        copy_snapshot_files(&init.ignored_files, worktree_path)
             .map_err(|error| Error::message(format!("ignored file copy failed: {error}")))?,
     )?;
     Ok(())
-}
-
-fn merge_snapshot_files(
-    recursive_ignored_files: &[SnapshotFile],
-    exact_ignored_files: &[SnapshotFile],
-) -> Vec<SnapshotFile> {
-    let mut ignored_files = recursive_ignored_files.to_vec();
-    ignored_files.extend_from_slice(exact_ignored_files);
-    ignored_files
-}
-
-fn snapshot_ignored_exact_path(
-    session: &Session<'_>,
-    main_root: &Path,
-    relative: &Path,
-) -> AppResult<Vec<SnapshotFile>> {
-    let mut ignored = Vec::new();
-    for path in ignored_exact_paths(session, main_root, relative)? {
-        if let Some(snapshot) = snapshot_file(main_root, path)? {
-            ignored.push(snapshot);
-        }
-    }
-    Ok(ignored)
 }
 
 fn snapshot_recursive_ignored_files_from_root(root: &Path) -> AppResult<Vec<SnapshotFile>> {
@@ -1815,12 +1691,12 @@ fn create_symlink(target: &Path, path: &Path) -> std::io::Result<()> {
     windows_fs::symlink_file(target, path)
 }
 
-fn recursive_ignored_files(
+fn copy_pattern_ignored_files(
     session: &Session<'_>,
     main_root: &Path,
-    specs: &[RecursiveIgnoredFileSpec],
+    copied_files: &CopiedIgnoredFiles,
 ) -> AppResult<Vec<PathBuf>> {
-    if specs.is_empty() {
+    if copied_files.patterns.is_empty() {
         return Ok(Vec::new());
     }
     let mut args = vec![
@@ -1832,57 +1708,130 @@ fn recursive_ignored_files(
         "-z".to_string(),
         "--".to_string(),
     ];
-    for spec in specs {
-        args.push(spec.file_name.to_string());
-        args.push(format!(":(glob)**/{}", spec.file_name));
-    }
-    let output = session
-        .git
-        .run_bytes(main_root, args.iter().map(String::as_str))?;
+    args.extend(copied_files.pathspecs.iter().cloned());
+    let output = session.git.run_bytes(main_root, args)?;
     let mut ignored: Vec<_> = output
         .stdout
         .split(|byte| *byte == b'\0')
         .filter(|path| !path.is_empty())
         .map(path_buf_from_git_bytes)
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|file_name| specs.iter().any(|spec| spec.file_name == file_name))
-        })
-        .collect();
-    ignored.sort();
-    Ok(ignored)
-}
-
-fn ignored_exact_paths(
-    session: &Session<'_>,
-    main_root: &Path,
-    relative: &Path,
-) -> AppResult<Vec<PathBuf>> {
-    let relative = relative.to_string_lossy().into_owned();
-    let output = session.git.run_bytes(
-        main_root,
-        [
-            "ls-files",
-            "--others",
-            "--ignored",
-            "--exclude-standard",
-            "--full-name",
-            "-z",
-            "--",
-            &relative,
-        ],
-    )?;
-    let mut ignored: Vec<_> = output
-        .stdout
-        .split(|byte| *byte == b'\0')
-        .filter(|path| !path.is_empty())
-        .map(path_buf_from_git_bytes)
-        .filter(|path| path == Path::new(&relative) || path.starts_with(Path::new(&relative)))
+        .filter(|path| copied_files.matcher.is_match(path))
         .collect();
     ignored.sort();
     ignored.dedup();
     Ok(ignored)
+}
+
+#[derive(Debug, Clone)]
+struct CopyPatternMatcher {
+    globset: GlobSet,
+    basename_globset: GlobSet,
+    directory_globset: GlobSet,
+    descendant_globset: GlobSet,
+}
+
+impl CopyPatternMatcher {
+    fn new(patterns: &[String]) -> AppResult<Self> {
+        let mut glob_builder = GlobSetBuilder::new();
+        let mut basename_builder = GlobSetBuilder::new();
+        let mut directory_builder = GlobSetBuilder::new();
+        let mut descendant_builder = GlobSetBuilder::new();
+        for pattern in patterns {
+            if pattern.ends_with('/') {
+                for directory_pattern in copy_pattern_directory_patterns(pattern) {
+                    directory_builder.add(Glob::new(&directory_pattern).map_err(|error| {
+                        Error::message(format!("invalid copy pattern {pattern:?}: {error}"))
+                    })?);
+                }
+                continue;
+            }
+            glob_builder.add(Glob::new(pattern).map_err(|error| {
+                Error::message(format!("invalid copy pattern {pattern:?}: {error}"))
+            })?);
+            if let Some(root_pattern) = pattern.strip_prefix("**/") {
+                glob_builder.add(Glob::new(root_pattern).map_err(|error| {
+                    Error::message(format!("invalid copy pattern {pattern:?}: {error}"))
+                })?);
+            }
+            if !pattern.contains('/') {
+                basename_builder.add(Glob::new(pattern).map_err(|error| {
+                    Error::message(format!("invalid copy pattern {pattern:?}: {error}"))
+                })?);
+            }
+            for directory_pattern in copy_pattern_descendant_patterns(pattern) {
+                descendant_builder.add(Glob::new(&directory_pattern).map_err(|error| {
+                    Error::message(format!("invalid copy pattern {pattern:?}: {error}"))
+                })?);
+            }
+        }
+        Ok(Self {
+            globset: glob_builder.build().map_err(|error| {
+                Error::message(format!("failed to build copy pattern matcher: {error}"))
+            })?,
+            basename_globset: basename_builder.build().map_err(|error| {
+                Error::message(format!("failed to build copy pattern matcher: {error}"))
+            })?,
+            directory_globset: directory_builder.build().map_err(|error| {
+                Error::message(format!("failed to build copy pattern matcher: {error}"))
+            })?,
+            descendant_globset: descendant_builder.build().map_err(|error| {
+                Error::message(format!("failed to build copy pattern matcher: {error}"))
+            })?,
+        })
+    }
+
+    fn is_match(&self, path: &Path) -> bool {
+        self.globset.is_match(path)
+            || path
+                .file_name()
+                .is_some_and(|name| self.basename_globset.is_match(Path::new(name)))
+            || self.directory_globset.is_match(path)
+            || self.descendant_globset.is_match(path)
+    }
+}
+
+fn copy_pattern_pathspecs(patterns: &[String]) -> Vec<String> {
+    let mut pathspecs = Vec::new();
+    for pattern in patterns {
+        if pattern.ends_with('/') {
+            for directory_pattern in copy_pattern_directory_patterns(pattern) {
+                pathspecs.push(git_glob_pathspec(&directory_pattern));
+            }
+            continue;
+        }
+        pathspecs.push(git_glob_pathspec(pattern));
+        if let Some(root_pattern) = pattern.strip_prefix("**/") {
+            pathspecs.push(git_glob_pathspec(root_pattern));
+        }
+        if !pattern.contains('/') {
+            pathspecs.push(git_glob_pathspec(&format!("**/{pattern}")));
+        }
+        for directory_pattern in copy_pattern_descendant_patterns(pattern) {
+            pathspecs.push(git_glob_pathspec(&directory_pattern));
+        }
+    }
+    pathspecs.sort();
+    pathspecs.dedup();
+    pathspecs
+}
+
+fn git_glob_pathspec(pattern: &str) -> String {
+    format!(":(glob){pattern}")
+}
+
+fn copy_pattern_directory_patterns(pattern: &str) -> Vec<String> {
+    let trimmed = pattern.trim_end_matches('/');
+    copy_pattern_descendant_patterns(trimmed)
+}
+
+fn copy_pattern_descendant_patterns(pattern: &str) -> Vec<String> {
+    let mut patterns = vec![format!("{pattern}/**")];
+    if !pattern.contains('/') {
+        patterns.push(format!("**/{pattern}/**"));
+    } else if let Some(root_pattern) = pattern.strip_prefix("**/") {
+        patterns.push(format!("{root_pattern}/**"));
+    }
+    patterns
 }
 
 #[cfg(unix)]
@@ -1895,69 +1844,20 @@ fn path_buf_from_git_bytes(path: &[u8]) -> PathBuf {
     PathBuf::from(String::from_utf8_lossy(path).into_owned())
 }
 
-fn print_copied_recursive_ignored_files(
+fn print_copied_files(
     session: &mut Session<'_>,
-    specs: &[RecursiveIgnoredFileSpec],
+    _copied_files: &CopiedIgnoredFiles,
     copied: Vec<PathBuf>,
 ) -> AppResult<()> {
-    for relative in copied {
-        let file_name = relative
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| {
-                Error::message(format!(
-                    "ignored file has no terminal file name: {}",
-                    relative.display()
-                ))
-            })?;
-        let spec = specs
-            .iter()
-            .find(|spec| spec.file_name == file_name)
-            .ok_or_else(|| {
-                Error::message(format!(
-                    "ignored file is not configured for copy reporting: {}",
-                    relative.display()
-                ))
-            })?;
-        writeln!(session.out, "{}: {}", spec.copy_label, relative.display())?;
+    if !copied.is_empty() {
+        print_copied_file_count(session, copied.len())?;
     }
     Ok(())
 }
 
-fn print_copied_files(
-    session: &mut Session<'_>,
-    copied_files: &CopiedIgnoredFiles,
-    copied: Vec<PathBuf>,
-) -> AppResult<()> {
-    let mut recursive = Vec::new();
-    let mut exact = Vec::new();
-    for relative in copied {
-        let is_recursive = relative
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|file_name| {
-                copied_files
-                    .recursive
-                    .iter()
-                    .any(|spec| spec.file_name == file_name)
-            });
-        if is_recursive {
-            recursive.push(relative);
-        } else {
-            exact.push(relative);
-        }
-    }
-    print_copied_recursive_ignored_files(session, &copied_files.recursive, recursive)?;
-    print_copied_ignored_files(session, "copied ignored file", exact)
-}
-
-fn print_copied_ignored_files(
-    session: &mut Session<'_>,
-    label: &str,
-    copied: Vec<PathBuf>,
-) -> AppResult<()> {
-    for relative in copied {
-        writeln!(session.out, "{label}: {}", relative.display())?;
+fn print_copied_file_count(session: &mut Session<'_>, count: usize) -> AppResult<()> {
+    if count > 0 {
+        writeln!(session.out, "copied {count} ignored files")?;
     }
     Ok(())
 }
@@ -2007,8 +1907,7 @@ fn start_async_init_worktree(
 }
 
 fn write_recursive_ignored_file_snapshot(
-    recursive_ignored_files: &[SnapshotFile],
-    exact_ignored_files: &[SnapshotFile],
+    ignored_files: &[SnapshotFile],
     worktree_path: &Path,
 ) -> AppResult<PathBuf> {
     let nonce = SystemTime::now()
@@ -2033,12 +1932,8 @@ fn write_recursive_ignored_file_snapshot(
         ))
     })?;
     write_recursive_ignored_file_snapshot_marker(&snapshot_root)?;
-    let ignored_files = dedupe_snapshot_files(merge_snapshot_files(
-        recursive_ignored_files,
-        exact_ignored_files,
-    ));
     cleanup_recursive_ignored_file_snapshot_on_error(
-        copy_snapshot_files(&ignored_files, &snapshot_root)
+        copy_snapshot_files(ignored_files, &snapshot_root)
             .map_err(|error| {
                 Error::message(format!(
                     "worktree created, but failed to snapshot ignored files in {}: {error}",
@@ -2515,14 +2410,87 @@ mod tests {
     }
 
     #[test]
-    fn recursive_ignored_files_short_circuits_when_specs_are_empty() {
+    fn copy_pattern_ignored_files_short_circuits_when_patterns_are_empty() {
         let mut out = io::sink();
         let mut clipboard = FailingClipboard;
         let session = super::Session::new(PathBuf::from("."), &mut out, &mut clipboard, false);
 
-        let ignored = super::recursive_ignored_files(&session, Path::new("missing-directory"), &[])
-            .expect("empty recursive specs should not invoke git");
+        let copied_files = super::CopiedIgnoredFiles {
+            patterns: Vec::new(),
+            matcher: super::CopyPatternMatcher::new(&[]).unwrap(),
+            pathspecs: Vec::new(),
+        };
+        let ignored = super::copy_pattern_ignored_files(
+            &session,
+            Path::new("missing-directory"),
+            &copied_files,
+        )
+        .expect("empty copy patterns should not invoke git");
 
         assert!(ignored.is_empty());
+    }
+
+    #[test]
+    fn copy_pattern_matcher_treats_slashless_patterns_as_directory_basenames() {
+        let matcher = super::CopyPatternMatcher::new(&["secrets".to_string()]).unwrap();
+
+        assert!(matcher.is_match(Path::new("secrets")));
+        assert!(matcher.is_match(Path::new("config/secrets")));
+        assert!(matcher.is_match(Path::new("secrets/token")));
+        assert!(matcher.is_match(Path::new("config/secrets/token")));
+        assert!(!matcher.is_match(Path::new("config/secret/token")));
+    }
+
+    #[test]
+    fn copy_pattern_matcher_preserves_descendants_for_slash_patterns_without_trailing_slash() {
+        let matcher = super::CopyPatternMatcher::new(&["specs/change/active".to_string()]).unwrap();
+
+        assert!(matcher.is_match(Path::new("specs/change/active")));
+        assert!(matcher.is_match(Path::new("specs/change/active/plan.md")));
+        assert!(!matcher.is_match(Path::new("specs/change/inactive/plan.md")));
+    }
+
+    #[test]
+    fn copy_pattern_matcher_treats_trailing_slash_patterns_as_nested_directories() {
+        let matcher = super::CopyPatternMatcher::new(&[".agents/".to_string()]).unwrap();
+
+        assert!(matcher.is_match(Path::new(".agents/instructions.md")));
+        assert!(matcher.is_match(Path::new("nested/.agents/instructions.md")));
+        assert!(!matcher.is_match(Path::new("nested/agents/instructions.md")));
+    }
+
+    #[test]
+    fn copy_pattern_pathspecs_include_descendants_for_slashless_and_directory_patterns() {
+        let pathspecs = super::copy_pattern_pathspecs(&[
+            "secrets".to_string(),
+            ".agents/".to_string(),
+            "specs/change/active".to_string(),
+            "**/.env".to_string(),
+        ]);
+
+        assert!(pathspecs.contains(&":(glob)secrets".to_string()));
+        assert!(pathspecs.contains(&":(glob)**/secrets".to_string()));
+        assert!(pathspecs.contains(&":(glob)secrets/**".to_string()));
+        assert!(pathspecs.contains(&":(glob)**/secrets/**".to_string()));
+        assert!(pathspecs.contains(&":(glob).agents/**".to_string()));
+        assert!(pathspecs.contains(&":(glob)**/.agents/**".to_string()));
+        assert!(pathspecs.contains(&":(glob)specs/change/active".to_string()));
+        assert!(pathspecs.contains(&":(glob)specs/change/active/**".to_string()));
+        assert!(pathspecs.contains(&":(glob)**/.env".to_string()));
+        assert!(pathspecs.contains(&":(glob).env".to_string()));
+        assert!(pathspecs.contains(&":(glob)**/.env/**".to_string()));
+        assert!(pathspecs.contains(&":(glob).env/**".to_string()));
+    }
+
+    #[test]
+    fn validate_copy_pattern_rejects_negation() {
+        let error = super::validate_copy_pattern("!secrets/public/**")
+            .expect_err("negated copy patterns should fail fast");
+
+        assert!(
+            error
+                .to_string()
+                .contains("copy entries do not support negation patterns")
+        );
     }
 }

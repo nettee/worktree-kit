@@ -783,7 +783,7 @@ fn command_help(command: &str) -> &'static str {
         "init-worktree" => concat!(
             "Usage: wtk init-worktree <source-root> <worktree-path> [flags]\n\n",
             "Advanced command:\n",
-            "  Copy configured ignored recursive files from source-root into worktree-path and run pnpm install when needed.\n\n",
+            "  Copy configured ignored files from source-root into worktree-path and run pnpm install when needed.\n\n",
             "Flags:\n",
             "  -h, --help\n",
         ),

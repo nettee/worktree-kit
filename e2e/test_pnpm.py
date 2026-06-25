@@ -46,7 +46,7 @@ def test_send_out_returns_before_slow_real_pnpm_install_finishes(run_wtk, repo_f
     wait_until("slow send-out pnpm marker", lambda: linked.joinpath(".pnpm-send-out.txt").exists(), timeout=15.0)
 
 
-def test_auxiliary_group_new_copies_env_and_runs_real_pnpm_install(run_wtk, repo_factory) -> None:
+def test_auxiliary_group_new_copies_env_and_runs_real_pnpm_install(run_wtk, repo_factory, tmp_path) -> None:
     primary = repo_factory.init_repo("primary")
     members = {
         "A": repo_factory.init_repo("A"),
@@ -58,6 +58,9 @@ def test_auxiliary_group_new_copies_env_and_runs_real_pnpm_install(run_wtk, repo
         repo_factory.commit_files(repo, {".gitignore": ".env\n"}, "ignore env")
         (repo / ".env").write_text(f"{name}=value\n", encoding="utf-8")
         repo_factory.add_real_pnpm_project(repo, marker_name=f".pnpm-{name.lower()}.txt")
+    home = tmp_path / "home"
+    (home / ".wtk").mkdir(parents=True)
+    (home / ".wtk" / "config.toml").write_text('copy = ["**/.env"]\n', encoding="utf-8")
 
     out = run_wtk(
         "new",
@@ -68,6 +71,7 @@ def test_auxiliary_group_new_copies_env_and_runs_real_pnpm_install(run_wtk, repo
         "full-stack",
         "--no-clipboard",
         cwd=primary,
+        env={"HOME": str(home)},
     ).output
     primary_linked = linked_worktree_path(primary, "feature/aux-init")
     linked_a = linked_worktree_path(members["A"], "feature/aux-init")
@@ -77,12 +81,12 @@ def test_auxiliary_group_new_copies_env_and_runs_real_pnpm_install(run_wtk, repo
     wait_until("auxiliary pnpm markers", lambda: linked_a.joinpath(".pnpm-a.txt").exists() and linked_b.joinpath(".pnpm-b.txt").exists(), timeout=15.0)
     assert linked_a.joinpath(".env").read_text(encoding="utf-8") == "A=value\n"
     assert linked_b.joinpath(".env").read_text(encoding="utf-8") == "B=value\n"
-    assert "copied ignored .env: .env" in out
+    assert "copied 1 ignored files" in out
     assert "running pnpm install asynchronously" in out
 
 
 def test_auxiliary_group_new_returns_before_slow_real_pnpm_install_finishes(
-    run_wtk, repo_factory
+    run_wtk, repo_factory, tmp_path
 ) -> None:
     primary = repo_factory.init_repo("primary")
     members = {
@@ -97,6 +101,9 @@ def test_auxiliary_group_new_returns_before_slow_real_pnpm_install_finishes(
         repo_factory.add_real_pnpm_project(
             repo, delay_seconds=2.0, marker_name=f".pnpm-slow-{name.lower()}.txt"
         )
+    home = tmp_path / "home"
+    (home / ".wtk").mkdir(parents=True)
+    (home / ".wtk" / "config.toml").write_text('copy = ["**/.env"]\n', encoding="utf-8")
 
     started = time.monotonic()
     out = run_wtk(
@@ -108,6 +115,7 @@ def test_auxiliary_group_new_returns_before_slow_real_pnpm_install_finishes(
         "full-stack",
         "--no-clipboard",
         cwd=primary,
+        env={"HOME": str(home)},
     ).output
     elapsed = time.monotonic() - started
 

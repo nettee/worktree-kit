@@ -48,14 +48,15 @@ wtk checkout feature/existing
 
 By default, `wtk` uses the Sibling Layout: a repository's linked worktrees live next to the main worktree using names like `<repo>-wt-<branch-slug>`.
 
-Commands that create linked worktrees copy configured ignored files from the main worktree into the new worktree at the same Git-root-relative paths. The default recursive file-name list is `.env`, and the default exact-path list is `.agents`. Exact-path directory entries only copy files and symlinks that Git reports as ignored under that directory, so tracked files under `.agents/` are not copied unless you configure them some other way. Recursive matching is still exact-name based, so files such as `.env.local`, `.env.example`, and `.envrc` are not copied unless configured explicitly. When matching ignored files are copied, `wtk` prints one line per file, such as `copied ignored .env: <path>` or `copied ignored file: .agents/local.md`.
+Commands that create linked worktrees copy globally configured ignored files from the main worktree into the new worktree at the same Git-root-relative paths. Copy Patterns use gitignore-style syntax except negation (`!`) and only select files or symlinks that Git reports as ignored; tracked files are never copied by Copy Patterns. When matching ignored files are copied, `wtk` prints one concise summary such as `copied 12 ignored files`.
 
-Copy behavior can be configured in either repo-local `.wtk/config.toml` or global `~/.wtk/config.toml`. Repo-local config overrides global config for each configured list. The shape is:
+Copy Patterns are configured only in global `~/.wtk/config.toml`. Repo-local `.wtk/config.toml` cannot contain `copy` and fails fast if it does. Without a global `copy` list, `wtk` copies no ignored files by default. The default config template is:
 
 ```toml
-[copy]
-recursive = [".env"]
-exact = [".agents"]
+copy = [
+  "**/.env",
+  ".agents/",
+]
 ```
 
 For standalone `wtk new`, success is reported before asynchronous worktree initialization finishes copying ignored files into the new worktree. `wtk` prints info lines when that background initialization starts and where its temporary log file is written.

@@ -9,7 +9,13 @@ from conftest import linked_worktree_path, wait_until
 from conftest import run_git
 
 
-def test_root_and_nested_ignored_env_files_copy(run_wtk, repo_factory) -> None:
+def write_global_copy_config(home, patterns):
+    (home / ".wtk").mkdir(parents=True)
+    body = "copy = [\n" + "".join(f'  "{pattern}",\n' for pattern in patterns) + "]\n"
+    (home / ".wtk" / "config.toml").write_text(body, encoding="utf-8")
+
+
+def test_root_and_nested_ignored_env_files_copy(run_wtk, repo_factory, tmp_path) -> None:
     repo = repo_factory.init_repo("repo")
     repo_factory.commit_files(
         repo,
@@ -23,8 +29,10 @@ def test_root_and_nested_ignored_env_files_copy(run_wtk, repo_factory) -> None:
     (repo / ".env").write_text("ROOT=value\n", encoding="utf-8")
     (repo / "apps" / "web" / ".env").write_text("WEB=value\n", encoding="utf-8")
     (repo / "services" / "api" / ".env").write_text("API=value\n", encoding="utf-8")
+    home = tmp_path / "home"
+    write_global_copy_config(home, ["**/.env", ".agents/"])
 
-    out = run_wtk("new", "feature/envs", "--base", "main", "--no-clipboard", cwd=repo).output
+    out = run_wtk("new", "feature/envs", "--base", "main", "--no-clipboard", cwd=repo, env={"HOME": str(home)}).output
     linked = linked_worktree_path(repo, "feature/envs")
     wait_until("copied env files", lambda: linked.joinpath(".env").exists() and linked.joinpath("apps/web/.env").exists())
 
@@ -32,6 +40,8 @@ def test_root_and_nested_ignored_env_files_copy(run_wtk, repo_factory) -> None:
     assert linked.joinpath("apps/web/.env").read_text(encoding="utf-8") == "WEB=value\n"
     assert linked.joinpath("services/api/.env").read_text(encoding="utf-8") == "API=value\n"
     assert "initializing worktree asynchronously" in out
+    assert "copied 3 ignored files" in out
+    assert "copied ignored" not in out
 
 
 def test_root_and_nested_ignored_secrets_auto_tfvars_copy(
@@ -58,9 +68,9 @@ def test_root_and_nested_ignored_secrets_auto_tfvars_copy(
     (home / ".wtk").mkdir(parents=True)
     (home / ".wtk" / "config.toml").write_text(
         """
-[copy]
-recursive = ["secrets.auto.tfvars"]
-exact = []
+copy = [
+  "**/secrets.auto.tfvars",
+]
 """.lstrip(),
         encoding="utf-8",
     )
@@ -94,7 +104,7 @@ exact = []
     assert "initializing worktree asynchronously" in out
 
 
-def test_ignored_only_dirs_non_ascii_and_tracked_env_behavior(run_wtk, repo_factory) -> None:
+def test_ignored_only_dirs_non_ascii_and_tracked_env_behavior(run_wtk, repo_factory, tmp_path) -> None:
     repo = repo_factory.init_repo("repo")
     repo_factory.commit_files(
         repo,
@@ -108,8 +118,10 @@ def test_ignored_only_dirs_non_ascii_and_tracked_env_behavior(run_wtk, repo_fact
     (repo / "secrets" / ".env").write_text("SECRET=value\n", encoding="utf-8")
     (repo / "café").mkdir()
     (repo / "café" / ".env").write_text("UNICODE=value\n", encoding="utf-8")
+    home = tmp_path / "home"
+    write_global_copy_config(home, ["**/.env"])
 
-    out = run_wtk("new", "feature/mixed", "--base", "main", "--no-clipboard", cwd=repo).output
+    out = run_wtk("new", "feature/mixed", "--base", "main", "--no-clipboard", cwd=repo, env={"HOME": str(home)}).output
     linked = linked_worktree_path(repo, "feature/mixed")
     wait_until("unicode env copy", lambda: linked.joinpath("café/.env").exists())
 
@@ -127,8 +139,10 @@ def test_symlink_and_permissions_are_preserved(run_wtk, repo_factory, tmp_path) 
     shared_env = tmp_path / "shared.env"
     shared_env.write_text("ROOT=value\n", encoding="utf-8")
     os.symlink(shared_env, repo / ".env")
+    home = tmp_path / "home"
+    write_global_copy_config(home, ["**/.env"])
 
-    run_wtk("new", "feature/root-env-symlink", "--base", "main", "--no-clipboard", cwd=repo)
+    run_wtk("new", "feature/root-env-symlink", "--base", "main", "--no-clipboard", cwd=repo, env={"HOME": str(home)})
     linked = linked_worktree_path(repo, "feature/root-env-symlink")
     wait_until("symlink copy", lambda: linked.joinpath(".env").exists())
     assert linked.joinpath(".env").is_symlink()
@@ -139,7 +153,7 @@ def test_symlink_and_permissions_are_preserved(run_wtk, repo_factory, tmp_path) 
     (repo / ".env").write_text("ROOT=value\n", encoding="utf-8")
     os.chmod(repo / ".env", 0o600)
 
-    run_wtk("new", "feature/root-env-mode", "--base", "main", "--no-clipboard", cwd=repo)
+    run_wtk("new", "feature/root-env-mode", "--base", "main", "--no-clipboard", cwd=repo, env={"HOME": str(home)})
     linked = linked_worktree_path(repo, "feature/root-env-mode")
     wait_until(
         "env permissions",
@@ -189,7 +203,7 @@ def test_similarly_named_tfvars_files_are_not_copied(run_wtk, repo_factory) -> N
     assert not linked.joinpath("config/secrets.auto.tfvars.tpl").exists()
 
 
-def test_global_copy_config_controls_recursive_and_exact_files(
+def test_global_copy_config_controls_copy_patterns(
     run_wtk, repo_factory, tmp_path
 ) -> None:
     repo = repo_factory.init_repo("repo")
@@ -209,9 +223,10 @@ def test_global_copy_config_controls_recursive_and_exact_files(
     (home / ".wtk").mkdir(parents=True)
     (home / ".wtk" / "config.toml").write_text(
         """
-[copy]
-recursive = [".env.local"]
-exact = ["notes/secret.txt"]
+copy = [
+  "**/.env.local",
+  "notes/secret.txt",
+]
 """.lstrip(),
         encoding="utf-8",
     )
@@ -240,22 +255,128 @@ exact = ["notes/secret.txt"]
     )
 
 
-def test_default_exact_agents_directory_skips_missing_directory(
-    run_wtk, repo_factory
+def test_invalid_copy_pattern_fails_before_worktree_creation(
+    run_wtk, repo_factory, tmp_path
+) -> None:
+    repo = repo_factory.init_repo("repo")
+    repo_factory.commit_files(repo, {".gitignore": ".env\n"}, "ignore env")
+    (repo / ".env").write_text("ROOT=value\n", encoding="utf-8")
+    home = tmp_path / "home"
+    write_global_copy_config(home, ["["])
+
+    result = run_wtk(
+        "new",
+        "feature/bad-copy-pattern",
+        "--base",
+        "main",
+        "--no-clipboard",
+        cwd=repo,
+        env={"HOME": str(home)},
+        check=False,
+    )
+    linked = linked_worktree_path(repo, "feature/bad-copy-pattern")
+
+    result.assert_failure()
+    assert "invalid copy pattern" in result.output
+    assert not linked.exists()
+
+
+def test_negated_copy_pattern_fails_before_worktree_creation(
+    run_wtk, repo_factory, tmp_path
+) -> None:
+    repo = repo_factory.init_repo("repo")
+    repo_factory.commit_files(repo, {".gitignore": "secrets/\n"}, "ignore secrets")
+    (repo / "secrets").mkdir()
+    (repo / "secrets" / "token.txt").write_text("SECRET=value\n", encoding="utf-8")
+    home = tmp_path / "home"
+    write_global_copy_config(home, ["secrets/**", "!secrets/public/**"])
+
+    result = run_wtk(
+        "new",
+        "feature/negated-copy-pattern",
+        "--base",
+        "main",
+        "--no-clipboard",
+        cwd=repo,
+        env={"HOME": str(home)},
+        check=False,
+    )
+    linked = linked_worktree_path(repo, "feature/negated-copy-pattern")
+
+    result.assert_failure()
+    assert "copy entries do not support negation patterns" in result.output
+    assert not linked.exists()
+
+
+def test_no_runtime_defaults_skip_ignored_copy(
+    run_wtk, repo_factory, tmp_path
 ) -> None:
     repo = repo_factory.init_repo("repo")
     repo_factory.commit_files(repo, {".gitignore": ".env\n"}, "ignore env only")
 
-    out = run_wtk("new", "feature/missing-agents", "--base", "main", "--no-clipboard", cwd=repo).output
+    (repo / ".env").write_text("ROOT=value\n", encoding="utf-8")
+    home = tmp_path / "home"
+
+    out = run_wtk("new", "feature/missing-agents", "--base", "main", "--no-clipboard", cwd=repo, env={"HOME": str(home)}).output
     linked = linked_worktree_path(repo, "feature/missing-agents")
 
     assert linked.exists()
+    assert not linked.joinpath(".env").exists()
+    assert "copied " not in out
+
+
+def test_globbed_directory_copy_pattern_matches_ignored_descendants(
+    run_wtk, repo_factory, tmp_path
+) -> None:
+    repo = repo_factory.init_repo("repo")
+    repo_factory.commit_files(
+        repo,
+        {
+            ".gitignore": "apps/web/.cache/\napps/api/.cache/\n",
+            "apps/web/keep.txt": "web\n",
+            "apps/api/keep.txt": "api\n",
+        },
+        "ignore globbed cache dirs",
+    )
+    (repo / "apps" / "web" / ".cache").mkdir()
+    (repo / "apps" / "web" / ".cache" / "token.txt").write_text("WEB\n", encoding="utf-8")
+    (repo / "apps" / "api" / ".cache").mkdir()
+    (repo / "apps" / "api" / ".cache" / "token.txt").write_text("API\n", encoding="utf-8")
+    home = tmp_path / "home"
+    write_global_copy_config(home, ["apps/*/.cache/"])
+
+    out = run_wtk("new", "feature/globbed-dir", "--base", "main", "--no-clipboard", cwd=repo, env={"HOME": str(home)}).output
+    linked = linked_worktree_path(repo, "feature/globbed-dir")
+    wait_until(
+        "globbed directory copied",
+        lambda: linked.joinpath("apps/web/.cache/token.txt").exists()
+        and linked.joinpath("apps/api/.cache/token.txt").exists(),
+    )
+
+    assert linked.joinpath("apps/web/.cache/token.txt").read_text(encoding="utf-8") == "WEB\n"
+    assert linked.joinpath("apps/api/.cache/token.txt").read_text(encoding="utf-8") == "API\n"
+    assert "copied 2 ignored files" in out
+
+
+def test_directory_copy_pattern_does_not_match_file_with_same_name(
+    run_wtk, repo_factory, tmp_path
+) -> None:
+    repo = repo_factory.init_repo("repo")
+    repo_factory.commit_files(repo, {".gitignore": ".agents\n"}, "ignore agents file")
+    (repo / ".agents").write_text("not a dir\n", encoding="utf-8")
+    home = tmp_path / "home"
+    write_global_copy_config(home, [".agents/"])
+
+    out = run_wtk("new", "feature/agents-file", "--base", "main", "--no-clipboard", cwd=repo, env={"HOME": str(home)}).output
+    linked = linked_worktree_path(repo, "feature/agents-file")
+
+    assert linked.exists()
     assert not linked.joinpath(".agents").exists()
-    assert "copied ignored file:" not in out
+    assert "copied " not in out
 
 
 @pytest.mark.skipif(os.name == "nt", reason="requires unix symlink semantics")
-def test_default_exact_agents_directory_copies_ignored_files_and_symlinks(
+def test_copy_pattern_agents_directory_copies_ignored_files_and_symlinks(
     run_wtk, repo_factory, tmp_path
 ) -> None:
     repo = repo_factory.init_repo("repo")
@@ -271,8 +392,10 @@ def test_default_exact_agents_directory_copies_ignored_files_and_symlinks(
     shared = tmp_path / "shared-agents.txt"
     shared.write_text("SHARED=1\n", encoding="utf-8")
     os.symlink(shared, repo / ".agents" / "shared.txt")
+    home = tmp_path / "home"
+    write_global_copy_config(home, [".agents/"])
 
-    out = run_wtk("new", "feature/agents-dir", "--base", "main", "--no-clipboard", cwd=repo).output
+    out = run_wtk("new", "feature/agents-dir", "--base", "main", "--no-clipboard", cwd=repo, env={"HOME": str(home)}).output
     linked = linked_worktree_path(repo, "feature/agents-dir")
     wait_until(
         "agents directory copied",
@@ -286,8 +409,48 @@ def test_default_exact_agents_directory_copies_ignored_files_and_symlinks(
     assert "initializing worktree asynchronously" in out
 
 
-def test_default_exact_agents_directory_only_copies_ignored_descendants(
-    run_wtk, repo_factory
+def test_copy_pattern_agents_directory_matches_nested_ignored_directories(
+    run_wtk, repo_factory, tmp_path
+) -> None:
+    repo = repo_factory.init_repo("repo")
+    repo_factory.commit_files(
+        repo,
+        {
+            ".gitignore": ".agents/\n",
+        },
+        "ignore agents directories",
+    )
+    (repo / "nested" / ".agents").mkdir(parents=True)
+    (repo / "nested" / ".agents" / "instructions.md").write_text(
+        "NESTED=1\n", encoding="utf-8"
+    )
+    home = tmp_path / "home"
+    write_global_copy_config(home, [".agents/"])
+
+    out = run_wtk(
+        "new",
+        "feature/nested-agents-dir",
+        "--base",
+        "main",
+        "--no-clipboard",
+        cwd=repo,
+        env={"HOME": str(home)},
+    ).output
+    linked = linked_worktree_path(repo, "feature/nested-agents-dir")
+    wait_until(
+        "nested agents directory copied",
+        lambda: linked.joinpath("nested/.agents/instructions.md").exists(),
+    )
+
+    assert (
+        linked.joinpath("nested/.agents/instructions.md").read_text(encoding="utf-8")
+        == "NESTED=1\n"
+    )
+    assert "copied 1 ignored files" in out
+
+
+def test_copy_pattern_agents_directory_only_copies_ignored_descendants(
+    run_wtk, repo_factory, tmp_path
 ) -> None:
     repo = repo_factory.init_repo("repo")
     repo_factory.commit_files(
@@ -303,8 +466,10 @@ def test_default_exact_agents_directory_only_copies_ignored_descendants(
     (repo / ".agents" / "local.md").write_text("LOCAL=1\n", encoding="utf-8")
     (repo / ".agents" / "nested").mkdir()
     (repo / ".agents" / "nested" / "private.txt").write_text("PRIVATE=1\n", encoding="utf-8")
+    home = tmp_path / "home"
+    write_global_copy_config(home, [".agents/"])
 
-    out = run_wtk("new", "feature/agents-partial", "--base", "main", "--no-clipboard", cwd=repo).output
+    out = run_wtk("new", "feature/agents-partial", "--base", "main", "--no-clipboard", cwd=repo, env={"HOME": str(home)}).output
     linked = linked_worktree_path(repo, "feature/agents-partial")
     wait_until(
         "partial agents directory copied",
@@ -325,7 +490,82 @@ def test_default_exact_agents_directory_only_copies_ignored_descendants(
     assert "initializing worktree asynchronously" in out
 
 
-def test_repo_local_copy_config_overrides_global_copy_config(
+def test_slashless_copy_pattern_matches_ignored_directory_descendants(
+    run_wtk, repo_factory, tmp_path
+) -> None:
+    repo = repo_factory.init_repo("repo")
+    repo_factory.commit_files(
+        repo,
+        {
+            ".gitignore": "secrets/\n",
+        },
+        "ignore secrets directory",
+    )
+    (repo / "secrets").mkdir()
+    (repo / "secrets" / "token").write_text("SECRET=1\n", encoding="utf-8")
+    home = tmp_path / "home"
+    write_global_copy_config(home, ["secrets"])
+
+    out = run_wtk(
+        "new",
+        "feature/secrets-dir",
+        "--base",
+        "main",
+        "--no-clipboard",
+        cwd=repo,
+        env={"HOME": str(home)},
+    ).output
+    linked = linked_worktree_path(repo, "feature/secrets-dir")
+    wait_until(
+        "slashless secrets directory copied",
+        lambda: linked.joinpath("secrets/token").exists(),
+    )
+
+    assert linked.joinpath("secrets/token").read_text(encoding="utf-8") == "SECRET=1\n"
+    assert "copied 1 ignored files" in out
+
+
+def test_copy_pattern_preserves_ignored_descendants_for_slash_path_directories(
+    run_wtk, repo_factory, tmp_path
+) -> None:
+    repo = repo_factory.init_repo("repo")
+    repo_factory.commit_files(
+        repo,
+        {
+            ".gitignore": "specs/change/active\n",
+        },
+        "ignore active spec directory",
+    )
+    (repo / "specs" / "change" / "active").mkdir(parents=True)
+    (repo / "specs" / "change" / "active" / "plan.md").write_text(
+        "ACTIVE\n", encoding="utf-8"
+    )
+    home = tmp_path / "home"
+    write_global_copy_config(home, ["specs/change/active"])
+
+    out = run_wtk(
+        "new",
+        "feature/active-spec",
+        "--base",
+        "main",
+        "--no-clipboard",
+        cwd=repo,
+        env={"HOME": str(home)},
+    ).output
+    linked = linked_worktree_path(repo, "feature/active-spec")
+    wait_until(
+        "slash path directory descendants copied",
+        lambda: linked.joinpath("specs/change/active/plan.md").exists(),
+    )
+
+    assert (
+        linked.joinpath("specs/change/active/plan.md").read_text(encoding="utf-8")
+        == "ACTIVE\n"
+    )
+    assert "copied 1 ignored files" in out
+
+
+def test_repo_local_copy_config_is_rejected(
     run_wtk, repo_factory, tmp_path
 ) -> None:
     repo = repo_factory.init_repo("repo")
@@ -345,23 +585,22 @@ def test_repo_local_copy_config_overrides_global_copy_config(
     (home / ".wtk").mkdir(parents=True)
     (home / ".wtk" / "config.toml").write_text(
         """
-[copy]
-recursive = [".env.local"]
-exact = ["specs/change/active"]
+copy = [
+  "**/.env.local",
+  "specs/change/active",
+]
 """.lstrip(),
         encoding="utf-8",
     )
     (repo / ".wtk").mkdir()
     (repo / ".wtk" / "config.toml").write_text(
         """
-[copy]
-recursive = [".env"]
-exact = []
+copy = ["**/.env"]
 """.lstrip(),
         encoding="utf-8",
     )
 
-    run_wtk(
+    result = run_wtk(
         "new",
         "feature/local-override",
         "--base",
@@ -369,17 +608,17 @@ exact = []
         "--no-clipboard",
         cwd=repo,
         env={"HOME": str(home)},
+        check=False,
     )
     linked = linked_worktree_path(repo, "feature/local-override")
-    wait_until("local override recursive copy", lambda: linked.joinpath(".env").exists())
+    result.assert_failure()
 
-    assert linked.joinpath(".env").read_text(encoding="utf-8") == "DEFAULT=value\n"
-    assert not linked.joinpath(".env.local").exists()
-    assert not linked.joinpath("specs/change/active").exists()
+    assert "Copy Patterns are supported only in global ~/.wtk/config.toml" in result.output
+    assert not linked.exists()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="requires unix symlink semantics")
-def test_exact_copy_config_dedupes_recursive_symlink_snapshot(
+def test_overlapping_copy_patterns_dedupe_symlink_snapshot(
     run_wtk, repo_factory, tmp_path
 ) -> None:
     repo = repo_factory.init_repo("repo")
@@ -400,13 +639,15 @@ def test_exact_copy_config_dedupes_recursive_symlink_snapshot(
     (home / ".wtk").mkdir(parents=True)
     (home / ".wtk" / "config.toml").write_text(
         """
-[copy]
-exact = ["apps/web/.env"]
+copy = [
+  "**/.env",
+  "apps/web/.env",
+]
 """.lstrip(),
         encoding="utf-8",
     )
 
-    run_wtk(
+    out = run_wtk(
         "new",
         "feature/deduped-symlink",
         "--base",
@@ -414,9 +655,11 @@ exact = ["apps/web/.env"]
         "--no-clipboard",
         cwd=repo,
         env={"HOME": str(home)},
-    )
+    ).output
     linked = linked_worktree_path(repo, "feature/deduped-symlink")
     wait_until("deduped symlink copy", lambda: linked.joinpath("apps/web/.env").exists())
 
     assert linked.joinpath("apps/web/.env").is_symlink()
     assert linked.joinpath("apps/web/.env").resolve() == shared_env.resolve()
+    assert "copied 1 ignored files" in out
+    assert out.count("apps/web/.env") == 0
