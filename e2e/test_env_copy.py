@@ -281,6 +281,33 @@ def test_invalid_copy_pattern_fails_before_worktree_creation(
     assert not linked.exists()
 
 
+def test_negated_copy_pattern_fails_before_worktree_creation(
+    run_wtk, repo_factory, tmp_path
+) -> None:
+    repo = repo_factory.init_repo("repo")
+    repo_factory.commit_files(repo, {".gitignore": "secrets/\n"}, "ignore secrets")
+    (repo / "secrets").mkdir()
+    (repo / "secrets" / "token.txt").write_text("SECRET=value\n", encoding="utf-8")
+    home = tmp_path / "home"
+    write_global_copy_config(home, ["secrets/**", "!secrets/public/**"])
+
+    result = run_wtk(
+        "new",
+        "feature/negated-copy-pattern",
+        "--base",
+        "main",
+        "--no-clipboard",
+        cwd=repo,
+        env={"HOME": str(home)},
+        check=False,
+    )
+    linked = linked_worktree_path(repo, "feature/negated-copy-pattern")
+
+    result.assert_failure()
+    assert "copy entries do not support negation patterns" in result.output
+    assert not linked.exists()
+
+
 def test_no_runtime_defaults_skip_ignored_copy(
     run_wtk, repo_factory, tmp_path
 ) -> None:

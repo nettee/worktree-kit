@@ -1515,6 +1515,11 @@ fn validate_copy_pattern(pattern: &str) -> AppResult<()> {
     if pattern.is_empty() {
         return Err(Error::message("copy entries must not be empty"));
     }
+    if pattern.starts_with('!') {
+        return Err(Error::message(format!(
+            "copy entries do not support negation patterns: {pattern}"
+        )));
+    }
     if pattern.starts_with('/') || Path::new(pattern).is_absolute() {
         return Err(Error::message(format!(
             "copy entries must be relative patterns: {pattern}"
@@ -2475,5 +2480,17 @@ mod tests {
         assert!(pathspecs.contains(&":(glob).env".to_string()));
         assert!(pathspecs.contains(&":(glob)**/.env/**".to_string()));
         assert!(pathspecs.contains(&":(glob).env/**".to_string()));
+    }
+
+    #[test]
+    fn validate_copy_pattern_rejects_negation() {
+        let error = super::validate_copy_pattern("!secrets/public/**")
+            .expect_err("negated copy patterns should fail fast");
+
+        assert!(
+            error
+                .to_string()
+                .contains("copy entries do not support negation patterns")
+        );
     }
 }

@@ -48,7 +48,7 @@ wtk checkout feature/existing
 
 By default, `wtk` uses the Sibling Layout: a repository's linked worktrees live next to the main worktree using names like `<repo>-wt-<branch-slug>`.
 
-Commands that create linked worktrees copy globally configured ignored files from the main worktree into the new worktree at the same Git-root-relative paths. Copy Patterns use gitignore-style syntax and only select files or symlinks that Git reports as ignored; tracked files are never copied by Copy Patterns. When matching ignored files are copied, `wtk` prints one concise summary such as `copied 12 ignored files`.
+Commands that create linked worktrees copy globally configured ignored files from the main worktree into the new worktree at the same Git-root-relative paths. Copy Patterns use gitignore-style syntax except negation (`!`) and only select files or symlinks that Git reports as ignored; tracked files are never copied by Copy Patterns. When matching ignored files are copied, `wtk` prints one concise summary such as `copied 12 ignored files`.
 
 Copy Patterns are configured only in global `~/.wtk/config.toml`. Repo-local `.wtk/config.toml` cannot contain `copy` and fails fast if it does. Without a global `copy` list, `wtk` copies no ignored files by default. The default config template is:
 
