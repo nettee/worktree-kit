@@ -382,6 +382,46 @@ def test_copy_pattern_agents_directory_copies_ignored_files_and_symlinks(
     assert "initializing worktree asynchronously" in out
 
 
+def test_copy_pattern_agents_directory_matches_nested_ignored_directories(
+    run_wtk, repo_factory, tmp_path
+) -> None:
+    repo = repo_factory.init_repo("repo")
+    repo_factory.commit_files(
+        repo,
+        {
+            ".gitignore": ".agents/\n",
+        },
+        "ignore agents directories",
+    )
+    (repo / "nested" / ".agents").mkdir(parents=True)
+    (repo / "nested" / ".agents" / "instructions.md").write_text(
+        "NESTED=1\n", encoding="utf-8"
+    )
+    home = tmp_path / "home"
+    write_global_copy_config(home, [".agents/"])
+
+    out = run_wtk(
+        "new",
+        "feature/nested-agents-dir",
+        "--base",
+        "main",
+        "--no-clipboard",
+        cwd=repo,
+        env={"HOME": str(home)},
+    ).output
+    linked = linked_worktree_path(repo, "feature/nested-agents-dir")
+    wait_until(
+        "nested agents directory copied",
+        lambda: linked.joinpath("nested/.agents/instructions.md").exists(),
+    )
+
+    assert (
+        linked.joinpath("nested/.agents/instructions.md").read_text(encoding="utf-8")
+        == "NESTED=1\n"
+    )
+    assert "copied 1 ignored files" in out
+
+
 def test_copy_pattern_agents_directory_only_copies_ignored_descendants(
     run_wtk, repo_factory, tmp_path
 ) -> None:
