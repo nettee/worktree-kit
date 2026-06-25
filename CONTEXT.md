@@ -36,6 +36,10 @@ _Avoid_: Workspace Mode, multi-repository mode
 The existing default layout where a repository's linked worktrees live next to the main worktree using names like `<repo>-wt-<branch-slug>`.
 _Avoid_: Flat mode
 
+**Copy Pattern**:
+A user-configured gitignore-style pattern that selects ignored files or ignored directory descendants to copy from a source Repository Worktree into a target Repository Worktree at the same Git-root-relative path.
+_Avoid_: Recursive copy entry, exact copy entry
+
 ## Example Dialogue
 
 Dev: "I'm working on a feature that touches API, web, and SDK."
