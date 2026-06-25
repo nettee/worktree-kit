@@ -30,6 +30,7 @@ const RECURSIVE_IGNORED_FILE_SNAPSHOT_MARKER: &str = ".wtk-recursive-ignored-fil
 struct CopiedIgnoredFiles {
     patterns: Vec<String>,
     matcher: CopyPatternMatcher,
+    pathspecs: Vec<String>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -1502,7 +1503,12 @@ fn copied_ignored_files(session: &Session<'_>, main_root: &Path) -> AppResult<Co
         validate_copy_pattern(pattern)?;
     }
     let matcher = CopyPatternMatcher::new(&patterns)?;
-    Ok(CopiedIgnoredFiles { patterns, matcher })
+    let pathspecs = copy_pattern_pathspecs(&patterns);
+    Ok(CopiedIgnoredFiles {
+        patterns,
+        matcher,
+        pathspecs,
+    })
 }
 
 fn validate_copy_pattern(pattern: &str) -> AppResult<()> {
@@ -1688,17 +1694,17 @@ fn copy_pattern_ignored_files(
     if copied_files.patterns.is_empty() {
         return Ok(Vec::new());
     }
-    let output = session.git.run_bytes(
-        main_root,
-        [
-            "ls-files",
-            "--others",
-            "--ignored",
-            "--exclude-standard",
-            "--full-name",
-            "-z",
-        ],
-    )?;
+    let mut args = vec![
+        "ls-files".to_string(),
+        "--others".to_string(),
+        "--ignored".to_string(),
+        "--exclude-standard".to_string(),
+        "--full-name".to_string(),
+        "-z".to_string(),
+        "--".to_string(),
+    ];
+    args.extend(copied_files.pathspecs.iter().cloned());
+    let output = session.git.run_bytes(main_root, args)?;
     let mut ignored: Vec<_> = output
         .stdout
         .split(|byte| *byte == b'\0')
@@ -1716,6 +1722,7 @@ struct CopyPatternMatcher {
     globset: GlobSet,
     basename_globset: GlobSet,
     directory_globset: GlobSet,
+    slashless_directory_globset: GlobSet,
 }
 
 impl CopyPatternMatcher {
@@ -1723,6 +1730,7 @@ impl CopyPatternMatcher {
         let mut glob_builder = GlobSetBuilder::new();
         let mut basename_builder = GlobSetBuilder::new();
         let mut directory_builder = GlobSetBuilder::new();
+        let mut slashless_directory_builder = GlobSetBuilder::new();
         for pattern in patterns {
             if pattern.ends_with('/') {
                 let directory_pattern = format!("{}**", pattern);
@@ -1748,6 +1756,13 @@ impl CopyPatternMatcher {
                 basename_builder.add(Glob::new(pattern).map_err(|error| {
                     Error::message(format!("invalid copy pattern {pattern:?}: {error}"))
                 })?);
+                for directory_pattern in slashless_directory_patterns(pattern) {
+                    slashless_directory_builder.add(Glob::new(&directory_pattern).map_err(
+                        |error| {
+                            Error::message(format!("invalid copy pattern {pattern:?}: {error}"))
+                        },
+                    )?);
+                }
             }
         }
         Ok(Self {
@@ -1760,6 +1775,9 @@ impl CopyPatternMatcher {
             directory_globset: directory_builder.build().map_err(|error| {
                 Error::message(format!("failed to build copy pattern matcher: {error}"))
             })?,
+            slashless_directory_globset: slashless_directory_builder.build().map_err(|error| {
+                Error::message(format!("failed to build copy pattern matcher: {error}"))
+            })?,
         })
     }
 
@@ -1769,7 +1787,39 @@ impl CopyPatternMatcher {
                 .file_name()
                 .is_some_and(|name| self.basename_globset.is_match(Path::new(name)))
             || self.directory_globset.is_match(path)
+            || self.slashless_directory_globset.is_match(path)
     }
+}
+
+fn copy_pattern_pathspecs(patterns: &[String]) -> Vec<String> {
+    let mut pathspecs = Vec::new();
+    for pattern in patterns {
+        if pattern.ends_with('/') {
+            pathspecs.push(git_glob_pathspec(&format!("{}**", pattern)));
+            continue;
+        }
+        pathspecs.push(git_glob_pathspec(pattern));
+        if let Some(root_pattern) = pattern.strip_prefix("**/") {
+            pathspecs.push(git_glob_pathspec(root_pattern));
+        }
+        if !pattern.contains('/') {
+            pathspecs.push(git_glob_pathspec(&format!("**/{pattern}")));
+            for directory_pattern in slashless_directory_patterns(pattern) {
+                pathspecs.push(git_glob_pathspec(&directory_pattern));
+            }
+        }
+    }
+    pathspecs.sort();
+    pathspecs.dedup();
+    pathspecs
+}
+
+fn git_glob_pathspec(pattern: &str) -> String {
+    format!(":(glob){pattern}")
+}
+
+fn slashless_directory_patterns(pattern: &str) -> [String; 2] {
+    [format!("**/{pattern}/**"), format!("{pattern}/**")]
 }
 
 #[cfg(unix)]
@@ -2356,6 +2406,7 @@ mod tests {
         let copied_files = super::CopiedIgnoredFiles {
             patterns: Vec::new(),
             matcher: super::CopyPatternMatcher::new(&[]).unwrap(),
+            pathspecs: Vec::new(),
         };
         let ignored = super::copy_pattern_ignored_files(
             &session,
@@ -2365,5 +2416,33 @@ mod tests {
         .expect("empty copy patterns should not invoke git");
 
         assert!(ignored.is_empty());
+    }
+
+    #[test]
+    fn copy_pattern_matcher_treats_slashless_patterns_as_directory_basenames() {
+        let matcher = super::CopyPatternMatcher::new(&["secrets".to_string()]).unwrap();
+
+        assert!(matcher.is_match(Path::new("secrets")));
+        assert!(matcher.is_match(Path::new("config/secrets")));
+        assert!(matcher.is_match(Path::new("secrets/token")));
+        assert!(matcher.is_match(Path::new("config/secrets/token")));
+        assert!(!matcher.is_match(Path::new("config/secret/token")));
+    }
+
+    #[test]
+    fn copy_pattern_pathspecs_include_descendants_for_slashless_and_directory_patterns() {
+        let pathspecs = super::copy_pattern_pathspecs(&[
+            "secrets".to_string(),
+            ".agents/".to_string(),
+            "**/.env".to_string(),
+        ]);
+
+        assert!(pathspecs.contains(&":(glob)secrets".to_string()));
+        assert!(pathspecs.contains(&":(glob)**/secrets".to_string()));
+        assert!(pathspecs.contains(&":(glob)secrets/**".to_string()));
+        assert!(pathspecs.contains(&":(glob)**/secrets/**".to_string()));
+        assert!(pathspecs.contains(&":(glob).agents/**".to_string()));
+        assert!(pathspecs.contains(&":(glob)**/.env".to_string()));
+        assert!(pathspecs.contains(&":(glob).env".to_string()));
     }
 }

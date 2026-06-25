@@ -423,6 +423,41 @@ def test_copy_pattern_agents_directory_only_copies_ignored_descendants(
     assert "initializing worktree asynchronously" in out
 
 
+def test_slashless_copy_pattern_matches_ignored_directory_descendants(
+    run_wtk, repo_factory, tmp_path
+) -> None:
+    repo = repo_factory.init_repo("repo")
+    repo_factory.commit_files(
+        repo,
+        {
+            ".gitignore": "secrets/\n",
+        },
+        "ignore secrets directory",
+    )
+    (repo / "secrets").mkdir()
+    (repo / "secrets" / "token").write_text("SECRET=1\n", encoding="utf-8")
+    home = tmp_path / "home"
+    write_global_copy_config(home, ["secrets"])
+
+    out = run_wtk(
+        "new",
+        "feature/secrets-dir",
+        "--base",
+        "main",
+        "--no-clipboard",
+        cwd=repo,
+        env={"HOME": str(home)},
+    ).output
+    linked = linked_worktree_path(repo, "feature/secrets-dir")
+    wait_until(
+        "slashless secrets directory copied",
+        lambda: linked.joinpath("secrets/token").exists(),
+    )
+
+    assert linked.joinpath("secrets/token").read_text(encoding="utf-8") == "SECRET=1\n"
+    assert "copied 1 ignored files" in out
+
+
 def test_repo_local_copy_config_is_rejected(
     run_wtk, repo_factory, tmp_path
 ) -> None:
