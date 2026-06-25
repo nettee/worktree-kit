@@ -458,6 +458,46 @@ def test_slashless_copy_pattern_matches_ignored_directory_descendants(
     assert "copied 1 ignored files" in out
 
 
+def test_copy_pattern_preserves_ignored_descendants_for_slash_path_directories(
+    run_wtk, repo_factory, tmp_path
+) -> None:
+    repo = repo_factory.init_repo("repo")
+    repo_factory.commit_files(
+        repo,
+        {
+            ".gitignore": "specs/change/active\n",
+        },
+        "ignore active spec directory",
+    )
+    (repo / "specs" / "change" / "active").mkdir(parents=True)
+    (repo / "specs" / "change" / "active" / "plan.md").write_text(
+        "ACTIVE\n", encoding="utf-8"
+    )
+    home = tmp_path / "home"
+    write_global_copy_config(home, ["specs/change/active"])
+
+    out = run_wtk(
+        "new",
+        "feature/active-spec",
+        "--base",
+        "main",
+        "--no-clipboard",
+        cwd=repo,
+        env={"HOME": str(home)},
+    ).output
+    linked = linked_worktree_path(repo, "feature/active-spec")
+    wait_until(
+        "slash path directory descendants copied",
+        lambda: linked.joinpath("specs/change/active/plan.md").exists(),
+    )
+
+    assert (
+        linked.joinpath("specs/change/active/plan.md").read_text(encoding="utf-8")
+        == "ACTIVE\n"
+    )
+    assert "copied 1 ignored files" in out
+
+
 def test_repo_local_copy_config_is_rejected(
     run_wtk, repo_factory, tmp_path
 ) -> None:

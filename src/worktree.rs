@@ -1722,7 +1722,7 @@ struct CopyPatternMatcher {
     globset: GlobSet,
     basename_globset: GlobSet,
     directory_globset: GlobSet,
-    slashless_directory_globset: GlobSet,
+    descendant_globset: GlobSet,
 }
 
 impl CopyPatternMatcher {
@@ -1730,7 +1730,7 @@ impl CopyPatternMatcher {
         let mut glob_builder = GlobSetBuilder::new();
         let mut basename_builder = GlobSetBuilder::new();
         let mut directory_builder = GlobSetBuilder::new();
-        let mut slashless_directory_builder = GlobSetBuilder::new();
+        let mut descendant_builder = GlobSetBuilder::new();
         for pattern in patterns {
             if pattern.ends_with('/') {
                 let directory_pattern = format!("{}**", pattern);
@@ -1756,13 +1756,11 @@ impl CopyPatternMatcher {
                 basename_builder.add(Glob::new(pattern).map_err(|error| {
                     Error::message(format!("invalid copy pattern {pattern:?}: {error}"))
                 })?);
-                for directory_pattern in slashless_directory_patterns(pattern) {
-                    slashless_directory_builder.add(Glob::new(&directory_pattern).map_err(
-                        |error| {
-                            Error::message(format!("invalid copy pattern {pattern:?}: {error}"))
-                        },
-                    )?);
-                }
+            }
+            for directory_pattern in copy_pattern_descendant_patterns(pattern) {
+                descendant_builder.add(Glob::new(&directory_pattern).map_err(|error| {
+                    Error::message(format!("invalid copy pattern {pattern:?}: {error}"))
+                })?);
             }
         }
         Ok(Self {
@@ -1775,7 +1773,7 @@ impl CopyPatternMatcher {
             directory_globset: directory_builder.build().map_err(|error| {
                 Error::message(format!("failed to build copy pattern matcher: {error}"))
             })?,
-            slashless_directory_globset: slashless_directory_builder.build().map_err(|error| {
+            descendant_globset: descendant_builder.build().map_err(|error| {
                 Error::message(format!("failed to build copy pattern matcher: {error}"))
             })?,
         })
@@ -1787,7 +1785,7 @@ impl CopyPatternMatcher {
                 .file_name()
                 .is_some_and(|name| self.basename_globset.is_match(Path::new(name)))
             || self.directory_globset.is_match(path)
-            || self.slashless_directory_globset.is_match(path)
+            || self.descendant_globset.is_match(path)
     }
 }
 
@@ -1804,9 +1802,9 @@ fn copy_pattern_pathspecs(patterns: &[String]) -> Vec<String> {
         }
         if !pattern.contains('/') {
             pathspecs.push(git_glob_pathspec(&format!("**/{pattern}")));
-            for directory_pattern in slashless_directory_patterns(pattern) {
-                pathspecs.push(git_glob_pathspec(&directory_pattern));
-            }
+        }
+        for directory_pattern in copy_pattern_descendant_patterns(pattern) {
+            pathspecs.push(git_glob_pathspec(&directory_pattern));
         }
     }
     pathspecs.sort();
@@ -1818,8 +1816,14 @@ fn git_glob_pathspec(pattern: &str) -> String {
     format!(":(glob){pattern}")
 }
 
-fn slashless_directory_patterns(pattern: &str) -> [String; 2] {
-    [format!("**/{pattern}/**"), format!("{pattern}/**")]
+fn copy_pattern_descendant_patterns(pattern: &str) -> Vec<String> {
+    let mut patterns = vec![format!("{pattern}/**")];
+    if !pattern.contains('/') {
+        patterns.push(format!("**/{pattern}/**"));
+    } else if let Some(root_pattern) = pattern.strip_prefix("**/") {
+        patterns.push(format!("{root_pattern}/**"));
+    }
+    patterns
 }
 
 #[cfg(unix)]
@@ -2430,10 +2434,20 @@ mod tests {
     }
 
     #[test]
+    fn copy_pattern_matcher_preserves_descendants_for_slash_patterns_without_trailing_slash() {
+        let matcher = super::CopyPatternMatcher::new(&["specs/change/active".to_string()]).unwrap();
+
+        assert!(matcher.is_match(Path::new("specs/change/active")));
+        assert!(matcher.is_match(Path::new("specs/change/active/plan.md")));
+        assert!(!matcher.is_match(Path::new("specs/change/inactive/plan.md")));
+    }
+
+    #[test]
     fn copy_pattern_pathspecs_include_descendants_for_slashless_and_directory_patterns() {
         let pathspecs = super::copy_pattern_pathspecs(&[
             "secrets".to_string(),
             ".agents/".to_string(),
+            "specs/change/active".to_string(),
             "**/.env".to_string(),
         ]);
 
@@ -2442,7 +2456,11 @@ mod tests {
         assert!(pathspecs.contains(&":(glob)secrets/**".to_string()));
         assert!(pathspecs.contains(&":(glob)**/secrets/**".to_string()));
         assert!(pathspecs.contains(&":(glob).agents/**".to_string()));
+        assert!(pathspecs.contains(&":(glob)specs/change/active".to_string()));
+        assert!(pathspecs.contains(&":(glob)specs/change/active/**".to_string()));
         assert!(pathspecs.contains(&":(glob)**/.env".to_string()));
         assert!(pathspecs.contains(&":(glob).env".to_string()));
+        assert!(pathspecs.contains(&":(glob)**/.env/**".to_string()));
+        assert!(pathspecs.contains(&":(glob).env/**".to_string()));
     }
 }
