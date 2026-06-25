@@ -134,6 +134,27 @@ def test_auxiliary_group_list_and_remove_manage_config(run_wtk, repo_factory) ->
     assert run_wtk("ag", "list", cwd=primary).stdout == "No Auxiliary Groups configured.\n"
 
 
+def test_auxiliary_group_add_rejects_repo_local_copy(run_wtk, repo_factory) -> None:
+    primary = repo_factory.init_repo("primary")
+    api = repo_factory.init_repo("api")
+    (primary / ".wtk").mkdir()
+    (primary / ".wtk" / "config.toml").write_text(
+        'copy = ["**/.env"]\n', encoding="utf-8"
+    )
+
+    result = run_wtk(
+        "auxiliary-group",
+        "add",
+        "backend",
+        str(api),
+        cwd=primary,
+        check=False,
+    )
+
+    result.assert_failure()
+    assert "Copy Patterns are supported only in global ~/.wtk/config.toml" in result.output
+
+
 def test_auxiliary_group_remove_rejects_unknown_group(run_wtk, repo_factory) -> None:
     primary = repo_factory.init_repo("primary")
 
@@ -391,10 +412,6 @@ def test_auxiliary_group_new_dedupes_primary_recursive_and_exact_symlink_copy(
         primary,
         {
             ".gitignore": "apps/web/.env\n",
-            ".wtk/config.toml": """
-[copy]
-exact = ["apps/web/.env"]
-""".lstrip(),
             "apps/web/keep.txt": "web\n",
         },
         "configure duplicate coordinated copy",
@@ -404,6 +421,9 @@ exact = ["apps/web/.env"]
     shared_env = tmp_path / "shared.env"
     shared_env.write_text("WEB=value\n", encoding="utf-8")
     os.symlink(shared_env, primary / "apps" / "web" / ".env")
+    home = tmp_path / "home"
+    (home / ".wtk").mkdir(parents=True)
+    (home / ".wtk" / "config.toml").write_text('copy = ["**/.env", "apps/web/.env"]\n', encoding="utf-8")
 
     out = run_wtk(
         "new",
@@ -413,12 +433,14 @@ exact = ["apps/web/.env"]
         "--from-current",
         "--no-clipboard",
         cwd=primary,
+        env={"HOME": str(home)},
     ).output
     primary_linked = linked_worktree_path(primary, "feature/aux-deduped")
 
     assert primary_linked.joinpath("apps/web/.env").is_symlink()
     assert primary_linked.joinpath("apps/web/.env").resolve() == shared_env.resolve()
-    assert out.count("apps/web/.env") == 1
+    assert "copied 1 ignored files" in out
+    assert out.count("apps/web/.env") == 0
 
 
 def test_auxiliary_group_new_rejects_base_with_from_current(run_wtk, repo_factory) -> None:
@@ -916,9 +938,10 @@ def test_auxiliary_group_add_does_not_persist_inherited_global_copy_config(
     (home / ".wtk").mkdir(parents=True)
     (home / ".wtk" / "config.toml").write_text(
         """
-[copy]
-recursive = [".env.local"]
-exact = ["specs/change/active"]
+copy = [
+  "**/.env.local",
+  "specs/change/active",
+]
 """.lstrip(),
         encoding="utf-8",
     )
@@ -928,7 +951,7 @@ exact = ["specs/change/active"]
     config_text = (primary / ".wtk" / "config.toml").read_text(encoding="utf-8")
     assert "[auxiliary-groups.backend]" in config_text
     assert "[auxiliaries.api]" in config_text
-    assert "[copy]" not in config_text
+    assert "copy" not in config_text
     assert ".env.local" not in config_text
     assert "specs/change/active" not in config_text
 

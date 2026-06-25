@@ -1,7 +1,7 @@
 ---
 id: 20260625-copy-gitignore-patterns
 name: Copy Gitignore Patterns
-status: planned
+status: implemented
 created: '2026-06-25'
 ---
 
@@ -100,12 +100,12 @@ Depends on: Step 5
 
 ## Progress
 
-- [ ] Step 1 (AFK): Replace Copy Config Model
-- [ ] Step 2 (AFK): Implement Gitignore-Style Copy Matching
-- [ ] Step 3 (AFK): Simplify Copy Reporting
-- [ ] Step 4 (AFK): Update End-to-End Coverage
-- [ ] Step 5 (AFK): EAG Validation
-- [ ] Step 6 (AFK): Documentation Sync
+- [x] Step 1 (AFK): Replace Copy Config Model
+- [x] Step 2 (AFK): Implement Gitignore-Style Copy Matching
+- [x] Step 3 (AFK): Simplify Copy Reporting
+- [x] Step 4 (AFK): Update End-to-End Coverage
+- [x] Step 5 (AFK): EAG Validation
+- [x] Step 6 (AFK): Documentation Sync
 
 ## Implementation
 

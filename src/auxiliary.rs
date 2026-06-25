@@ -15,16 +15,8 @@ pub struct Config {
     pub auxiliaries: BTreeMap<String, AuxiliaryRefConfig>,
     #[serde(default, rename = "auxiliary-groups", alias = "groups")]
     pub groups: BTreeMap<String, AuxiliaryGroupConfig>,
-    #[serde(default, skip_serializing_if = "CopyConfig::is_empty")]
-    pub copy: CopyConfig,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct CopyConfig {
-    #[serde(default)]
-    pub recursive: Option<Vec<String>>,
-    #[serde(default)]
-    pub exact: Option<Vec<PathBuf>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copy: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,26 +94,13 @@ impl Config {
     fn merge_from(&mut self, other: Config) {
         self.auxiliaries.extend(other.auxiliaries);
         self.groups.extend(other.groups);
-        self.copy.merge_from(other.copy);
-    }
-
-    fn is_empty(&self) -> bool {
-        self.auxiliaries.is_empty() && self.groups.is_empty() && self.copy.is_empty()
-    }
-}
-
-impl CopyConfig {
-    fn merge_from(&mut self, other: CopyConfig) {
-        if other.recursive.is_some() {
-            self.recursive = other.recursive;
-        }
-        if other.exact.is_some() {
-            self.exact = other.exact;
+        if other.copy.is_some() {
+            self.copy = other.copy;
         }
     }
 
     fn is_empty(&self) -> bool {
-        self.recursive.is_none() && self.exact.is_none()
+        self.auxiliaries.is_empty() && self.groups.is_empty() && self.copy.is_none()
     }
 }
 
@@ -689,7 +668,9 @@ pub fn load_effective_config(primary_root: &Path, git_common_dir: &Path) -> AppR
     let mut config = Config::default();
     for path in config_paths_in_precedence_order(primary_root, git_common_dir) {
         if path.exists() {
-            config.merge_from(read_config(&path)?);
+            let next = read_config(&path)?;
+            reject_repo_local_copy_config(&path, primary_root, git_common_dir, &next)?;
+            config.merge_from(next);
         }
     }
     Ok(config)
@@ -750,15 +731,44 @@ fn primary_config_path(primary_root: &Path) -> PathBuf {
 fn load_repo_config(primary_root: &Path, git_common_dir: &Path) -> AppResult<Config> {
     let primary = primary_config_path(primary_root);
     if primary.exists() {
-        return read_config(&primary);
+        return read_repo_local_config(&primary, primary_root, git_common_dir);
     }
 
     let legacy = legacy_config_path(git_common_dir);
     if legacy.exists() {
-        return read_config(&legacy);
+        return read_repo_local_config(&legacy, primary_root, git_common_dir);
     }
 
     Ok(Config::default())
+}
+
+fn read_repo_local_config(
+    path: &Path,
+    primary_root: &Path,
+    git_common_dir: &Path,
+) -> AppResult<Config> {
+    let config = read_config(path)?;
+    reject_repo_local_copy_config(path, primary_root, git_common_dir, &config)?;
+    Ok(config)
+}
+
+fn reject_repo_local_copy_config(
+    path: &Path,
+    primary_root: &Path,
+    git_common_dir: &Path,
+    config: &Config,
+) -> AppResult<()> {
+    if is_repo_local_config_path(path, primary_root, git_common_dir) && config.copy.is_some() {
+        return Err(Error::message(format!(
+            "Copy Patterns are supported only in global ~/.wtk/config.toml; remove copy from repo-local config {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+fn is_repo_local_config_path(path: &Path, primary_root: &Path, git_common_dir: &Path) -> bool {
+    path == primary_config_path(primary_root) || path == legacy_config_path(git_common_dir)
 }
 
 fn config_paths_in_precedence_order(primary_root: &Path, git_common_dir: &Path) -> Vec<PathBuf> {

@@ -1,6 +1,4 @@
-[copy]
-# Recursively copy ignored files with these exact file names from the main worktree.
-recursive = [".env"]
-
-# Copy ignored files at these exact Git-root-relative paths.
-exact = [".agents"]
+copy = [
+  "**/.env",
+  ".agents/",
+]
