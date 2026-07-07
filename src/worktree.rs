@@ -10,7 +10,6 @@ use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
-use std::io;
 use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::ffi::OsStringExt;
@@ -638,11 +637,12 @@ pub fn delete_interactive(session: &mut Session<'_>) -> AppResult<()> {
             }
         }
     }
-    writeln!(session.out, "Type Y to delete selected worktrees:")?;
-    session.out.flush()?;
-    let mut confirmation = String::new();
-    io::stdin().read_line(&mut confirmation)?;
-    if confirmation.trim_end_matches(['\r', '\n']) != "Y" {
+    let confirmation = dialoguer::Input::<String>::new()
+        .with_prompt("Type Y to delete selected worktrees")
+        .allow_empty(true)
+        .interact_text()
+        .map_err(|error| Error::message(format!("interactive confirmation failed: {error}")))?;
+    if confirmation != "Y" {
         writeln!(session.out, "Cancelled.")?;
         return Ok(());
     }
