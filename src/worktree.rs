@@ -532,6 +532,135 @@ fn delete_non_deletable_reason(
     }
 }
 
+fn render_delete_selection_table(
+    out: &mut dyn Write,
+    rows: &[DeleteRow],
+    style: output::Style,
+) -> AppResult<()> {
+    let mut next_number = 1usize;
+    let rendered_rows = rows
+        .iter()
+        .map(|delete_row| {
+            let selector = if delete_row.non_deletable_reason.is_none() {
+                let selector = next_number.to_string();
+                next_number += 1;
+                selector
+            } else {
+                "-".to_string()
+            };
+            let state = list::state_text(&delete_row.row);
+            (
+                selector,
+                delete_row.row.display_name.clone(),
+                list::branch_text(&delete_row.row),
+                delete_row.row.updated.clone(),
+                state,
+                delete_row.row.short_head.clone(),
+                delete_row.row.is_current,
+                delete_row.row.diagnostics.is_empty(),
+                delete_row.non_deletable_reason.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let selector_width = rendered_rows
+        .iter()
+        .map(|(selector, _, _, _, _, _, _, _, _)| selector.len())
+        .chain(std::iter::once("#".len()))
+        .max()
+        .unwrap_or("#".len());
+    let worktree_width = rendered_rows
+        .iter()
+        .map(|(_, worktree, _, _, _, _, _, _, _)| worktree.len())
+        .chain(std::iter::once("worktree".len()))
+        .max()
+        .unwrap_or("worktree".len());
+    let branch_width = rendered_rows
+        .iter()
+        .map(|(_, _, branch, _, _, _, _, _, _)| branch.len())
+        .chain(std::iter::once("branch".len()))
+        .max()
+        .unwrap_or("branch".len());
+    let updated_width = rendered_rows
+        .iter()
+        .map(|(_, _, _, updated, _, _, _, _, _)| updated.len())
+        .chain(std::iter::once("updated".len()))
+        .max()
+        .unwrap_or("updated".len());
+    let state_width = rendered_rows
+        .iter()
+        .map(|(_, _, _, _, state, _, _, _, _)| state.len())
+        .chain(std::iter::once("state".len()))
+        .max()
+        .unwrap_or("state".len());
+
+    let header = format!(
+        "  {:selector_width$}   {:worktree_width$}  {:branch_width$}  {:updated_width$}  {:state_width$}  head",
+        "#", "worktree", "branch", "updated", "state"
+    );
+    writeln!(out, "{}", style.header(&header))?;
+    for (selector, worktree, branch, updated, state, head, is_current, diagnostics_ok, reason) in
+        rendered_rows
+    {
+        let line = format!(
+            "  {:selector_width$}   {:worktree_width$}  {:branch_width$}  {:updated_width$}  {:state_width$}  {}",
+            selector, worktree, branch, updated, state, head
+        );
+        if is_current {
+            writeln!(out, "{}", style.current(&line))?;
+        } else if !diagnostics_ok
+            || state.contains("broken")
+            || state.contains("error")
+            || state.contains("non-deletable")
+        {
+            writeln!(out, "{}", style.error(&line))?;
+        } else if state.contains("dirty") || state.contains("prunable") {
+            writeln!(out, "{}", style.warning(&line))?;
+        } else {
+            writeln!(out, "{line}")?;
+        }
+        if let Some(reason) = reason {
+            writeln!(out, "      non-deletable: {reason}")?;
+        }
+    }
+    Ok(())
+}
+
+fn parse_delete_selection(input: &str, candidate_count: usize) -> AppResult<Vec<usize>> {
+    let mut selected = BTreeSet::new();
+    for token in input.split(',') {
+        let token = token.trim();
+        if token.is_empty() {
+            return Err(Error::message("empty selection token"));
+        }
+        if let Some((start, end)) = token.split_once('-') {
+            let start = parse_delete_selection_number(start.trim(), candidate_count)?;
+            let end = parse_delete_selection_number(end.trim(), candidate_count)?;
+            if start > end {
+                return Err(Error::message(format!("invalid descending range: {token}")));
+            }
+            for number in start..=end {
+                selected.insert(number - 1);
+            }
+        } else {
+            selected.insert(parse_delete_selection_number(token, candidate_count)? - 1);
+        }
+    }
+    Ok(selected.into_iter().collect())
+}
+
+fn parse_delete_selection_number(token: &str, candidate_count: usize) -> AppResult<usize> {
+    let number = token
+        .parse::<usize>()
+        .map_err(|_| Error::message(format!("invalid selection token: {token}")))?;
+    if number == 0 || number > candidate_count {
+        return Err(Error::message(format!(
+            "selection number out of range: {number} (valid range: 1-{candidate_count})"
+        )));
+    }
+    Ok(number)
+}
+
 pub fn delete_interactive(session: &mut Session<'_>) -> AppResult<()> {
     let repo = repo(session)?;
     let state = auxiliary::read_state(&repo.main_root, &repo.git_common_dir)?;
@@ -603,34 +732,6 @@ pub fn delete_interactive(session: &mut Session<'_>) -> AppResult<()> {
         });
     }
 
-    writeln!(session.out, "Worktrees:")?;
-    let overview_rows = delete_rows
-        .iter()
-        .map(|delete_row| delete_row.row.clone())
-        .collect::<Vec<_>>();
-    list::render_table(
-        session.out,
-        &overview_rows,
-        output::Style::new(session.style_enabled),
-    )?;
-
-    let non_deletable = delete_rows
-        .iter()
-        .filter_map(|delete_row| {
-            delete_row
-                .non_deletable_reason
-                .as_ref()
-                .map(|reason| (&delete_row.row.display_name, reason))
-        })
-        .collect::<Vec<_>>();
-    if !non_deletable.is_empty() {
-        writeln!(session.out)?;
-        writeln!(session.out, "Non-deletable worktrees:")?;
-        for (display_name, reason) in non_deletable {
-            writeln!(session.out, "- {display_name}: {reason}")?;
-        }
-    }
-
     let candidates = delete_rows
         .iter()
         .filter(|delete_row| delete_row.non_deletable_reason.is_none())
@@ -644,37 +745,40 @@ pub fn delete_interactive(session: &mut Session<'_>) -> AppResult<()> {
         .collect::<Vec<_>>();
 
     if candidates.is_empty() {
+        writeln!(
+            session.out,
+            "Select worktrees to delete by number. Branches are preserved."
+        )?;
+        writeln!(session.out)?;
+        render_delete_selection_table(
+            session.out,
+            &delete_rows,
+            output::Style::new(session.style_enabled),
+        )?;
         writeln!(session.out, "No deletable linked worktrees found.")?;
         return Ok(());
     }
-    let items = delete_rows
-        .iter()
-        .filter(|delete_row| delete_row.non_deletable_reason.is_none())
-        .map(|delete_row| {
-            let state = list::state_text(&delete_row.row);
-            let state = if state == "-" { "clean" } else { &state };
-            format!(
-                "{} [{}; updated {}; {}]",
-                delete_row.row.display_name,
-                list::branch_text(&delete_row.row),
-                delete_row.row.updated,
-                state
-            )
-        })
-        .collect::<Vec<_>>();
-    let selected = dialoguer::MultiSelect::new()
-        .with_prompt("Select worktrees to delete (Space to select, Enter to continue)")
-        .items(&items)
-        .interact_opt()
+
+    writeln!(
+        session.out,
+        "Select worktrees to delete by number. Branches are preserved."
+    )?;
+    writeln!(session.out)?;
+    render_delete_selection_table(
+        session.out,
+        &delete_rows,
+        output::Style::new(session.style_enabled),
+    )?;
+    let selection = dialoguer::Input::<String>::new()
+        .with_prompt("Enter numbers/ranges to delete, e.g. 1,3-5")
+        .allow_empty(true)
+        .interact_text()
         .map_err(|error| Error::message(format!("interactive selection failed: {error}")))?;
-    let Some(selected) = selected else {
-        writeln!(session.out, "No worktrees selected; cancelled.")?;
-        return Ok(());
-    };
-    if selected.is_empty() {
+    if selection.trim().is_empty() {
         writeln!(session.out, "No worktrees selected; cancelled.")?;
         return Ok(());
     }
+    let selected = parse_delete_selection(&selection, candidates.len())?;
     writeln!(
         session.out,
         "The following worktrees will be deleted; branches will be preserved:"
