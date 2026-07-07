@@ -92,7 +92,7 @@ wtk new feature/full-stack --ag full-stack
 The [User Guide](docs/user-guide.md) has the full workflow guide and command reference, including:
 
 - install, upgrade, and local source install
-- creating, checking out, listing, and removing worktrees
+- creating, checking out, listing, and deleting/removing worktrees
 - `send-out` and `bring-in`
 - Auxiliary Groups and coordinated worktrees
 - base branch selection

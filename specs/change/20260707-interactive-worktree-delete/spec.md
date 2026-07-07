@@ -1,7 +1,7 @@
 ---
 id: 20260707-interactive-worktree-delete
 name: Interactive Worktree Delete
-status: planned
+status: implemented
 created: '2026-07-07'
 ---
 
@@ -85,13 +85,13 @@ Depends on: Step 6
 
 ## Progress
 
-- [ ] Step 1 (AFK): Add `wtk delete` command shell
-- [ ] Step 2 (AFK): Build delete candidates from list-style worktree state
-- [ ] Step 3 (AFK): Implement interactive selection and strict confirmation
-- [ ] Step 4 (AFK): Implement batch deletion execution
-- [ ] Step 5 (AFK): Add e2e coverage for interactive delete
-- [ ] Step 6 (AFK): EAG Validation
-- [ ] Step 7 (AFK): Documentation Sync
+- [x] Step 1 (AFK): Add `wtk delete` command shell
+- [x] Step 2 (AFK): Build delete candidates from list-style worktree state
+- [x] Step 3 (AFK): Implement interactive selection and strict confirmation
+- [x] Step 4 (AFK): Implement batch deletion execution
+- [x] Step 5 (AFK): Add e2e coverage for interactive delete
+- [x] Step 6 (AFK): EAG Validation
+- [x] Step 7 (AFK): Documentation Sync
 
 ## Implementation
 

@@ -244,6 +244,14 @@ wtk list [--json]
 
 Lists visible worktrees in a compact table, or prints machine-readable JSON with `--json`.
 
+### `wtk delete`
+
+```text
+wtk delete
+```
+
+Opens an interactive terminal-only multi-select delete flow. Select linked worktrees with Space, press Enter, review the absolute-path summary, then type exactly `Y` to delete. Branches are preserved. Dirty selected worktrees are force-removed after confirmation. Selecting a coordinated Primary Repository worktree deletes its recorded coordinated set.
+
 ### `wtk remove`
 
 ```text

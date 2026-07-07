@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import os
+import pty
+import select
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -55,6 +58,26 @@ class CmdResult:
         )
 
 
+@dataclass
+class PtyResult:
+    args: list[str]
+    cwd: Path
+    returncode: int
+    output: str
+
+    def assert_success(self) -> "PtyResult":
+        assert self.returncode == 0, self.describe()
+        return self
+
+    def assert_failure(self) -> "PtyResult":
+        assert self.returncode != 0, f"command unexpectedly succeeded\n{self.describe()}"
+        return self
+
+    def describe(self) -> str:
+        rendered = " ".join(self.args)
+        return f"command failed: {rendered}\ncwd: {self.cwd}\nexit: {self.returncode}\noutput:\n{self.output}"
+
+
 def run_cmd(
     args: list[str],
     *,
@@ -84,6 +107,78 @@ def run_cmd(
     if check:
         result.assert_success()
     return result
+
+
+def run_pty_cmd(
+    args: list[str],
+    *,
+    cwd: Path,
+    input_bytes: bytes = b"",
+    timeout: float = 10.0,
+    env: dict[str, str] | None = None,
+) -> PtyResult:
+    merged_env = os.environ.copy()
+    if env:
+        merged_env.update(env)
+    master_fd, slave_fd = pty.openpty()
+    proc = subprocess.Popen(
+        args,
+        cwd=cwd,
+        env=merged_env,
+        stdin=slave_fd,
+        stdout=slave_fd,
+        stderr=slave_fd,
+        close_fds=True,
+    )
+    os.close(slave_fd)
+    output = bytearray()
+    sent = False
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            if proc.poll() is not None:
+                while True:
+                    ready, _, _ = select.select([master_fd], [], [], 0)
+                    if not ready:
+                        break
+                    try:
+                        chunk = os.read(master_fd, 4096)
+                    except OSError:
+                        break
+                    if not chunk:
+                        break
+                    output.extend(chunk)
+                break
+            if time.monotonic() > deadline:
+                proc.send_signal(signal.SIGTERM)
+                try:
+                    proc.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=1)
+                raise AssertionError(
+                    f"PTY command timed out: {' '.join(args)}\noutput:\n"
+                    + output.decode("utf-8", errors="replace")
+                )
+            ready, _, _ = select.select([master_fd], [], [], 0.05)
+            if ready:
+                try:
+                    chunk = os.read(master_fd, 4096)
+                except OSError:
+                    chunk = b""
+                if chunk:
+                    output.extend(chunk)
+            if input_bytes and not sent and time.monotonic() < deadline - 0.1:
+                os.write(master_fd, input_bytes)
+                sent = True
+        return PtyResult(
+            args=args,
+            cwd=cwd,
+            returncode=proc.returncode,
+            output=output.decode("utf-8", errors="replace"),
+        )
+    finally:
+        os.close(master_fd)
 
 
 def run_git(cwd: Path, *args: str, check: bool = True, env: dict[str, str] | None = None) -> CmdResult:

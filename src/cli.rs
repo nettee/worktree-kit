@@ -19,6 +19,7 @@ const TOP_LEVEL_COMMANDS: &[&str] = &[
     "list",
     "init-worktree",
     "remove",
+    "delete",
     "send-out",
     "bring-in",
     "auxiliary-group",
@@ -40,6 +41,7 @@ enum Parsed {
         ignored_env_snapshot_root: Option<String>,
     },
     Remove(Options),
+    Delete,
     SendOut(Options),
     BringIn(Options),
     AuxiliaryGroupAdd {
@@ -155,6 +157,16 @@ where
             execute_worktree(stdout, stderr, options.no_clipboard, |session| {
                 worktree::remove(session, options)
             })
+        }
+        Parsed::Delete => {
+            if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+                let _ = writeln!(
+                    stderr,
+                    "wtk delete requires an interactive terminal on stdin and stdout"
+                );
+                return Err(1);
+            }
+            execute_worktree(stdout, stderr, true, worktree::delete_interactive)
         }
         Parsed::SendOut(options) => {
             execute_worktree(stdout, stderr, options.no_clipboard, |session| {
@@ -292,6 +304,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
         "list" => parse_list(rest),
         "init-worktree" => parse_init_worktree(rest),
         "remove" => parse_remove(rest),
+        "delete" => parse_delete(rest),
         "send-out" => parse_send_out(rest),
         "bring-in" => parse_bring_in(rest),
         "auxiliary-group" | "ag" => parse_auxiliary_group(rest),
@@ -550,6 +563,23 @@ fn parse_remove(args: &[String]) -> Result<Parsed, UsageError> {
     Ok(Parsed::Remove(options))
 }
 
+fn parse_delete(args: &[String]) -> Result<Parsed, UsageError> {
+    let usage = command_help("delete");
+    if args.len() == 1 {
+        return Ok(Parsed::Delete);
+    }
+    if args.len() == 2 && matches!(args[1].as_str(), "--help" | "-h") {
+        return Ok(Parsed::HelpText(usage));
+    }
+    if args[1].starts_with('-') {
+        return Err(UsageError::new(format!("unknown flag: {}", args[1]), usage));
+    }
+    Err(UsageError::new(
+        format!("unexpected argument: {}", args[1]),
+        usage,
+    ))
+}
+
 fn parse_send_out(args: &[String]) -> Result<Parsed, UsageError> {
     let usage = command_help("send-out");
     let mut options = Options::default();
@@ -728,6 +758,7 @@ fn root_help() -> &'static str {
         "  status      Print current repository/worktree status as YAML\n",
         "  list        List visible worktrees in a compact table\n",
         "  remove      Remove a linked worktree\n",
+        "  delete      Interactively delete linked worktrees\n",
         "  send-out    Move the current main-worktree branch to a linked worktree\n",
         "  bring-in    Move a linked worktree branch back into the main worktree\n",
         "  auxiliary-group  Manage Auxiliary Groups\n",
@@ -792,6 +823,12 @@ fn command_help(command: &str) -> &'static str {
             "Flags:\n",
             "      --delete-branch\n",
             "      --no-clipboard\n",
+        ),
+        "delete" => concat!(
+            "Usage: wtk delete [flags]\n\n",
+            "Interactively select linked worktrees to delete. Branches are preserved.\n\n",
+            "Flags:\n",
+            "  -h, --help\n",
         ),
         "send-out" => concat!(
             "Usage: wtk send-out [flags]\n\n",
@@ -1032,6 +1069,25 @@ mod tests {
         let parsed =
             parse_args(&["wtk".to_string(), "list".to_string(), "--json".to_string()]).unwrap();
         assert!(matches!(parsed, Parsed::List(options) if options.json));
+    }
+
+    #[test]
+    fn parses_delete_subcommand() {
+        let parsed = parse_args(&["wtk".to_string(), "delete".to_string()]).unwrap();
+        assert!(matches!(parsed, Parsed::Delete));
+
+        let help = parse_args(&[
+            "wtk".to_string(),
+            "delete".to_string(),
+            "--help".to_string(),
+        ])
+        .unwrap();
+        assert!(matches!(help, Parsed::HelpText(text) if text.contains("wtk delete")));
+
+        let error = parse_args(&["wtk".to_string(), "delete".to_string(), "x".to_string()])
+            .err()
+            .unwrap();
+        assert!(error.reason.contains("unexpected argument"));
     }
 
     #[test]
