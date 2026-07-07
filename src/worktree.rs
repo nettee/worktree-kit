@@ -480,6 +480,280 @@ pub fn list(session: &mut Session<'_>, options: ListOptions) -> AppResult<()> {
     )
 }
 
+#[derive(Debug, Clone)]
+struct DeleteCandidate {
+    path: PathBuf,
+    branch: Option<String>,
+    dirty: bool,
+    coordinated: bool,
+    members: Vec<DeleteMember>,
+}
+
+#[derive(Debug, Clone)]
+struct DeleteMember {
+    path: PathBuf,
+    dirty: bool,
+}
+
+pub fn delete_interactive(session: &mut Session<'_>) -> AppResult<()> {
+    let repo = repo(session)?;
+    let state = auxiliary::read_state(&repo.main_root, &repo.git_common_dir)?;
+    let updated_at_by_head =
+        list::commit_timestamps_by_head(&session.git, &repo.main_root, &repo.worktrees);
+    let mut candidates = Vec::new();
+    let mut excluded = Vec::new();
+    let mut rows = Vec::new();
+    for worktree in &repo.worktrees {
+        rows.push(list::repository_row(
+            &session.git,
+            &repo,
+            worktree,
+            &updated_at_by_head,
+        ));
+    }
+    for row in list::sorted_rows(rows) {
+        let Some(worktree) = repo.worktree_by_path(&row.path) else {
+            continue;
+        };
+        let mut row = list::repository_row(&session.git, &repo, worktree, &updated_at_by_head);
+        let mut members = vec![DeleteMember {
+            path: worktree.path.clone(),
+            dirty: row.dirty,
+        }];
+        let mut coordinated = false;
+        if let Some(entry) = auxiliary::worktree_entry(&state, &worktree.path) {
+            coordinated = true;
+            let ignored_refs = auxiliary::ignored_ref_paths(entry);
+            row = list::repository_row_with_options(
+                &session.git,
+                &repo,
+                worktree,
+                Some(&ignored_refs),
+                &updated_at_by_head,
+            );
+            row.kind = "primary_worktree";
+            let mut diagnostics = Vec::new();
+            if let Err(error) =
+                auxiliary::validate_primary_worktree_branch(worktree, &entry.branch, &worktree.path)
+            {
+                diagnostics.push(error.to_string());
+            }
+            if let Err(error) = auxiliary::validate_refs(&session.git, &worktree.path, entry) {
+                diagnostics.push(error.to_string());
+            }
+            match auxiliary_delete_members(&session.git, entry) {
+                Ok(auxiliary_members) => members.extend(auxiliary_members),
+                Err(error) => diagnostics.push(error.to_string()),
+            }
+            row.diagnostics.extend(diagnostics);
+        }
+        if row.is_main || row.is_current || row.labels.iter().any(|label| label == "locked") {
+            continue;
+        }
+        if !row.diagnostics.is_empty() {
+            excluded.push(format!(
+                "{}: {}",
+                worktree.path.display(),
+                row.diagnostics.join("; ")
+            ));
+            continue;
+        }
+        if auxiliary::read_auxiliary_marker(&session.git, &worktree.path)?.is_some() {
+            continue;
+        }
+        candidates.push(DeleteCandidate {
+            path: worktree.path.clone(),
+            branch: row.branch.clone(),
+            dirty: row.dirty,
+            coordinated,
+            members,
+        });
+    }
+    for diagnostic in &excluded {
+        writeln!(session.out, "Skipping non-deletable worktree: {diagnostic}")?;
+    }
+    if candidates.is_empty() {
+        writeln!(session.out, "No deletable linked worktrees found.")?;
+        return Ok(());
+    }
+    let items = candidates
+        .iter()
+        .map(|candidate| {
+            let branch = candidate.branch.as_deref().unwrap_or("detached");
+            let dirty = if candidate.dirty { " dirty" } else { "" };
+            let coordinated = if candidate.coordinated {
+                " coordinated"
+            } else {
+                ""
+            };
+            format!(
+                "{} [{}{}{}]",
+                candidate.path.display(),
+                branch,
+                dirty,
+                coordinated
+            )
+        })
+        .collect::<Vec<_>>();
+    let selected = dialoguer::MultiSelect::new()
+        .with_prompt("Select worktrees to delete (Space to select, Enter to continue)")
+        .items(&items)
+        .interact_opt()
+        .map_err(|error| Error::message(format!("interactive selection failed: {error}")))?;
+    let Some(selected) = selected else {
+        writeln!(session.out, "No worktrees selected; cancelled.")?;
+        return Ok(());
+    };
+    if selected.is_empty() {
+        writeln!(session.out, "No worktrees selected; cancelled.")?;
+        return Ok(());
+    }
+    writeln!(
+        session.out,
+        "The following worktrees will be deleted; branches will be preserved:"
+    )?;
+    for index in &selected {
+        let candidate = &candidates[*index];
+        writeln!(session.out, "- path: {}", candidate.path.display())?;
+        writeln!(
+            session.out,
+            "  branch: {}",
+            candidate.branch.as_deref().unwrap_or("detached")
+        )?;
+        writeln!(
+            session.out,
+            "  dirty: {}",
+            if candidate.dirty { "yes" } else { "no" }
+        )?;
+        if candidate.coordinated {
+            writeln!(session.out, "  coordinated members:")?;
+            for member in &candidate.members {
+                writeln!(
+                    session.out,
+                    "    - {} dirty: {}",
+                    member.path.display(),
+                    if member.dirty { "yes" } else { "no" }
+                )?;
+            }
+        }
+    }
+    let confirmation = dialoguer::Input::<String>::new()
+        .with_prompt("Type Y to delete selected worktrees")
+        .allow_empty(true)
+        .interact_text()
+        .map_err(|error| Error::message(format!("interactive confirmation failed: {error}")))?;
+    if confirmation != "Y" {
+        writeln!(session.out, "Cancelled.")?;
+        return Ok(());
+    }
+    let mut failures = Vec::new();
+    for index in selected {
+        let candidate = &candidates[index];
+        match delete_candidate(session, &repo, candidate) {
+            Ok(()) => writeln!(session.out, "Deleted {}", candidate.path.display())?,
+            Err(error) => {
+                writeln!(
+                    session.out,
+                    "Failed {}: {}",
+                    candidate.path.display(),
+                    error
+                )?;
+                failures.push(format!("{}: {}", candidate.path.display(), error));
+            }
+        }
+    }
+    if failures.is_empty() {
+        writeln!(session.out, "Deletion complete.")?;
+        Ok(())
+    } else {
+        Err(Error::message(format!(
+            "{} deletion(s) failed",
+            failures.len()
+        )))
+    }
+}
+
+fn delete_candidate(
+    session: &mut Session<'_>,
+    repo: &RepoContext,
+    candidate: &DeleteCandidate,
+) -> AppResult<()> {
+    let worktree = repo.worktree_by_path(&candidate.path).ok_or_else(|| {
+        Error::message(format!(
+            "target is not a linked worktree: {}",
+            candidate.path.display()
+        ))
+    })?;
+    if worktree.locked.is_some() {
+        return Err(Error::message(format!(
+            "worktree is locked: {}",
+            candidate.path.display()
+        )));
+    }
+    let mut state = auxiliary::read_state(&repo.main_root, &repo.git_common_dir)?;
+    if let Some(entry) = auxiliary::worktree_entry(&state, &candidate.path).cloned() {
+        auxiliary::validate_primary_worktree_branch(worktree, &entry.branch, &candidate.path)?;
+        auxiliary::validate_refs(&session.git, &candidate.path, &entry)?;
+        validate_auxiliary_worktrees_removable(&session.git, &entry)?;
+        for auxiliary in entry.auxiliaries.values() {
+            remove_git_worktree_force(session, &auxiliary.repository, &auxiliary.worktree)?;
+        }
+        remove_git_worktree_force(session, &repo.main_root, &candidate.path)?;
+        auxiliary::remove_worktree_entry(&mut state, &candidate.path);
+        auxiliary::write_state(&session.git, &repo.main_root, &state)?;
+    } else {
+        if auxiliary::read_auxiliary_marker(&session.git, &candidate.path)?.is_some() {
+            return Err(Error::message(
+                "delete is not supported for auxiliary-side worktrees",
+            ));
+        }
+        remove_git_worktree_force(session, &repo.main_root, &candidate.path)?;
+    }
+    Ok(())
+}
+
+fn auxiliary_delete_members(git: &Git, entry: &WorktreeEntry) -> AppResult<Vec<DeleteMember>> {
+    let mut members = Vec::new();
+    for (name, auxiliary) in &entry.auxiliaries {
+        let repo = resolve(git, &auxiliary.worktree)?;
+        let worktree = repo.worktree_by_path(&auxiliary.worktree).ok_or_else(|| {
+            Error::message(format!(
+                "Auxiliary worktree {name} is missing from git worktree list at {}",
+                auxiliary.repository.display()
+            ))
+        })?;
+        if let Some(reason) = &worktree.locked {
+            let detail = if reason.is_empty() {
+                String::new()
+            } else {
+                format!(": {reason}")
+            };
+            return Err(Error::message(format!(
+                "Auxiliary worktree {name} at {} is locked{}",
+                auxiliary.worktree.display(),
+                detail
+            )));
+        }
+        members.push(DeleteMember {
+            path: auxiliary.worktree.clone(),
+            dirty: worktree_dirty(git, &auxiliary.worktree)?,
+        });
+    }
+    Ok(members)
+}
+
+fn worktree_dirty(git: &Git, path: &Path) -> AppResult<bool> {
+    let output = git
+        .run(path, ["status", "--porcelain=v1", "--untracked-files=all"])
+        .map_err(|error| {
+            Error::message(format!(
+                "failed to read dirty state for {}: {error}",
+                path.display()
+            ))
+        })?;
+    Ok(output.stdout.lines().any(|line| !line.is_empty()))
+}
+
 pub fn init_worktree(
     session: &mut Session<'_>,
     source_root: &Path,
