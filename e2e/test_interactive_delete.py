@@ -53,6 +53,29 @@ def test_interactive_delete_removes_dirty_worktree(wtk_bin, run_wtk, repo_factor
     assert "dirty: yes" in result.output
 
 
+def test_interactive_delete_overview_shows_dirty_updated_and_non_deletable_summary(wtk_bin, run_wtk, repo_factory) -> None:
+    repo = repo_factory.init_repo("repo")
+    run_git(repo, "branch", "feature/overview")
+    run_wtk("checkout", "feature/overview", "--no-clipboard", cwd=repo)
+    linked = linked_worktree_path(repo, "feature/overview")
+    (linked / "dirty.txt").write_text("dirty\n", encoding="utf-8")
+
+    result = run_delete_pty(wtk_bin, repo, b"\r").assert_success()
+
+    assert linked.exists()
+    assert "Worktrees:" in result.output
+    assert "worktree" in result.output
+    assert "branch" in result.output
+    assert "updated" in result.output
+    assert "state" in result.output
+    assert "repo" in result.output
+    assert "feature/overview" in result.output
+    assert "dirty" in result.output
+    assert "Non-deletable worktrees:" in result.output
+    assert "main worktree cannot be deleted" in result.output
+    assert "Skipping non-deletable worktree" not in result.output
+
+
 def test_interactive_delete_fails_without_tty(run_wtk, repo_factory) -> None:
     repo = repo_factory.init_repo("repo")
 
@@ -113,3 +136,6 @@ def test_interactive_delete_broken_coordinated_row_does_not_abort_healthy_delete
     assert primary_linked.exists()
     assert not healthy_linked.exists()
     assert "Deletion complete." in result.output
+    assert "Non-deletable worktrees:" in result.output
+    assert "feature/broken" in result.output
+    assert "Skipping non-deletable worktree" not in result.output

@@ -495,13 +495,49 @@ struct DeleteMember {
     dirty: bool,
 }
 
+#[derive(Debug, Clone)]
+struct DeleteRow {
+    row: list::ListRow,
+    non_deletable_reason: Option<String>,
+    coordinated: bool,
+    members: Vec<DeleteMember>,
+}
+
+fn delete_non_deletable_reason(
+    session: &Session<'_>,
+    worktree: &crate::gitexec::Worktree,
+    row: &list::ListRow,
+) -> AppResult<Option<String>> {
+    if row.is_main {
+        return Ok(Some("main worktree cannot be deleted".to_string()));
+    }
+    if row.is_current {
+        return Ok(Some("current worktree cannot be deleted".to_string()));
+    }
+    if let Some(reason) = &worktree.locked {
+        if reason.is_empty() {
+            return Ok(Some("locked".to_string()));
+        }
+        return Ok(Some(format!("locked: {reason}")));
+    }
+    if !row.diagnostics.is_empty() {
+        return Ok(Some(row.diagnostics.join("; ")));
+    }
+    match auxiliary::read_auxiliary_marker(&session.git, &worktree.path) {
+        Ok(Some(_)) => Ok(Some(
+            "delete is not supported for auxiliary-side worktrees".to_string(),
+        )),
+        Ok(None) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 pub fn delete_interactive(session: &mut Session<'_>) -> AppResult<()> {
     let repo = repo(session)?;
     let state = auxiliary::read_state(&repo.main_root, &repo.git_common_dir)?;
     let updated_at_by_head =
         list::commit_timestamps_by_head(&session.git, &repo.main_root, &repo.worktrees);
-    let mut candidates = Vec::new();
-    let mut excluded = Vec::new();
+    let mut delete_rows = Vec::new();
     let mut rows = Vec::new();
     for worktree in &repo.worktrees {
         rows.push(list::repository_row(
@@ -547,51 +583,82 @@ pub fn delete_interactive(session: &mut Session<'_>) -> AppResult<()> {
             }
             row.diagnostics.extend(diagnostics);
         }
-        if row.is_main || row.is_current || row.labels.iter().any(|label| label == "locked") {
-            continue;
+        if coordinated && !row.labels.iter().any(|label| label == "coordinated") {
+            row.labels.push("coordinated".to_string());
         }
-        if !row.diagnostics.is_empty() {
-            excluded.push(format!(
-                "{}: {}",
-                worktree.path.display(),
-                row.diagnostics.join("; ")
-            ));
-            continue;
+        let non_deletable_reason = delete_non_deletable_reason(session, worktree, &row)?;
+        if non_deletable_reason.is_some() {
+            if !row.labels.iter().any(|label| label == "non-deletable") {
+                row.labels.push("non-deletable".to_string());
+            }
+            if !row.diagnostics.is_empty() && !row.labels.iter().any(|label| label == "error") {
+                row.labels.push("error".to_string());
+            }
         }
-        if auxiliary::read_auxiliary_marker(&session.git, &worktree.path)?.is_some() {
-            continue;
-        }
-        candidates.push(DeleteCandidate {
-            path: worktree.path.clone(),
-            branch: row.branch.clone(),
-            dirty: row.dirty,
+        delete_rows.push(DeleteRow {
+            row,
+            non_deletable_reason,
             coordinated,
             members,
         });
     }
-    for diagnostic in &excluded {
-        writeln!(session.out, "Skipping non-deletable worktree: {diagnostic}")?;
+
+    writeln!(session.out, "Worktrees:")?;
+    let overview_rows = delete_rows
+        .iter()
+        .map(|delete_row| delete_row.row.clone())
+        .collect::<Vec<_>>();
+    list::render_table(
+        session.out,
+        &overview_rows,
+        output::Style::new(session.style_enabled),
+    )?;
+
+    let non_deletable = delete_rows
+        .iter()
+        .filter_map(|delete_row| {
+            delete_row
+                .non_deletable_reason
+                .as_ref()
+                .map(|reason| (&delete_row.row.display_name, reason))
+        })
+        .collect::<Vec<_>>();
+    if !non_deletable.is_empty() {
+        writeln!(session.out)?;
+        writeln!(session.out, "Non-deletable worktrees:")?;
+        for (display_name, reason) in non_deletable {
+            writeln!(session.out, "- {display_name}: {reason}")?;
+        }
     }
+
+    let candidates = delete_rows
+        .iter()
+        .filter(|delete_row| delete_row.non_deletable_reason.is_none())
+        .map(|delete_row| DeleteCandidate {
+            path: delete_row.row.path.clone(),
+            branch: delete_row.row.branch.clone(),
+            dirty: delete_row.row.dirty,
+            coordinated: delete_row.coordinated,
+            members: delete_row.members.clone(),
+        })
+        .collect::<Vec<_>>();
+
     if candidates.is_empty() {
         writeln!(session.out, "No deletable linked worktrees found.")?;
         return Ok(());
     }
-    let items = candidates
+    let items = delete_rows
         .iter()
-        .map(|candidate| {
-            let branch = candidate.branch.as_deref().unwrap_or("detached");
-            let dirty = if candidate.dirty { " dirty" } else { "" };
-            let coordinated = if candidate.coordinated {
-                " coordinated"
-            } else {
-                ""
-            };
+        .filter(|delete_row| delete_row.non_deletable_reason.is_none())
+        .map(|delete_row| {
+            let state = list::state_text(&delete_row.row);
+            let state = if state == "-" { "clean" } else { &state };
             format!(
-                "{} [{}{}{}]",
-                candidate.path.display(),
-                branch,
-                dirty,
-                coordinated
+                "{} [{}; updated {}; {}]",
+                delete_row.row.display_name,
+                list::branch_text(&delete_row.row),
+                delete_row.row.updated,
+                state
             )
         })
         .collect::<Vec<_>>();
