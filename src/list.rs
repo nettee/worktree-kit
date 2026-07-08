@@ -19,7 +19,7 @@ pub struct ListOutput {
     pub worktrees: Vec<ListRow>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ListRow {
     pub kind: &'static str,
     pub display_name: String,
@@ -40,7 +40,7 @@ pub struct ListRow {
     pub auxiliary_refs: Option<AuxiliaryRefSummary>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AuxiliaryRefSummary {
     pub total: usize,
     pub ok: usize,
@@ -48,7 +48,7 @@ pub struct AuxiliaryRefSummary {
     pub details: Vec<AuxiliaryRefDetail>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AuxiliaryRefDetail {
     pub name: String,
     pub ok: bool,
@@ -345,7 +345,7 @@ fn short_head(head: &str) -> String {
     head.chars().take(7).collect()
 }
 
-fn branch_text(row: &ListRow) -> String {
+pub(crate) fn branch_text(row: &ListRow) -> String {
     if row.bare {
         "(bare)".to_string()
     } else if row.detached {
@@ -355,7 +355,7 @@ fn branch_text(row: &ListRow) -> String {
     }
 }
 
-fn state_text(row: &ListRow) -> String {
+pub(crate) fn state_text(row: &ListRow) -> String {
     let mut labels = row.labels.clone();
     if let Some(summary) = &row.auxiliary_refs {
         let status = if summary.broken == 0 { "ok" } else { "broken" };
@@ -368,7 +368,7 @@ fn state_text(row: &ListRow) -> String {
     }
 }
 
-fn render_table(out: &mut dyn Write, rows: &[ListRow], style: Style) -> AppResult<()> {
+pub(crate) fn render_table(out: &mut dyn Write, rows: &[ListRow], style: Style) -> AppResult<()> {
     let rendered_rows = rows
         .iter()
         .map(|row| {

@@ -5,6 +5,10 @@ use crate::list::{self, AuxiliaryRefDetail, AuxiliaryRefSummary, ListOptions};
 use crate::output;
 use crate::paths::default_path;
 use crate::{AppResult, Error};
+use crossterm::cursor;
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::terminal::{self, ClearType};
+use crossterm::{ExecutableCommand, QueueableCommand, execute};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -495,13 +499,387 @@ struct DeleteMember {
     dirty: bool,
 }
 
+#[derive(Debug, Clone)]
+struct DeleteRow {
+    row: list::ListRow,
+    non_deletable_reason: Option<String>,
+    coordinated: bool,
+    members: Vec<DeleteMember>,
+}
+
+fn delete_non_deletable_reason(
+    session: &Session<'_>,
+    worktree: &crate::gitexec::Worktree,
+    row: &list::ListRow,
+) -> AppResult<Option<String>> {
+    if row.is_main {
+        return Ok(Some("main worktree cannot be deleted".to_string()));
+    }
+    if row.branch.as_deref() == Some("main") {
+        return Ok(Some("main branch worktree cannot be deleted".to_string()));
+    }
+    if row.is_current {
+        return Ok(Some("current worktree cannot be deleted".to_string()));
+    }
+    if let Some(reason) = &worktree.locked {
+        if reason.is_empty() {
+            return Ok(Some("locked".to_string()));
+        }
+        return Ok(Some(format!("locked: {reason}")));
+    }
+    if !row.diagnostics.is_empty() {
+        return Ok(Some(row.diagnostics.join("; ")));
+    }
+    match auxiliary::read_auxiliary_marker(&session.git, &worktree.path) {
+        Ok(Some(_)) => Ok(Some(
+            "delete is not supported for auxiliary-side worktrees".to_string(),
+        )),
+        Ok(None) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn sorted_delete_rows(mut rows: Vec<list::ListRow>) -> Vec<list::ListRow> {
+    rows.sort_by(|left, right| {
+        left.updated_at
+            .is_none()
+            .cmp(&right.updated_at.is_none())
+            .then_with(|| left.updated_at.cmp(&right.updated_at))
+            .then_with(|| left.display_name.cmp(&right.display_name))
+    });
+    rows
+}
+
+fn render_delete_selection_table(
+    out: &mut dyn Write,
+    rows: &[DeleteRow],
+    selector: &DeleteSelectorState,
+    style: output::Style,
+) -> AppResult<()> {
+    let rendered_rows = rows
+        .iter()
+        .enumerate()
+        .map(|(index, delete_row)| {
+            let selector_text = if delete_row.non_deletable_reason.is_none() {
+                if selector.selected_rows.contains(&index) {
+                    "[x]".to_string()
+                } else {
+                    "[ ]".to_string()
+                }
+            } else {
+                "-".to_string()
+            };
+            let state = list::state_text(&delete_row.row);
+            (
+                selector_text,
+                delete_row.row.display_name.clone(),
+                list::branch_text(&delete_row.row),
+                delete_row.row.updated.clone(),
+                state,
+                delete_row.row.short_head.clone(),
+                delete_row.row.is_current,
+                delete_row.row.diagnostics.is_empty(),
+                delete_row.non_deletable_reason.clone(),
+                selector.cursor_row() == Some(index),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let selector_width = rendered_rows
+        .iter()
+        .map(|(selector, _, _, _, _, _, _, _, _, _)| selector.len())
+        .chain(std::iter::once("sel".len()))
+        .max()
+        .unwrap_or("sel".len());
+    let worktree_width = rendered_rows
+        .iter()
+        .map(|(_, worktree, _, _, _, _, _, _, _, _)| worktree.len())
+        .chain(std::iter::once("worktree".len()))
+        .max()
+        .unwrap_or("worktree".len());
+    let branch_width = rendered_rows
+        .iter()
+        .map(|(_, _, branch, _, _, _, _, _, _, _)| branch.len())
+        .chain(std::iter::once("branch".len()))
+        .max()
+        .unwrap_or("branch".len());
+    let updated_width = rendered_rows
+        .iter()
+        .map(|(_, _, _, updated, _, _, _, _, _, _)| updated.len())
+        .chain(std::iter::once("updated".len()))
+        .max()
+        .unwrap_or("updated".len());
+    let state_width = rendered_rows
+        .iter()
+        .map(|(_, _, _, _, state, _, _, _, _, _)| state.len())
+        .chain(std::iter::once("state".len()))
+        .max()
+        .unwrap_or("state".len());
+
+    let header = format!(
+        "  sel  {:worktree_width$}  {:branch_width$}  {:updated_width$}  {:state_width$}  head",
+        "worktree", "branch", "updated", "state"
+    );
+    terminal_write_line(out, &style.header(&header).to_string())?;
+    for (
+        selector_text,
+        worktree,
+        branch,
+        updated,
+        state,
+        head,
+        is_current,
+        diagnostics_ok,
+        reason,
+        is_cursor,
+    ) in rendered_rows
+    {
+        let cursor_marker = if is_cursor { ">" } else { " " };
+        let line = format!(
+            "{} {:selector_width$}  {:worktree_width$}  {:branch_width$}  {:updated_width$}  {:state_width$}  {}",
+            cursor_marker, selector_text, worktree, branch, updated, state, head
+        );
+        if is_current {
+            terminal_write_line(out, &style.current(&line).to_string())?;
+        } else if !diagnostics_ok
+            || state.contains("broken")
+            || state.contains("error")
+            || state.contains("non-deletable")
+        {
+            terminal_write_line(out, &style.error(&line).to_string())?;
+        } else if state.contains("dirty") || state.contains("prunable") {
+            terminal_write_line(out, &style.warning(&line).to_string())?;
+        } else {
+            terminal_write_line(out, &line)?;
+        }
+        if let Some(reason) = reason {
+            terminal_write_line(out, &format!("      non-deletable: {reason}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn terminal_write_line(out: &mut dyn Write, line: &str) -> AppResult<()> {
+    write!(out, "{line}\r\n")?;
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct DeleteSelectorState {
+    deletable_rows: Vec<bool>,
+    cursor: usize,
+    selected_rows: BTreeSet<usize>,
+}
+
+impl DeleteSelectorState {
+    fn new(deletable_rows: Vec<bool>) -> DeleteSelectorState {
+        let cursor = deletable_rows
+            .iter()
+            .position(|deletable| *deletable)
+            .unwrap_or(0);
+        DeleteSelectorState {
+            deletable_rows,
+            cursor,
+            selected_rows: BTreeSet::new(),
+        }
+    }
+
+    fn move_down(&mut self) {
+        self.move_by(1);
+    }
+
+    fn cursor_row(&self) -> Option<usize> {
+        self.deletable_rows
+            .get(self.cursor)
+            .copied()
+            .filter(|deletable| *deletable)
+            .map(|_| self.cursor)
+    }
+
+    fn move_up(&mut self) {
+        self.move_by(-1);
+    }
+
+    fn move_by(&mut self, delta: isize) {
+        let len = self.deletable_rows.len();
+        if len == 0 || !self.deletable_rows.iter().any(|deletable| *deletable) {
+            return;
+        }
+        let mut cursor = self.cursor;
+        loop {
+            cursor = if delta.is_positive() {
+                (cursor + 1) % len
+            } else if cursor == 0 {
+                len - 1
+            } else {
+                cursor - 1
+            };
+            if self.deletable_rows[cursor] {
+                self.cursor = cursor;
+                return;
+            }
+        }
+    }
+
+    fn toggle_current(&mut self) {
+        if !self
+            .deletable_rows
+            .get(self.cursor)
+            .copied()
+            .unwrap_or(false)
+        {
+            return;
+        }
+        if !self.selected_rows.remove(&self.cursor) {
+            self.selected_rows.insert(self.cursor);
+        }
+    }
+
+    fn selected_candidate_indexes(&self) -> Vec<usize> {
+        self.selected_rows
+            .iter()
+            .map(|row_index| {
+                self.deletable_rows[..*row_index]
+                    .iter()
+                    .filter(|deletable| **deletable)
+                    .count()
+            })
+            .collect()
+    }
+}
+
+struct RawModeGuard;
+
+impl RawModeGuard {
+    fn enter() -> AppResult<RawModeGuard> {
+        terminal::enable_raw_mode().map_err(|error| {
+            Error::message(format!("failed to enable terminal raw mode: {error}"))
+        })?;
+        Ok(RawModeGuard)
+    }
+}
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        let _ = terminal::disable_raw_mode();
+        let _ = execute!(std::io::stdout(), cursor::Show, cursor::MoveToColumn(0));
+    }
+}
+
+fn run_delete_selector(
+    out: &mut dyn Write,
+    rows: &[DeleteRow],
+    style: output::Style,
+) -> AppResult<Option<Vec<usize>>> {
+    let mut selector = DeleteSelectorState::new(
+        rows.iter()
+            .map(|row| row.non_deletable_reason.is_none())
+            .collect(),
+    );
+    let _raw_mode = RawModeGuard::enter()?;
+    out.execute(cursor::Hide)
+        .map_err(|error| Error::message(format!("failed to hide terminal cursor: {error}")))?;
+    out.execute(cursor::SavePosition).map_err(|error| {
+        Error::message(format!("failed to save terminal cursor position: {error}"))
+    })?;
+    let result: AppResult<Option<Vec<usize>>> = loop {
+        out.queue(cursor::RestorePosition)
+            .and_then(|out| out.queue(terminal::Clear(ClearType::FromCursorDown)))
+            .map_err(|error| {
+                Error::message(format!("failed to render delete selector: {error}"))
+            })?;
+        terminal_write_line(
+            out,
+            "Select worktrees to delete. Space toggles, ↑/↓ moves, Enter continues.",
+        )?;
+        terminal_write_line(out, "")?;
+        render_delete_selection_table(out, rows, &selector, style)?;
+        out.flush()?;
+
+        let event = event::read()
+            .map_err(|error| Error::message(format!("failed to read terminal input: {error}")))?;
+        let Event::Key(key) = event else { continue };
+        if key.kind == KeyEventKind::Release {
+            continue;
+        }
+        match key.code {
+            KeyCode::Up => selector.move_up(),
+            KeyCode::Down => selector.move_down(),
+            KeyCode::Char(' ') => selector.toggle_current(),
+            KeyCode::Enter => break Ok(Some(selector.selected_candidate_indexes())),
+            KeyCode::Char('m') | KeyCode::Char('j')
+                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                break Ok(Some(selector.selected_candidate_indexes()));
+            }
+            KeyCode::Esc => break Ok(None),
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                break Err(Error::message("interactive selection interrupted"));
+            }
+            _ => {}
+        }
+    };
+    out.execute(cursor::RestorePosition)
+        .and_then(|out| out.execute(terminal::Clear(ClearType::FromCursorDown)))
+        .and_then(|out| out.execute(cursor::Show))
+        .and_then(|out| out.execute(cursor::MoveToColumn(0)))
+        .map_err(|error| Error::message(format!("failed to restore terminal cursor: {error}")))?;
+    result
+}
+
+fn read_delete_confirmation(out: &mut dyn Write) -> AppResult<String> {
+    write!(out, "Type Y to delete selected worktrees: ")?;
+    out.flush()?;
+    let _raw_mode = RawModeGuard::enter()?;
+    let mut input = String::new();
+    loop {
+        let event = event::read()
+            .map_err(|error| Error::message(format!("interactive confirmation failed: {error}")))?;
+        let Event::Key(key) = event else { continue };
+        if key.kind == KeyEventKind::Release {
+            continue;
+        }
+        match key.code {
+            KeyCode::Enter => {
+                terminal_write_line(out, "")?;
+                return Ok(input);
+            }
+            KeyCode::Char('m') | KeyCode::Char('j')
+                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                terminal_write_line(out, "")?;
+                return Ok(input);
+            }
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                terminal_write_line(out, "")?;
+                return Err(Error::message("interactive confirmation interrupted"));
+            }
+            KeyCode::Esc => {
+                terminal_write_line(out, "")?;
+                return Ok(String::new());
+            }
+            KeyCode::Char(character) => {
+                input.push(character);
+                write!(out, "{character}")?;
+                out.flush()?;
+            }
+            KeyCode::Backspace => {
+                if input.pop().is_some() {
+                    write!(out, "\x08 \x08")?;
+                    out.flush()?;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 pub fn delete_interactive(session: &mut Session<'_>) -> AppResult<()> {
     let repo = repo(session)?;
     let state = auxiliary::read_state(&repo.main_root, &repo.git_common_dir)?;
     let updated_at_by_head =
         list::commit_timestamps_by_head(&session.git, &repo.main_root, &repo.worktrees);
-    let mut candidates = Vec::new();
-    let mut excluded = Vec::new();
+    let mut delete_rows = Vec::new();
     let mut rows = Vec::new();
     for worktree in &repo.worktrees {
         rows.push(list::repository_row(
@@ -511,7 +889,7 @@ pub fn delete_interactive(session: &mut Session<'_>) -> AppResult<()> {
             &updated_at_by_head,
         ));
     }
-    for row in list::sorted_rows(rows) {
+    for row in sorted_delete_rows(rows) {
         let Some(worktree) = repo.worktree_by_path(&row.path) else {
             continue;
         };
@@ -547,60 +925,56 @@ pub fn delete_interactive(session: &mut Session<'_>) -> AppResult<()> {
             }
             row.diagnostics.extend(diagnostics);
         }
-        if row.is_main || row.is_current || row.labels.iter().any(|label| label == "locked") {
-            continue;
+        if coordinated && !row.labels.iter().any(|label| label == "coordinated") {
+            row.labels.push("coordinated".to_string());
         }
-        if !row.diagnostics.is_empty() {
-            excluded.push(format!(
-                "{}: {}",
-                worktree.path.display(),
-                row.diagnostics.join("; ")
-            ));
-            continue;
+        let non_deletable_reason = delete_non_deletable_reason(session, worktree, &row)?;
+        if non_deletable_reason.is_some() {
+            if !row.labels.iter().any(|label| label == "non-deletable") {
+                row.labels.push("non-deletable".to_string());
+            }
+            if !row.diagnostics.is_empty() && !row.labels.iter().any(|label| label == "error") {
+                row.labels.push("error".to_string());
+            }
         }
-        if auxiliary::read_auxiliary_marker(&session.git, &worktree.path)?.is_some() {
-            continue;
-        }
-        candidates.push(DeleteCandidate {
-            path: worktree.path.clone(),
-            branch: row.branch.clone(),
-            dirty: row.dirty,
+        delete_rows.push(DeleteRow {
+            row,
+            non_deletable_reason,
             coordinated,
             members,
         });
     }
-    for diagnostic in &excluded {
-        writeln!(session.out, "Skipping non-deletable worktree: {diagnostic}")?;
-    }
+
+    let candidates = delete_rows
+        .iter()
+        .filter(|delete_row| delete_row.non_deletable_reason.is_none())
+        .map(|delete_row| DeleteCandidate {
+            path: delete_row.row.path.clone(),
+            branch: delete_row.row.branch.clone(),
+            dirty: delete_row.row.dirty,
+            coordinated: delete_row.coordinated,
+            members: delete_row.members.clone(),
+        })
+        .collect::<Vec<_>>();
+
     if candidates.is_empty() {
+        let selector = DeleteSelectorState::new(vec![false; delete_rows.len()]);
+        render_delete_selection_table(
+            session.out,
+            &delete_rows,
+            &selector,
+            output::Style::new(session.style_enabled),
+        )?;
         writeln!(session.out, "No deletable linked worktrees found.")?;
         return Ok(());
     }
-    let items = candidates
-        .iter()
-        .map(|candidate| {
-            let branch = candidate.branch.as_deref().unwrap_or("detached");
-            let dirty = if candidate.dirty { " dirty" } else { "" };
-            let coordinated = if candidate.coordinated {
-                " coordinated"
-            } else {
-                ""
-            };
-            format!(
-                "{} [{}{}{}]",
-                candidate.path.display(),
-                branch,
-                dirty,
-                coordinated
-            )
-        })
-        .collect::<Vec<_>>();
-    let selected = dialoguer::MultiSelect::new()
-        .with_prompt("Select worktrees to delete (Space to select, Enter to continue)")
-        .items(&items)
-        .interact_opt()
-        .map_err(|error| Error::message(format!("interactive selection failed: {error}")))?;
-    let Some(selected) = selected else {
+
+    let Some(selected) = run_delete_selector(
+        session.out,
+        &delete_rows,
+        output::Style::new(session.style_enabled),
+    )?
+    else {
         writeln!(session.out, "No worktrees selected; cancelled.")?;
         return Ok(());
     };
@@ -637,11 +1011,7 @@ pub fn delete_interactive(session: &mut Session<'_>) -> AppResult<()> {
             }
         }
     }
-    let confirmation = dialoguer::Input::<String>::new()
-        .with_prompt("Type Y to delete selected worktrees")
-        .allow_empty(true)
-        .interact_text()
-        .map_err(|error| Error::message(format!("interactive confirmation failed: {error}")))?;
+    let confirmation = read_delete_confirmation(session.out)?;
     if confirmation != "Y" {
         writeln!(session.out, "Cancelled.")?;
         return Ok(());
@@ -2477,12 +2847,13 @@ pub(crate) fn finish(
 #[cfg(test)]
 mod tests {
     use super::{
-        async_init_stdio, async_pnpm_install_stdio,
+        DeleteSelectorState, async_init_stdio, async_pnpm_install_stdio,
         cleanup_recursive_ignored_file_snapshot_on_error, finish, open_async_init_log,
-        remove_recursive_ignored_file_snapshot_root, should_run_pnpm_install,
+        remove_recursive_ignored_file_snapshot_root, should_run_pnpm_install, sorted_delete_rows,
         write_recursive_ignored_file_snapshot_marker,
     };
     use crate::clipboard::ClipboardProvider;
+    use crate::list::ListRow;
     use crate::{AppResult, Error};
     use std::io;
     #[cfg(unix)]
@@ -2494,6 +2865,97 @@ mod tests {
     impl ClipboardProvider for FailingClipboard {
         fn write_text(&mut self, _value: &str) -> AppResult<()> {
             Err(Error::message("clipboard unavailable"))
+        }
+    }
+
+    #[test]
+    fn delete_selector_moves_between_deletable_rows() {
+        let mut selector = DeleteSelectorState::new(vec![false, true, false, true]);
+        assert_eq!(selector.cursor, 1);
+
+        selector.move_down();
+        assert_eq!(selector.cursor, 3);
+        selector.move_down();
+        assert_eq!(selector.cursor, 1);
+        selector.move_up();
+        assert_eq!(selector.cursor, 3);
+    }
+
+    #[test]
+    fn delete_selector_toggles_only_deletable_rows() {
+        let mut selector = DeleteSelectorState::new(vec![false, true]);
+        selector.cursor = 0;
+        selector.toggle_current();
+        assert!(selector.selected_rows.is_empty());
+
+        selector.cursor = 1;
+        selector.toggle_current();
+        assert_eq!(selector.selected_candidate_indexes(), vec![0]);
+        selector.toggle_current();
+        assert!(selector.selected_candidate_indexes().is_empty());
+    }
+
+    #[test]
+    fn delete_selector_tracks_multiple_selected_candidate_indexes_across_gaps() {
+        let mut selector = DeleteSelectorState::new(vec![true, false, true, true]);
+        selector.toggle_current();
+        selector.move_down();
+        selector.toggle_current();
+        selector.move_down();
+        selector.toggle_current();
+
+        assert_eq!(
+            selector.selected_rows.iter().copied().collect::<Vec<_>>(),
+            vec![0, 2, 3]
+        );
+        assert_eq!(selector.selected_candidate_indexes(), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn delete_selector_has_no_cursor_when_no_rows_are_selectable() {
+        let mut selector = DeleteSelectorState::new(vec![false, false]);
+
+        assert_eq!(selector.cursor_row(), None);
+        selector.move_down();
+        assert_eq!(selector.cursor_row(), None);
+        selector.toggle_current();
+        assert!(selector.selected_candidate_indexes().is_empty());
+    }
+
+    #[test]
+    fn delete_sort_orders_oldest_known_first_and_unknown_last() {
+        let rows = sorted_delete_rows(vec![
+            delete_sort_row("unknown", None),
+            delete_sort_row("newer", Some(20)),
+            delete_sort_row("older", Some(10)),
+        ]);
+
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.display_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["older", "newer", "unknown"]
+        );
+    }
+
+    fn delete_sort_row(name: &str, updated_at: Option<i64>) -> ListRow {
+        ListRow {
+            kind: "repository_worktree",
+            display_name: name.to_string(),
+            path: Path::new("/tmp").join(name),
+            branch: Some(name.to_string()),
+            bare: false,
+            detached: false,
+            head: "abcdef0".to_string(),
+            short_head: "abcdef0".to_string(),
+            is_main: false,
+            is_current: false,
+            dirty: false,
+            updated_at,
+            updated: "now".to_string(),
+            labels: Vec::new(),
+            diagnostics: Vec::new(),
+            auxiliary_refs: None,
         }
     }
 

@@ -114,6 +114,7 @@ def run_pty_cmd(
     *,
     cwd: Path,
     input_bytes: bytes = b"",
+    input_after_output: str | None = None,
     timeout: float = 10.0,
     env: dict[str, str] | None = None,
 ) -> PtyResult:
@@ -168,7 +169,15 @@ def run_pty_cmd(
                     chunk = b""
                 if chunk:
                     output.extend(chunk)
-            if input_bytes and not sent and time.monotonic() < deadline - 0.1:
+            if (
+                input_bytes
+                and not sent
+                and time.monotonic() < deadline - 0.1
+                and (
+                    input_after_output is None
+                    or input_after_output in output.decode("utf-8", errors="replace")
+                )
+            ):
                 os.write(master_fd, input_bytes)
                 sent = True
         return PtyResult(
