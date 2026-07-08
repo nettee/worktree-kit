@@ -59,6 +59,22 @@ def test_interactive_delete_removes_dirty_worktree(wtk_bin, run_wtk, repo_factor
     assert "dirty: yes" in result.output
 
 
+def test_interactive_delete_main_branch_linked_worktree_is_non_deletable(wtk_bin, run_wtk, repo_factory) -> None:
+    repo = repo_factory.init_repo("repo")
+    run_git(repo, "branch", "feature/delete-main-guard")
+    run_wtk("checkout", "feature/delete-main-guard", "--no-clipboard", cwd=repo)
+    feature_linked = linked_worktree_path(repo, "feature/delete-main-guard")
+    main_linked = linked_worktree_path(repo, "main")
+    run_git(repo, "worktree", "add", "--force", str(main_linked), "main")
+
+    result = run_delete_pty(wtk_bin, repo, b" \rY\r").assert_success()
+
+    assert not feature_linked.exists()
+    assert main_linked.exists()
+    assert "main branch worktree cannot be deleted" in result.output
+    assert "repo-wt-main" in result.output
+
+
 def test_interactive_delete_can_select_second_and_multiple_rows(wtk_bin, run_wtk, repo_factory) -> None:
     repo = repo_factory.init_repo("repo")
     run_git(repo, "branch", "feature/a")

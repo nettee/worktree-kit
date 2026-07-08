@@ -515,6 +515,9 @@ fn delete_non_deletable_reason(
     if row.is_main {
         return Ok(Some("main worktree cannot be deleted".to_string()));
     }
+    if row.branch.as_deref() == Some("main") {
+        return Ok(Some("main branch worktree cannot be deleted".to_string()));
+    }
     if row.is_current {
         return Ok(Some("current worktree cannot be deleted".to_string()));
     }
@@ -534,6 +537,17 @@ fn delete_non_deletable_reason(
         Ok(None) => Ok(None),
         Err(error) => Err(error),
     }
+}
+
+fn sorted_delete_rows(mut rows: Vec<list::ListRow>) -> Vec<list::ListRow> {
+    rows.sort_by(|left, right| {
+        left.updated_at
+            .is_none()
+            .cmp(&right.updated_at.is_none())
+            .then_with(|| left.updated_at.cmp(&right.updated_at))
+            .then_with(|| left.display_name.cmp(&right.display_name))
+    });
+    rows
 }
 
 fn render_delete_selection_table(
@@ -875,7 +889,7 @@ pub fn delete_interactive(session: &mut Session<'_>) -> AppResult<()> {
             &updated_at_by_head,
         ));
     }
-    for row in list::sorted_rows(rows) {
+    for row in sorted_delete_rows(rows) {
         let Some(worktree) = repo.worktree_by_path(&row.path) else {
             continue;
         };
@@ -2835,10 +2849,11 @@ mod tests {
     use super::{
         DeleteSelectorState, async_init_stdio, async_pnpm_install_stdio,
         cleanup_recursive_ignored_file_snapshot_on_error, finish, open_async_init_log,
-        remove_recursive_ignored_file_snapshot_root, should_run_pnpm_install,
+        remove_recursive_ignored_file_snapshot_root, should_run_pnpm_install, sorted_delete_rows,
         write_recursive_ignored_file_snapshot_marker,
     };
     use crate::clipboard::ClipboardProvider;
+    use crate::list::ListRow;
     use crate::{AppResult, Error};
     use std::io;
     #[cfg(unix)]
@@ -2905,6 +2920,43 @@ mod tests {
         assert_eq!(selector.cursor_row(), None);
         selector.toggle_current();
         assert!(selector.selected_candidate_indexes().is_empty());
+    }
+
+    #[test]
+    fn delete_sort_orders_oldest_known_first_and_unknown_last() {
+        let rows = sorted_delete_rows(vec![
+            delete_sort_row("unknown", None),
+            delete_sort_row("newer", Some(20)),
+            delete_sort_row("older", Some(10)),
+        ]);
+
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.display_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["older", "newer", "unknown"]
+        );
+    }
+
+    fn delete_sort_row(name: &str, updated_at: Option<i64>) -> ListRow {
+        ListRow {
+            kind: "repository_worktree",
+            display_name: name.to_string(),
+            path: Path::new("/tmp").join(name),
+            branch: Some(name.to_string()),
+            bare: false,
+            detached: false,
+            head: "abcdef0".to_string(),
+            short_head: "abcdef0".to_string(),
+            is_main: false,
+            is_current: false,
+            dirty: false,
+            updated_at,
+            updated: "now".to_string(),
+            labels: Vec::new(),
+            diagnostics: Vec::new(),
+            auxiliary_refs: None,
+        }
     }
 
     #[test]
