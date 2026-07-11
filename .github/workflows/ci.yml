@@ -45,6 +45,9 @@ jobs:
       - name: Validate local install script
         run: sh scripts/test-install-local.sh
 
+      - name: Test old spec archival automation
+        run: node scripts/ci/test-archive-old-specs.js
+
       - name: Run test suite with coverage
         run: |
           cargo llvm-cov clean --workspace

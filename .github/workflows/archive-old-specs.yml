@@ -1,0 +1,65 @@
+name: Archive Old Worktree Kit Specs
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: archive-old-worktree-kit-specs
+  cancel-in-progress: false
+
+jobs:
+  archive-old-specs:
+    name: Archive old specs
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install published zest-dev CLI
+        run: npm install -g zest-dev
+
+      - name: Ensure archive labels exist
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [ "$(gh label list --search "spec:change" --json name --jq 'any(.name == "spec:change")')" = "true" ] \
+            || gh label create "spec:change" --color "5319e7" --description "Zest Dev change spec"
+          [ "$(gh label list --search "archive" --json name --jq 'any(.name == "archive")')" = "true" ] \
+            || gh label create "archive" --color "cfd3d7" --description "Archived spec snapshot"
+
+      - name: Archive eligible specs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/ci/archive-old-specs.js
+
+      - name: Create PR for spec removals
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add specs/change
+          git diff --cached --quiet && { echo "No spec removals to commit."; exit 0; }
+          branch="archive-old-specs/${{ github.run_id }}-${{ github.run_attempt }}"
+          git switch -c "$branch"
+          git commit -m "chore: archive old specs"
+          git push origin "$branch"
+          gh pr create \
+            --base "${{ github.ref_name }}" \
+            --head "$branch" \
+            --title "Archive old specs" \
+            --body "Automated archive of old Worktree Kit specs."
+
