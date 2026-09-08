@@ -1939,6 +1939,26 @@ fn prepare_base(
     }
     let base = detect_main_branch(session, repo, "")?;
 
+    let remotes = session.git.run(&repo.main_root, ["remote"])?.stdout;
+    if !remotes.lines().any(|remote| remote == "origin") {
+        return Ok(base);
+    }
+
+    match session.git.run(
+        &repo.main_root,
+        [
+            "ls-remote",
+            "--exit-code",
+            "--heads",
+            "origin",
+            &format!("refs/heads/{base}"),
+        ],
+    ) {
+        Ok(_) => {}
+        Err(error) if is_git_exit(&error, 2) => return Ok(base),
+        Err(error) => return Err(error),
+    }
+
     let fetch_args = vec!["fetch".to_string(), "origin".to_string(), base.clone()];
     output::git(session.out, &repo.main_root, &fetch_args)?;
     session
