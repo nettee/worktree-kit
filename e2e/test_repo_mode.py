@@ -265,6 +265,45 @@ def test_repo_mode_dirty_linked_and_main_branch_resolution_failures(run_wtk, rep
     assert "cannot determine main branch" in result.output
 
 
+def test_repo_mode_new_uses_local_main_when_repository_has_no_remote(run_wtk, repo_factory) -> None:
+    repo = repo_factory.init_repo("local-only")
+
+    result = run_wtk(
+        "new",
+        "feature/local-only",
+        "--no-clipboard",
+        cwd=repo,
+        check=False,
+    )
+
+    result.assert_success()
+    linked = linked_worktree_path(repo, "feature/local-only")
+    assert linked.exists()
+    assert linked.joinpath("README.md").read_text(encoding="utf-8") == "test\n"
+    assert "fetch origin" not in result.output
+
+
+def test_repo_mode_new_uses_local_main_when_origin_lacks_main(run_wtk, repo_factory, tmp_path) -> None:
+    repo = repo_factory.init_repo("local-main")
+    origin = tmp_path / "origin.git"
+    run_git(tmp_path, "init", "--bare", str(origin))
+    run_git(repo, "remote", "add", "origin", str(origin))
+
+    result = run_wtk(
+        "new",
+        "feature/local-main",
+        "--no-clipboard",
+        cwd=repo,
+        check=False,
+    )
+
+    result.assert_success()
+    linked = linked_worktree_path(repo, "feature/local-main")
+    assert linked.exists()
+    assert linked.joinpath("README.md").read_text(encoding="utf-8") == "test\n"
+    assert "fetch origin main" not in result.output
+
+
 def test_repo_mode_default_base_fast_forward_and_non_fast_forward_refusal(run_wtk, repo_factory, tmp_path) -> None:
     origin = tmp_path / "origin.git"
     run_git(tmp_path, "init", "--bare", str(origin))
